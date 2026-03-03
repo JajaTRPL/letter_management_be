@@ -4,8 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration
-{
+return new class extends Migration {
     /**
      * Run the migrations.
      */
@@ -16,9 +15,9 @@ return new class extends Migration
             $table->string('queue')->index();
             $table->longText('payload');
             $table->unsignedTinyInteger('attempts');
-            $table->unsignedInteger('reserved_at')->nullable();
-            $table->unsignedInteger('available_at');
-            $table->unsignedInteger('created_at');
+            $table->unsignedInteger('reserved_at')->nullable()->index();
+            $table->unsignedInteger('available_at')->index();
+            $table->unsignedInteger('created_at')->index();
         });
 
         Schema::create('job_batches', function (Blueprint $table) {
@@ -30,8 +29,8 @@ return new class extends Migration
             $table->longText('failed_job_ids');
             $table->mediumText('options')->nullable();
             $table->integer('cancelled_at')->nullable();
-            $table->integer('created_at');
-            $table->integer('finished_at')->nullable();
+            $table->integer('created_at')->index();
+            $table->integer('finished_at')->nullable()->index();
         });
 
         Schema::create('failed_jobs', function (Blueprint $table) {
@@ -41,7 +40,7 @@ return new class extends Migration
             $table->text('queue');
             $table->longText('payload');
             $table->longText('exception');
-            $table->timestamp('failed_at')->useCurrent();
+            $table->timestamp('failed_at')->useCurrent()->index();
         });
     }
 

@@ -4,8 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration
-{
+return new class extends Migration {
     /**
      * Run the migrations.
      */
@@ -13,11 +12,25 @@ return new class extends Migration
     {
         Schema::create('users', function (Blueprint $table) {
             $table->id();
-            $table->string('name');
+            $table->string('name')->index();
             $table->string('email')->unique();
-            $table->timestamp('email_verified_at')->nullable();
-            $table->string('password');
-            $table->rememberToken();
+            $table->string('password')->nullable();
+            $table->enum('role', [
+                'mahasiswa',
+                'tendik_1',
+                'tendik_2',
+                'tendik_3',
+                'tendik_4',
+                'tendik_5',
+                'tendik_6',
+                'tendik_7',
+                'tendik_8',
+                'super_admin',
+                'kadep',
+                'kaprodi',
+                'sekprodi',
+                'sekdep',
+            ])->default('mahasiswa')->index();
             $table->timestamps();
         });
 
