@@ -4,6 +4,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\SuperAdmin\UserController as SuperAdminUserController;
 
 /*
 |--------------------------------------------------------------------------
@@ -35,8 +36,19 @@ Route::middleware('throttle:api')->group(function () {
             Route::get('/dashboard', function () {
                 return response()->json(['message' => 'Halaman Dasbord Super Admin']);
             });
-            Route::get('/users', [UserController::class, 'index']);
-            Route::post('/users', [UserController::class, 'store']); // Tambah User Baru
+            Route::get('/users', [SuperAdminUserController::class, 'index']);
+            Route::post('/users', [SuperAdminUserController::class, 'store']); // Tambah User Baru
+            Route::get('/users/{user}', [SuperAdminUserController::class, 'show']); // Detail User
+            Route::put('/users/{user}', [SuperAdminUserController::class, 'update']); // Update User
+            Route::delete('/users/{user}', [SuperAdminUserController::class, 'destroy']); // Hapus User
+            Route::patch('/users/{user}/block', [SuperAdminUserController::class, 'block']);
+            Route::patch('/users/{user}/unblock', [SuperAdminUserController::class, 'unblock']);
+            Route::get('/reports/login-activity', [SuperAdminUserController::class, 'loginReport']);
+            Route::get('/reports/admin-logs', [SuperAdminUserController::class, 'activityLog']);
+
+            // Bulk Operations
+            Route::post('/users/bulk-import', [SuperAdminUserController::class, 'bulkImport']);
+            Route::get('/users/export', [SuperAdminUserController::class, 'export']);
         });
 
 
@@ -57,9 +69,9 @@ Route::middleware('throttle:api')->group(function () {
         | 3. Pejabat/Struktural (Kadep, Kaprodi, Sekprodi, Sekdep)
         |----------------------------------------------------------------------
         */
-        Route::middleware('role:kadep,kaprodi,sekprodi,sekdep')->prefix('pejabat')->group(function () {
+        Route::middleware('role:kadep,kaprodi,sekprodi,sekdep')->prefix('akademik')->group(function () {
             Route::get('/dashboard', function () {
-                return response()->json(['message' => 'Halaman Dasbord Pejabat (Struktural)']);
+                return response()->json(['message' => 'Halaman Dasbord Akademik']);
             });
         });
 

@@ -22,6 +22,23 @@ class AuthController extends Controller
 
         $user = Auth::user();
 
+        // Cek jika user diblokir
+        if ($user->status === 'Blocked') {
+            Auth::logout();
+            return response()->json([
+                'message' => 'Akun Anda telah diblokir. Silakan hubungi admin.',
+            ], 403);
+        }
+
+        // Ubah status jadi Active
+        $user->status = 'Active';
+        $user->save();
+
+        // Catat Log Login
+        \App\Models\LoginLog::create([
+            'user_id' => $user->id
+        ]);
+
         // Hapus token lama agar tidak numpuk
         $user->tokens()->delete();
 
@@ -34,7 +51,8 @@ class AuthController extends Controller
                 'id' => $user->id,
                 'name' => $user->name,
                 'email' => $user->email,
-                'role' => $user->role,  // ← frontend pakai ini untuk redirect ke dashboard
+                'role' => $user->role,
+                'status' => $user->status,
             ],
         ], 200);
     }
@@ -60,7 +78,13 @@ class AuthController extends Controller
 
     public function logout(Request $request)
     {
-        $request->user()->currentAccessToken()->delete();
+        $user = $request->user();
+
+        // Ubah status jadi Inactive
+        $user->status = 'Inactive';
+        $user->save();
+
+        $user->currentAccessToken()->delete();
 
         return response()->json([
             'message' => 'Logout berhasil',
