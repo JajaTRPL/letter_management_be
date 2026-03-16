@@ -4,7 +4,7 @@ namespace App\Http\Controllers\SuperAdmin;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
-use App\Models\AdminLog;
+use App\Models\ActivityLog;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Auth;
@@ -43,15 +43,19 @@ class UserController extends Controller
             'name' => $validated['name'],
             'email' => $validated['email'],
             'password' => Hash::make($validated['password']),
-            'role' => $validated['role']
+            'role' => $validated['role'],
+            'status' => 'Active'
         ]);
 
         // LOG ACTION
-        AdminLog::create([
-            'admin_id' => Auth::id(),
+        ActivityLog::create([
+            'user_id' => Auth::id(),
+            'type' => 'admin',
             'action' => 'Tambah User',
             'target_user' => $user->email,
-            'details' => "Menambahkan user baru dengan role: {$user->role}"
+            'details' => "Menambahkan user baru dengan role: {$user->role}",
+            'ip_address' => $request->ip(),
+            'user_agent' => $request->userAgent(),
         ]);
 
         return response()->json([
@@ -104,11 +108,14 @@ class UserController extends Controller
             $details .= " Perubahan role dari {$oldRole} ke {$validated['role']}.";
         }
 
-        AdminLog::create([
-            'admin_id' => Auth::id(),
+        ActivityLog::create([
+            'user_id' => Auth::id(),
+            'type' => 'admin',
             'action' => 'Update User',
             'target_user' => $user->email,
-            'details' => $details
+            'details' => $details,
+            'ip_address' => $request->ip(),
+            'user_agent' => $request->userAgent(),
         ]);
 
         return response()->json([
@@ -126,11 +133,14 @@ class UserController extends Controller
         $user->delete();
 
         // LOG ACTION
-        AdminLog::create([
-            'admin_id' => Auth::id(),
+        ActivityLog::create([
+            'user_id' => Auth::id(),
+            'type' => 'admin',
             'action' => 'Hapus User',
             'target_user' => $targetEmail,
-            'details' => "Menghapus user permanen."
+            'details' => "Menghapus user permanen.",
+            'ip_address' => request()->ip(),
+            'user_agent' => request()->userAgent(),
         ]);
 
         return response()->json([
@@ -150,11 +160,14 @@ class UserController extends Controller
         $user->tokens()->delete();
 
         // LOG ACTION
-        AdminLog::create([
-            'admin_id' => Auth::id(),
+        ActivityLog::create([
+            'user_id' => Auth::id(),
+            'type' => 'admin',
             'action' => 'Blokir User',
             'target_user' => $user->email,
-            'details' => "Status user diubah menjadi Blocked."
+            'details' => "Status user diubah menjadi Blocked.",
+            'ip_address' => request()->ip(),
+            'user_agent' => request()->userAgent(),
         ]);
 
         return response()->json([
@@ -168,15 +181,18 @@ class UserController extends Controller
      */
     public function unblock(User $user)
     {
-        $user->status = 'Inactive';
+        $user->status = 'Active';
         $user->save();
 
         // LOG ACTION
-        AdminLog::create([
-            'admin_id' => Auth::id(),
+        ActivityLog::create([
+            'user_id' => Auth::id(),
+            'type' => 'admin',
             'action' => 'Unblock User',
             'target_user' => $user->email,
-            'details' => "Status user dikembalikan ke Inactive."
+            'details' => "Status user dikembalikan ke Active.",
+            'ip_address' => request()->ip(),
+            'user_agent' => request()->userAgent(),
         ]);
 
         return response()->json([
@@ -193,12 +209,12 @@ class UserController extends Controller
         $now = now();
 
         $report = [
-            'today' => \App\Models\LoginLog::whereDate('created_at', $now->toDateString())->count(),
-            'this_week' => \App\Models\LoginLog::where('created_at', '>=', $now->copy()->subDays(7))->count(),
-            'last_1_month' => \App\Models\LoginLog::where('created_at', '>=', $now->copy()->subMonth())->count(),
-            'last_3_months' => \App\Models\LoginLog::where('created_at', '>=', $now->copy()->subMonths(3))->count(),
-            'last_6_months' => \App\Models\LoginLog::where('created_at', '>=', $now->copy()->subMonths(6))->count(),
-            'last_12_months' => \App\Models\LoginLog::where('created_at', '>=', $now->copy()->subYear())->count(),
+            'today' => ActivityLog::where('type', 'login')->whereDate('created_at', $now->toDateString())->count(),
+            'this_week' => ActivityLog::where('type', 'login')->where('created_at', '>=', $now->copy()->subDays(7))->count(),
+            'last_1_month' => ActivityLog::where('type', 'login')->where('created_at', '>=', $now->copy()->subMonth())->count(),
+            'last_3_months' => ActivityLog::where('type', 'login')->where('created_at', '>=', $now->copy()->subMonths(3))->count(),
+            'last_6_months' => ActivityLog::where('type', 'login')->where('created_at', '>=', $now->copy()->subMonths(6))->count(),
+            'last_12_months' => ActivityLog::where('type', 'login')->where('created_at', '>=', $now->copy()->subYear())->count(),
         ];
 
         return response()->json([
@@ -212,7 +228,7 @@ class UserController extends Controller
      */
     public function activityLog()
     {
-        $logs = AdminLog::with('admin:id,name,email')
+        $logs = ActivityLog::with('user:id,name,email')
             ->orderBy('created_at', 'desc')
             ->paginate(15);
 
@@ -312,6 +328,7 @@ class UserController extends Controller
                 'email' => $input['email'],
                 'role' => $input['role'],
                 'password' => Hash::make($input['password']),
+                'status' => 'Active'
             ]);
 
             $successCount++;
@@ -320,11 +337,14 @@ class UserController extends Controller
         fclose($handle);
 
         // LOG ACTION
-        AdminLog::create([
-            'admin_id' => Auth::id(),
+        ActivityLog::create([
+            'user_id' => Auth::id(),
+            'type' => 'admin',
             'action' => 'Bulk Import User',
             'target_user' => 'Multiple Users',
-            'details' => "Berhasil mengimpor {$successCount} user. Gagal: {$errorCount}."
+            'details' => "Berhasil mengimpor {$successCount} user. Gagal: {$errorCount}.",
+            'ip_address' => $request->ip(),
+            'user_agent' => $request->userAgent(),
         ]);
 
         return response()->json([

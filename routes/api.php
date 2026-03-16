@@ -13,7 +13,9 @@ use App\Http\Controllers\SuperAdmin\UserController as SuperAdminUserController;
 */
 Route::middleware('throttle:api')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
-    Route::post('/reset-password', [AuthController::class, 'resetPassword']); // Fitur Reset Password Baru
+    Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
+    Route::post('/verify-token', [AuthController::class, 'verifyToken']);
+    Route::post('/reset-password', [AuthController::class, 'resetPassword']);
 
     /*
     |--------------------------------------------------------------------------
@@ -84,6 +86,15 @@ Route::middleware('throttle:api')->group(function () {
         Route::middleware('role:mahasiswa')->prefix('mahasiswa')->group(function () {
             Route::get('/dashboard', function () {
                 return response()->json(['message' => 'Halaman Dasbord Mahasiswa']);
+            });
+
+            // Scholarship Application Routes
+            Route::prefix('scholarship')->group(function () {
+                Route::get('/step-1', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'getStep1']);
+                Route::post('/step-1', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'saveStep1']);
+                Route::post('/step-2', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'saveStep2']);
+                Route::post('/step-3', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'saveStep3']);
+                Route::post('/submit', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'submitApplication']);
             });
         });
 

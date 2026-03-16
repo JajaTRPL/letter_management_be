@@ -31,4 +31,9 @@ class User extends Authenticatable
             'password' => 'hashed',
         ];
     }
+
+    public function activityLogs(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(ActivityLog::class);
+    }
 }
