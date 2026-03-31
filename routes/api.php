@@ -6,6 +6,8 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\SuperAdmin\UserController as SuperAdminUserController;
 
+use App\Http\Controllers\ProfileController;
+
 /*
 |--------------------------------------------------------------------------
 | Public Routes (tidak perlu login)
@@ -25,6 +27,11 @@ Route::middleware('throttle:api')->group(function () {
     Route::middleware('auth:sanctum')->group(function () {
 
         Route::post('/logout', [AuthController::class, 'logout']);
+
+        // Mahasiswa Profile
+        Route::get('/profile', [ProfileController::class, 'getProfile']);
+        Route::put('/profile', [ProfileController::class, 'updateProfile']);
+        Route::post('/profile', [ProfileController::class, 'updateProfile']); // For FormData method spoofing
 
         // Get all users (umum)
         Route::get('/users', [UserController::class, 'index']);
@@ -104,15 +111,7 @@ Route::middleware('throttle:api')->group(function () {
         | Profil Umum
         |----------------------------------------------------------------------
         */
-        Route::get('/profile', function (Request $request) {
-            $user = $request->user();
-
-            return response()->json([
-                'message' => 'Anda masuk sebagai role: ' . $user->role,
-                'user' => $user,
-                'nama' => $user->name,
-            ]);
-        });
+        // Route dipindah ke atas (baris 31)
 
 
     });
