@@ -17,19 +17,9 @@ return new class extends Migration {
             $table->string('password')->nullable();
             $table->enum('role', [
                 'mahasiswa',
-                'tendik_1',
-                'tendik_2',
-                'tendik_3',
-                'tendik_4',
-                'tendik_5',
-                'tendik_6',
-                'tendik_7',
-                'tendik_8',
+                'tendik',
                 'super_admin',
-                'kadep',
-                'kaprodi',
-                'sekprodi',
-                'sekdep',
+                'akademik',
             ])->default('mahasiswa')->index();
             $table->timestamps();
         });

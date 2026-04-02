@@ -42,22 +42,23 @@ Route::middleware('throttle:api')->group(function () {
         |----------------------------------------------------------------------
         */
         Route::middleware('role:super_admin')->prefix('super-admin')->group(function () {
+            Route::get('/dashboard/stats', [\App\Http\Controllers\SuperAdmin\DashboardController::class, 'getStats']);
             Route::get('/dashboard', function () {
                 return response()->json(['message' => 'Halaman Dasbord Super Admin']);
             });
-            Route::get('/users', [SuperAdminUserController::class, 'index']);
-            Route::post('/users', [SuperAdminUserController::class, 'store']); // Tambah User Baru
-            Route::get('/users/{user}', [SuperAdminUserController::class, 'show']); // Detail User
-            Route::put('/users/{user}', [SuperAdminUserController::class, 'update']); // Update User
-            Route::delete('/users/{user}', [SuperAdminUserController::class, 'destroy']); // Hapus User
-            Route::patch('/users/{user}/block', [SuperAdminUserController::class, 'block']);
-            Route::patch('/users/{user}/unblock', [SuperAdminUserController::class, 'unblock']);
-            Route::get('/reports/login-activity', [SuperAdminUserController::class, 'loginReport']);
-            Route::get('/reports/admin-logs', [SuperAdminUserController::class, 'activityLog']);
+            Route::get('/users', [\App\Http\Controllers\SuperAdmin\UserController::class, 'index']);
+            Route::post('/users', [\App\Http\Controllers\SuperAdmin\UserController::class, 'store']); // Tambah User Baru
+            Route::get('/users/{user}', [\App\Http\Controllers\SuperAdmin\UserController::class, 'show']); // Detail User
+            Route::put('/users/{user}', [\App\Http\Controllers\SuperAdmin\UserController::class, 'update']); // Update User
+            Route::delete('/users/{user}', [\App\Http\Controllers\SuperAdmin\UserController::class, 'destroy']); // Hapus User
+            Route::patch('/users/{user}/block', [\App\Http\Controllers\SuperAdmin\UserController::class, 'block']);
+            Route::patch('/users/{user}/unblock', [\App\Http\Controllers\SuperAdmin\UserController::class, 'unblock']);
+            Route::get('/reports/login-activity', [\App\Http\Controllers\SuperAdmin\UserController::class, 'loginReport']);
+            Route::get('/reports/admin-logs', [\App\Http\Controllers\SuperAdmin\UserController::class, 'activityLog']);
 
             // Bulk Operations
-            Route::post('/users/bulk-import', [SuperAdminUserController::class, 'bulkImport']);
-            Route::get('/users/export', [SuperAdminUserController::class, 'export']);
+            Route::post('/users/bulk-import', [\App\Http\Controllers\SuperAdmin\UserController::class, 'bulkImport']);
+            Route::get('/users/export', [\App\Http\Controllers\SuperAdmin\UserController::class, 'export']);
         });
 
 
@@ -66,7 +67,7 @@ Route::middleware('throttle:api')->group(function () {
         | 2. Tendik (1-8) Dashboard
         |----------------------------------------------------------------------
         */
-        Route::middleware('role:tendik_1,tendik_2,tendik_3,tendik_4,tendik_5,tendik_6,tendik_7,tendik_8')->prefix('tendik')->group(function () {
+        Route::middleware('role:tendik')->prefix('tendik')->group(function () {
             Route::get('/dashboard', function () {
                 return response()->json(['message' => 'Halaman Dasbord Khusus Tendik']);
             });
@@ -75,10 +76,10 @@ Route::middleware('throttle:api')->group(function () {
 
         /*
         |----------------------------------------------------------------------
-        | 3. Pejabat/Struktural (Kadep, Kaprodi, Sekprodi, Sekdep)
+        | 3. Pejabat/Struktural (Akademik)
         |----------------------------------------------------------------------
         */
-        Route::middleware('role:kadep,kaprodi,sekprodi,sekdep')->prefix('akademik')->group(function () {
+        Route::middleware('role:akademik')->prefix('akademik')->group(function () {
             Route::get('/dashboard', function () {
                 return response()->json(['message' => 'Halaman Dasbord Akademik']);
             });

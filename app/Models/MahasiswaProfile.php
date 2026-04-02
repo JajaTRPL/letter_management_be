@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class MahasiswaProfile extends Model
 {
     //
-    protected $guarded = ['id', 'user_id', 'nim', 'fakultas', 'program_studi'];
+    protected $guarded = ['id'];
 
     public function user()
     {

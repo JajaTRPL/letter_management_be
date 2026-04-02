@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Mahasiswa;
 
 use App\Http\Controllers\Controller;
+use App\Models\MahasiswaProfile;
+use App\Models\KeluargaMahasiswa;
 use App\Models\ScholarshipApplication;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -46,14 +48,25 @@ class ScholarshipController extends Controller
         }
 
         $user = Auth::user();
+
+        // Update Profile
+        $profile = \App\Models\MahasiswaProfile::updateOrCreate(
+            ['user_id' => $user->id],
+            [
+                'nim' => $request->nim,
+                'fakultas' => $request->faculty,
+                'program_studi' => $request->study_program,
+            ]
+        );
+
         $application = ScholarshipApplication::updateOrCreate(
             ['user_id' => $user->id, 'status' => 'Draft'],
-            $request->only(['nim', 'faculty', 'study_program'])
+            ['mahasiswa_profile_id' => $profile->id]
         );
 
         return response()->json([
             'message' => 'Process 1 saved successfully',
-            'application' => $application
+            'application' => $application->load('mahasiswaProfile')
         ]);
     }
 
@@ -62,7 +75,8 @@ class ScholarshipController extends Controller
      */
     public function saveStep2(Request $request)
     {
-        $application = ScholarshipApplication::where('user_id', Auth::id())
+        $user = Auth::user();
+        $application = ScholarshipApplication::where('user_id', $user->id)
             ->where('status', 'Draft')
             ->firstOrFail();
 
@@ -83,13 +97,11 @@ class ScholarshipController extends Controller
             'mother_income' => 'required|numeric',
             'mother_status' => 'required|in:Hidup,Meninggal',
             'mother_death_date' => 'required_if:mother_status,Meninggal|nullable|date',
-            // Guardian logic: required if both parents are dead
             'guardian_name' => 'required_if:father_status,Meninggal,mother_status,Meninggal|nullable|string',
             'guardian_job' => 'required_if:father_status,Meninggal,mother_status,Meninggal|nullable|string',
             'guardian_income' => 'required_if:father_status,Meninggal,mother_status,Meninggal|nullable|numeric',
             'guardian_status' => 'required_if:father_status,Meninggal,mother_status,Meninggal|nullable|in:Hidup,Meninggal',
             'guardian_death_date' => 'required_if:guardian_status,Meninggal|nullable|date',
-            // Siblings
             'siblings' => 'nullable|array',
             'siblings.*.name' => 'required|string',
             'siblings.*.job_or_school' => 'required|string',
@@ -101,28 +113,83 @@ class ScholarshipController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        // Handle signature if provided
+        // 1. Update Profile
+        $profile = $user->mahasiswaProfile ?? \App\Models\MahasiswaProfile::create(['user_id' => $user->id]);
+
+        $profileData = [
+            'tempat_lahir' => $request->pob,
+            'tanggal_lahir' => $request->dob,
+            'jenis_kelamin' => $request->gender === 'Laki-laki' ? 'L' : 'P',
+            'alamat_asal' => $request->origin_address,
+            'alamat_domisili' => $request->jogja_address,
+        ];
+
+        // Handle signature
         if ($request->filled('signature')) {
             $imageData = $request->signature;
-            $fileName = 'signatures/' . Auth::id() . '_' . time() . '.png';
+            $fileName = 'signatures/' . $user->id . '_' . time() . '.png';
             $image = str_replace('data:image/png;base64,', '', $imageData);
             $image = str_replace(' ', '+', $image);
             Storage::disk('public')->put($fileName, base64_decode($image));
-            $application->signature_path = $fileName;
+            $profileData['tanda_tangan_path'] = $fileName;
         }
 
-        $application->update($request->except(['signature', 'siblings']));
+        $profile->update($profileData);
 
-        // Handle Siblings (JSON)
+        // 2. Update Family (Ayah, Ibu, Wali)
+        $this->updateFamilyMember($profile, 'ayah', [
+            'nama_lengkap' => $request->father_name,
+            'pekerjaan' => $request->father_job,
+            'penghasilan' => $request->father_income,
+            'status_hidup' => strtolower($request->father_status),
+            'tanggal_meninggal' => $request->father_death_date,
+        ]);
+
+        $this->updateFamilyMember($profile, 'ibu', [
+            'nama_lengkap' => $request->mother_name,
+            'pekerjaan' => $request->mother_job,
+            'penghasilan' => $request->mother_income,
+            'status_hidup' => strtolower($request->mother_status),
+            'tanggal_meninggal' => $request->mother_death_date,
+        ]);
+
+        if ($request->filled('guardian_name')) {
+            $this->updateFamilyMember($profile, 'wali', [
+                'nama_lengkap' => $request->guardian_name,
+                'pekerjaan' => $request->guardian_job,
+                'penghasilan' => $request->guardian_income,
+                'status_hidup' => strtolower($request->guardian_status),
+                'tanggal_meninggal' => $request->guardian_death_date,
+            ]);
+        }
+
+        // 3. Update Siblings
         if ($request->has('siblings')) {
-            $application->siblings = $request->siblings;
-            $application->save();
+            $profile->keluarga()->where('jenis_relasi', 'saudara')->delete();
+            foreach ($request->siblings as $sib) {
+                $profile->keluarga()->create([
+                    'jenis_relasi' => 'saudara',
+                    'nama_lengkap' => $sib['name'],
+                    'pekerjaan' => $sib['job_or_school'],
+                    'status_hidup' => 'hidup',
+                    'status_kawin' => $sib['marital_status'],
+                    'keterangan' => $sib['relation'],
+                ]);
+            }
         }
 
         return response()->json([
             'message' => 'Process 2 saved successfully',
-            'application' => $application
+            'application' => $application->load('mahasiswaProfile.keluarga')
         ]);
+    }
+
+    private function updateFamilyMember($profile, $relation, $data)
+    {
+        return $profile->keluarga()->updateOrCreate(
+            ['jenis_relasi' => $relation],
+            $data
+        );
     }
 
     /**
@@ -184,6 +251,7 @@ class ScholarshipController extends Controller
 
         // Final validation can be done here to ensure all fields are complete
         $application->status = 'Submitted';
+        $application->submitted_at = now();
         $application->save();
 
         return response()->json([

@@ -18,7 +18,9 @@ class UserController extends Controller
      */
     public function index(Request $request)
     {
-        $users = User::select('id', 'name', 'email', 'role', 'status', 'created_at')->get();
+        $users = User::where('role', '!=', 'super_admin')
+            ->select('id', 'name', 'email', 'role', 'status', 'created_at')
+            ->get();
 
         return response()->json([
             'message' => 'Seluruh daftar user berhasil diambil',
@@ -129,6 +131,10 @@ class UserController extends Controller
      */
     public function destroy(User $user)
     {
+        if ($user->role === 'super_admin') {
+            return response()->json(['message' => 'Tidak dapat menghapus akun Super Admin'], 403);
+        }
+
         $targetEmail = $user->email;
         $user->delete();
 
