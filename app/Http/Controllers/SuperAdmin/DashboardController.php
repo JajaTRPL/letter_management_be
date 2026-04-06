@@ -25,64 +25,94 @@ class DashboardController extends Controller
 
     private function getUserCounts()
     {
+        $counts = User::selectRaw("
+            COUNT(*) as total,
+            SUM(CASE WHEN role = 'mahasiswa' THEN 1 ELSE 0 END) as mahasiswa,
+            SUM(CASE WHEN role IN ('tendik', 'tendik_1', 'tendik_2', 'tendik_3', 'tendik_4', 'tendik_5', 'tendik_6', 'tendik_7', 'tendik_8') THEN 1 ELSE 0 END) as tendik,
+            SUM(CASE WHEN role IN ('akademik', 'kadep', 'kaprodi', 'sekprodi', 'sekdep') THEN 1 ELSE 0 END) as akademik,
+            SUM(CASE WHEN role = 'super_admin' THEN 1 ELSE 0 END) as super_admin
+        ")->first();
+
         return [
-            'mahasiswa' => User::where('role', 'mahasiswa')->count(),
-            'tendik' => User::whereIn('role', ['tendik', 'tendik_1'])->count(),
-            'akademik' => User::where('role', 'akademik')->count(),
-            'super_admin' => User::where('role', 'super_admin')->count(),
-            'total' => User::count(),
+            'mahasiswa' => (int) $counts->mahasiswa,
+            'tendik' => (int) $counts->tendik,
+            'akademik' => (int) $counts->akademik,
+            'super_admin' => (int) $counts->super_admin,
+            'total' => (int) $counts->total,
         ];
     }
 
     private function getStatusDistribution()
     {
-        $total = User::count();
+        $stats = User::selectRaw("
+            COUNT(*) as total,
+            SUM(CASE WHEN status = 'Active' THEN 1 ELSE 0 END) as active,
+            SUM(CASE WHEN status = 'Inactive' THEN 1 ELSE 0 END) as inactive,
+            SUM(CASE WHEN status = 'Blocked' THEN 1 ELSE 0 END) as blocked
+        ")->first();
 
-        $active = User::where('status', 'Active')->count();
-        $inactive = User::where('status', 'Inactive')->count();
-        $blocked = User::where('status', 'Blocked')->count();
+        $total = (int) $stats->total;
 
         return [
             'active' => [
-                'count' => $active,
-                'percentage' => $total > 0 ? round(($active / $total) * 100) : 0
+                'count' => (int) $stats->active,
+                'percentage' => $total > 0 ? round(($stats->active / $total) * 100) : 0
             ],
             'nonaktif' => [
-                'count' => $inactive,
-                'percentage' => $total > 0 ? round(($inactive / $total) * 100) : 0
+                'count' => (int) $stats->inactive,
+                'percentage' => $total > 0 ? round(($stats->inactive / $total) * 100) : 0
             ],
             'suspended' => [
-                'count' => $blocked,
-                'percentage' => $total > 0 ? round(($blocked / $total) * 100) : 0
+                'count' => (int) $stats->blocked,
+                'percentage' => $total > 0 ? round(($stats->blocked / $total) * 100) : 0
             ],
         ];
     }
 
     private function getActivityStats()
     {
-        // Sample data for line chart (Last 7 days)
+        $startDate = Carbon::today()->subDays(6);
+
+        $stats = ActivityLog::where('type', 'login')
+            ->where('created_at', '>=', $startDate)
+            ->selectRaw('DATE(created_at) as date, COUNT(*) as count')
+            ->groupBy('date')
+            ->get()
+            ->pluck('count', 'date');
+
         $days = [];
-        $counts = [];
+        $data = [];
         for ($i = 6; $i >= 0; $i--) {
             $date = Carbon::today()->subDays($i);
+            $dateStr = $date->toDateString();
             $days[] = $date->format('D, d M');
-            $counts[] = ActivityLog::where('type', 'login')->whereDate('created_at', $date)->count();
+            $data[] = $stats->get($dateStr, 0);
         }
 
-        return ['labels' => $days, 'data' => $counts];
+        return ['labels' => $days, 'data' => $data];
     }
 
     private function getScholarshipStats()
     {
+        $startDate = Carbon::today()->subDays(6);
+
+        $stats = ScholarshipApplication::whereNotNull('submitted_at')
+            ->where('submitted_at', '>=', $startDate)
+            ->selectRaw('DATE(submitted_at) as date, COUNT(*) as count')
+            ->groupBy('date')
+            ->get()
+            ->pluck('count', 'date');
+
         $days = [];
-        $counts = [];
+        $data = [];
         for ($i = 6; $i >= 0; $i--) {
             $date = Carbon::today()->subDays($i);
+            $dateStr = $date->toDateString();
             $days[] = $date->format('D, d M');
-            $counts[] = ScholarshipApplication::whereDate('submitted_at', $date)->count();
+            $data[] = $stats->get($dateStr, 0);
         }
 
-        return ['labels' => $days, 'data' => $counts];
+        return ['labels' => $days, 'data' => $data];
     }
 
     private function getApprovalDurations()
