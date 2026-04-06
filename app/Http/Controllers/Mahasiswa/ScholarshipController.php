@@ -21,6 +21,7 @@ class ScholarshipController extends Controller
         $user = Auth::user();
         $application = ScholarshipApplication::where('user_id', $user->id)
             ->where('status', 'Draft')
+            ->with('mahasiswaProfile.keluarga')
             ->first();
 
         return response()->json([
@@ -236,7 +237,7 @@ class ScholarshipController extends Controller
 
         return response()->json([
             'message' => 'Process 3 saved successfully',
-            'application' => $application
+            'application' => $application->load('mahasiswaProfile.keluarga')
         ]);
     }
 
@@ -256,7 +257,7 @@ class ScholarshipController extends Controller
 
         return response()->json([
             'message' => 'Application submitted successfully',
-            'application' => $application
+            'application' => $application->load('mahasiswaProfile.keluarga')
         ]);
     }
 }
