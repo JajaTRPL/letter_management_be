@@ -64,7 +64,7 @@ Route::middleware('throttle:api')->group(function () {
 
         /*
         |----------------------------------------------------------------------
-        | 2. Tendik (1-8) Dashboard
+        | 2. Tendik (Tenaga Pendidik) Dashboard
         |----------------------------------------------------------------------
         */
         Route::middleware('role:tendik')->prefix('tendik')->group(function () {

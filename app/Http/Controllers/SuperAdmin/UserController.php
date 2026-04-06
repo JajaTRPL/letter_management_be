@@ -19,6 +19,7 @@ class UserController extends Controller
     public function index(Request $request)
     {
         $users = User::where('role', '!=', 'super_admin')
+            ->with('mahasiswaProfile')
             ->select('id', 'name', 'email', 'role', 'status', 'created_at')
             ->get();
 
@@ -38,7 +39,13 @@ class UserController extends Controller
             'name' => 'required|string|max:255',
             'email' => 'required|email|max:255|unique:users,email',
             'password' => 'required|string|min:8',
-            'role' => 'required|in:mahasiswa,tendik_1,tendik_2,tendik_3,tendik_4,tendik_5,tendik_6,tendik_7,tendik_8,kadep,kaprodi,sekprodi,sekdep'
+            'role' => 'required|in:mahasiswa,tendik,kadep,kaprodi,sekprodi,sekdep',
+            'assigned_tasks' => 'nullable|array',
+            // Additional fields for mahasiswa
+            'nim' => 'required_if:role,mahasiswa|nullable|string|unique:mahasiswa_profiles,nim',
+            'fakultas' => 'required_if:role,mahasiswa|nullable|string',
+            'program_studi' => 'required_if:role,mahasiswa|nullable|string',
+            'tanggal_lahir' => 'required_if:role,mahasiswa|nullable|date',
         ]);
 
         $user = User::create([
@@ -46,8 +53,20 @@ class UserController extends Controller
             'email' => $validated['email'],
             'password' => Hash::make($validated['password']),
             'role' => $validated['role'],
+            'assigned_tasks' => $validated['assigned_tasks'] ?? null,
             'status' => 'Active'
         ]);
+
+        // Create Profile if Mahasiswa
+        if ($user->role === 'mahasiswa') {
+            \App\Models\MahasiswaProfile::create([
+                'user_id' => $user->id,
+                'nim' => $request->nim,
+                'fakultas' => $request->fakultas,
+                'program_studi' => $request->program_studi,
+                'tanggal_lahir' => $request->tanggal_lahir,
+            ]);
+        }
 
         // LOG ACTION
         ActivityLog::create([
@@ -79,7 +98,7 @@ class UserController extends Controller
     {
         return response()->json([
             'message' => 'Detail user berhasil diambil',
-            'data' => $user
+            'data' => $user->load('mahasiswaProfile')
         ]);
     }
 
@@ -91,11 +110,17 @@ class UserController extends Controller
         $oldRole = $user->role;
 
         $validated = $request->validate([
-            'name' => 'sometimes|string|max:255',
-            'email' => 'sometimes|email|max:255|unique:users,email,' . $user->id,
-            'password' => 'sometimes|string|min:8',
-            'role' => 'sometimes|in:mahasiswa,tendik_1,tendik_2,tendik_3,tendik_4,tendik_5,tendik_6,tendik_7,tendik_8,kadep,kaprodi,sekprodi,sekdep,super_admin',
-            'status' => 'sometimes|in:Active,Inactive,Blocked'
+            'name' => 'nullable|string|max:255',
+            'email' => 'nullable|email|max:255|unique:users,email,' . $user->id,
+            'password' => 'nullable|string|min:8',
+            'role' => 'nullable|in:mahasiswa,tendik,kadep,kaprodi,sekprodi,sekdep,super_admin',
+            'assigned_tasks' => 'nullable|array',
+            'status' => 'nullable|in:Active,Inactive,Blocked',
+            // Mahasiswa details
+            'nim' => 'sometimes|nullable|string|unique:mahasiswa_profiles,nim,' . ($user->mahasiswaProfile->id ?? 'NULL'),
+            'fakultas' => 'sometimes|nullable|string',
+            'program_studi' => 'sometimes|nullable|string',
+            'tanggal_lahir' => 'sometimes|nullable|date',
         ]);
 
         if (isset($validated['password'])) {
@@ -103,6 +128,19 @@ class UserController extends Controller
         }
 
         $user->update($validated);
+
+        // Update Profile if Mahasiswa
+        if ($user->role === 'mahasiswa') {
+            \App\Models\MahasiswaProfile::updateOrCreate(
+                ['user_id' => $user->id],
+                [
+                    'nim' => $request->nim ?? $user->mahasiswaProfile?->nim,
+                    'fakultas' => $request->fakultas ?? $user->mahasiswaProfile?->fakultas,
+                    'program_studi' => $request->program_studi ?? $user->mahasiswaProfile?->program_studi,
+                    'tanggal_lahir' => $request->tanggal_lahir ?? $user->mahasiswaProfile?->tanggal_lahir,
+                ]
+            );
+        }
 
         // LOG ACTION
         $details = "Update data user.";
@@ -319,7 +357,7 @@ class UserController extends Controller
             $validator = Validator::make($input, [
                 'name' => 'required|string|max:255',
                 'email' => 'required|email|unique:users,email',
-                'role' => 'required|in:mahasiswa,tendik_1,tendik_2,tendik_3,tendik_4,tendik_5,tendik_6,tendik_7,tendik_8,kadep,kaprodi,sekprodi,sekdep',
+                'role' => 'required|in:mahasiswa,tendik,kadep,kaprodi,sekprodi,sekdep',
                 'password' => 'required|string|min:8',
             ]);
 

@@ -17,20 +17,14 @@ class User extends Authenticatable
         'password',
         'role',
         'status',
+        'assigned_tasks',
     ];
 
-    protected $hidden = [
-        'password',
-        'remember_token',
+    protected $casts = [
+        'assigned_tasks' => 'array',
+        'email_verified_at' => 'datetime',
+        'password' => 'hashed',
     ];
-
-    protected function casts(): array
-    {
-        return [
-            'email_verified_at' => 'datetime',
-            'password' => 'hashed',
-        ];
-    }
 
     public function activityLogs(): \Illuminate\Database\Eloquent\Relations\HasMany
     {
