@@ -73,7 +73,7 @@ class DashboardController extends Controller
     {
         $startDate = Carbon::today()->subDays(6);
 
-        $stats = ActivityLog::where('type', 'login')
+        $stats = ActivityLog::where('type', 'admin') // Diubah dari 'login' ke 'admin' (CRUD)
             ->where('created_at', '>=', $startDate)
             ->selectRaw('DATE(created_at) as date, COUNT(*) as count')
             ->groupBy('date')

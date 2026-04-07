@@ -39,7 +39,8 @@ class AuthController extends Controller
         $user->status = 'Active';
         $user->save();
 
-        // Catat Log Login
+        // Catat Log Login (Dinonaktifkan sesuai permintaan: Hanya CRUD)
+        /*
         \App\Models\ActivityLog::create([
             'user_id' => $user->id,
             'type' => 'login',
@@ -47,6 +48,7 @@ class AuthController extends Controller
             'ip_address' => $request->ip(),
             'user_agent' => $request->userAgent(),
         ]);
+        */
 
         // Hapus token lama agar tidak numpuk
         $user->tokens()->delete();

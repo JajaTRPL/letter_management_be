@@ -273,6 +273,7 @@ class UserController extends Controller
     public function activityLog()
     {
         $logs = ActivityLog::with('user:id,name,email')
+            ->where('type', '!=', 'login') // Hanya munculkan CRUD (admin actions)
             ->orderBy('created_at', 'desc')
             ->paginate(15);
 
