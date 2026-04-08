@@ -15,13 +15,13 @@ class ProfileController extends Controller
     public function getProfile()
     {
         $user = Auth::user();
-        
+
         if ($user->role !== 'mahasiswa') {
             return response()->json(['message' => 'Unauthorized role'], 403);
         }
 
         $profile = $user->mahasiswaProfile;
-        
+
         if (!$profile) {
             $profile = $user->mahasiswaProfile()->create([]);
         }
@@ -29,10 +29,58 @@ class ProfileController extends Controller
         // Always load keluarga
         $profile->load('keluarga');
 
+        $completeness = $this->checkProfileCompleteness($profile);
+
         return response()->json([
             'user' => $user->only(['name', 'email', 'role']),
             'profile' => $profile,
+            'completeness' => $completeness
         ]);
+    }
+
+    /**
+     * Check if the student profile is complete
+     */
+    private function checkProfileCompleteness($profile)
+    {
+        $missingFields = [];
+
+        $fields = [
+            'nim' => 'NIM',
+            'fakultas' => 'Fakultas',
+            'program_studi' => 'Program Studi',
+            'tempat_lahir' => 'Tempat Lahir',
+            'tanggal_lahir' => 'Tanggal Lahir',
+            'jenis_kelamin' => 'Jenis Kelamin',
+            'no_hp' => 'No. HP',
+            'alamat_asal' => 'Alamat Asal',
+            'alamat_domisili' => 'Alamat Domisili',
+            'pas_foto_path' => 'Pas Foto',
+            'tanda_tangan_path' => 'Tanda Tangan',
+        ];
+
+        foreach ($fields as $field => $label) {
+            if (empty($profile->$field)) {
+                $missingFields[] = $label;
+            }
+        }
+
+        $keluarga = $profile->keluarga;
+
+        $ayah = $keluarga->where('jenis_relasi', 'ayah')->first();
+        if (!$ayah || empty($ayah->nama_lengkap) || empty($ayah->pekerjaan) || empty($ayah->penghasilan)) {
+            $missingFields[] = 'Data Ayah';
+        }
+
+        $ibu = $keluarga->where('jenis_relasi', 'ibu')->first();
+        if (!$ibu || empty($ibu->nama_lengkap) || empty($ibu->pekerjaan) || empty($ibu->penghasilan)) {
+            $missingFields[] = 'Data Ibu';
+        }
+
+        return [
+            'is_complete' => count($missingFields) === 0,
+            'missing_fields' => $missingFields
+        ];
     }
 
     /**
@@ -53,13 +101,13 @@ class ProfileController extends Controller
         ]);
 
         $profile = $user->mahasiswaProfile()->firstOrCreate([]);
-        
+
         // Handle File Uploads
         if ($request->hasFile('pas_foto')) {
             $path = $request->file('pas_foto')->store('profiles/fotos', 'public');
             $validatedProfile['pas_foto_path'] = \Illuminate\Support\Facades\Storage::url($path);
         }
-        
+
         if ($request->hasFile('tanda_tangan')) {
             $path = $request->file('tanda_tangan')->store('profiles/signatures', 'public');
             $validatedProfile['tanda_tangan_path'] = \Illuminate\Support\Facades\Storage::url($path);
@@ -70,10 +118,10 @@ class ProfileController extends Controller
         // Update keluargas if provided
         if ($request->has('keluarga')) {
             $keluargaData = $request->input('keluarga'); // expected array of family members
-            
+
             // Delete existing to replace (atau bisa sync berdasar ID jika ada form complex)
             $profile->keluarga()->delete();
-            
+
             foreach ($keluargaData as $kel) {
                 // Ensure required fields exist in input
                 if (!empty($kel['nama_lengkap']) && !empty($kel['jenis_relasi'])) {
