@@ -24,6 +24,15 @@ Route::middleware('throttle:api')->group(function () {
     | Authenticated Routes (semua role yang sudah login)
     |--------------------------------------------------------------------------
     */
+    // Route to serve PDF files directly bypassing IIS/Windows symlink issues
+    Route::get('/storage/{folder}/{filename}', function ($folder, $filename) {
+        $path = storage_path('app/public/' . $folder . '/' . $filename);
+        if (!file_exists($path)) {
+            abort(404);
+        }
+        return response()->file($path);
+    })->where('filename', '.*');
+
     Route::middleware('auth:sanctum')->group(function () {
 
         Route::post('/logout', [AuthController::class, 'logout']);
@@ -35,6 +44,7 @@ Route::middleware('throttle:api')->group(function () {
 
         // Get all users (umum)
         Route::get('/users', [UserController::class, 'index']);
+
 
         /*
         |----------------------------------------------------------------------
@@ -48,6 +58,9 @@ Route::middleware('throttle:api')->group(function () {
             });
             Route::get('/reports/login-activity', [\App\Http\Controllers\SuperAdmin\UserController::class, 'loginReport']);
             Route::get('/reports/admin-logs', [\App\Http\Controllers\SuperAdmin\UserController::class, 'activityLog']);
+
+            // Template Operations
+            Route::post('/templates/update-pdf', [\App\Http\Controllers\SuperAdmin\TemplateController::class, 'updatePdf']);
 
             // Bulk Operations & Export (Place above /{user} wildcard)
             Route::post('/users/bulk-import', [\App\Http\Controllers\SuperAdmin\UserController::class, 'bulkImport']);
