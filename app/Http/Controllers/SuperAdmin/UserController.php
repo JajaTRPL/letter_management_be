@@ -10,6 +10,10 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Maatwebsite\Excel\Facades\Excel;
+use App\Exports\UsersExport;
+use App\Exports\MultiUsersExport;
+use Maatwebsite\Excel\Excel as ExcelFormat;
 
 class UserController extends Controller
 {
@@ -37,15 +41,15 @@ class UserController extends Controller
     {
         $validated = $request->validate([
             'name' => 'required|string|max:255',
-            'email' => 'required|email|max:255|unique:users,email',
+            'email' => 'required|email|unique:users,email',
             'password' => 'required|string|min:8',
-            'role' => 'required|in:mahasiswa,tendik,kadep,kaprodi,sekprodi,sekdep',
+            'role' => 'required|in:mahasiswa,tendik,akademik,super_admin',
+            'sub_role' => 'nullable|in:kadep,kaprodi,sekprodi,sekdep',
             'assigned_tasks' => 'nullable|array',
-            // Additional fields for mahasiswa
-            'nim' => 'required_if:role,mahasiswa|nullable|string|unique:mahasiswa_profiles,nim',
-            'fakultas' => 'required_if:role,mahasiswa|nullable|string',
-            'program_studi' => 'required_if:role,mahasiswa|nullable|string',
-            'tanggal_lahir' => 'required_if:role,mahasiswa|nullable|date',
+            'nim' => 'nullable|string|unique:mahasiswa_profiles,nim',
+            'fakultas' => 'nullable|string',
+            'program_studi' => 'nullable|string',
+            'tanggal_lahir' => 'nullable|date',
         ]);
 
         $user = User::create([
@@ -53,6 +57,7 @@ class UserController extends Controller
             'email' => $validated['email'],
             'password' => Hash::make($validated['password']),
             'role' => $validated['role'],
+            'sub_role' => $validated['sub_role'] ?? null,
             'assigned_tasks' => $validated['assigned_tasks'] ?? null,
             'status' => 'Active'
         ]);
@@ -113,7 +118,8 @@ class UserController extends Controller
             'name' => 'nullable|string|max:255',
             'email' => 'nullable|email|max:255|unique:users,email,' . $user->id,
             'password' => 'nullable|string|min:8',
-            'role' => 'nullable|in:mahasiswa,tendik,kadep,kaprodi,sekprodi,sekdep,super_admin',
+            'role' => 'nullable|in:mahasiswa,tendik,akademik,super_admin',
+            'sub_role' => 'nullable|in:kadep,kaprodi,sekprodi,sekdep',
             'assigned_tasks' => 'nullable|array',
             'status' => 'nullable|in:Active,Inactive,Blocked',
             // Mahasiswa details
@@ -284,38 +290,38 @@ class UserController extends Controller
     }
 
     /**
-     * Export data user ke CSV (Hanya Super Admin).
+     * Export data user ke CSV atau XLSX (Hanya Super Admin).
      */
-    public function export()
+    public function export(Request $request)
     {
-        $users = User::all(['id', 'name', 'email', 'role', 'status', 'created_at']);
+        $format = $request->query('format', 'csv');
+        $role = $request->query('role');
 
+        $fileName = 'users_export_' . now()->format('Ymd_His');
+        $export = new UsersExport($role);
+
+        if ($format === 'xlsx') {
+            if (!$role) {
+                return Excel::download(new MultiUsersExport, $fileName . '.xlsx');
+            }
+            return Excel::download($export, $fileName . '.xlsx');
+        }
+
+        // Manual CSV Export for better reliability
         $headers = [
             'Content-type' => 'text/csv',
-            'Content-Disposition' => 'attachment; filename=users_export_' . now()->format('Ymd_His') . '.csv',
-            'Pragma' => 'no-cache',
-            'Cache-Control' => 'must-revalidate, post-check=0, pre-check=0',
-            'Expires' => '0'
+            'Content-Disposition' => "attachment; filename=$fileName.csv",
         ];
 
-        $callback = function () use ($users) {
+        return response()->stream(function () use ($export) {
             $file = fopen('php://output', 'w');
-            fputcsv($file, ['ID', 'Name', 'Email', 'Role', 'Status', 'Created At']);
+            fputcsv($file, ['ID', 'Nama', 'Email', 'Role', 'Status', 'NIM', 'Fakultas', 'Prodi', 'Tanggal Lahir', 'Dibuat Pada']);
 
-            foreach ($users as $user) {
-                fputcsv($file, [
-                    $user->id,
-                    $user->name,
-                    $user->email,
-                    $user->role,
-                    $user->status,
-                    $user->created_at
-                ]);
+            foreach ($export->collection() as $user) {
+                fputcsv($file, $export->map($user));
             }
             fclose($file);
-        };
-
-        return new StreamedResponse($callback, 200, $headers);
+        }, 200, $headers);
     }
 
     /**
@@ -352,13 +358,15 @@ class UserController extends Controller
                 'name' => $data[0],
                 'email' => $data[1],
                 'role' => $data[2],
-                'password' => $data[3],
+                'sub_role' => $data[3] ?? null,
+                'password' => $data[4] ?? 'password123',
             ];
 
             $validator = Validator::make($input, [
                 'name' => 'required|string|max:255',
                 'email' => 'required|email|unique:users,email',
-                'role' => 'required|in:mahasiswa,tendik,kadep,kaprodi,sekprodi,sekdep',
+                'role' => 'required|in:mahasiswa,tendik,akademik',
+                'sub_role' => 'nullable|in:kadep,kaprodi,sekprodi,sekdep',
                 'password' => 'required|string|min:8',
             ]);
 
@@ -400,5 +408,28 @@ class UserController extends Controller
             ],
             'errors' => $errors
         ], $successCount > 0 ? 200 : 422);
+    }
+
+    /**
+     * Download template CSV untuk import user (Hanya Super Admin).
+     */
+    public function importTemplate()
+    {
+        $fileName = 'template_import_users.csv';
+        $headers = [
+            'Content-type' => 'text/csv',
+            'Content-Disposition' => "attachment; filename=$fileName",
+            'Pragma' => 'no-cache',
+            'Cache-Control' => 'must-revalidate, post-check=0, pre-check=0',
+            'Expires' => '0'
+        ];
+
+        return response()->stream(function () {
+            $file = fopen('php://output', 'w');
+            fputcsv($file, ['name', 'email', 'role', 'sub_role', 'password']);
+            fputcsv($file, ['John Doe', 'john.doe@example.com', 'mahasiswa', '', 'password123']);
+            fputcsv($file, ['Jane Staff', 'jane.staff@example.com', 'akademik', 'kadep', 'password123']);
+            fclose($file);
+        }, 200, $headers);
     }
 }

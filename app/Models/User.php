@@ -16,6 +16,7 @@ class User extends Authenticatable
         'email',
         'password',
         'role',
+        'sub_role',
         'status',
         'assigned_tasks',
     ];

@@ -29,7 +29,7 @@ class DashboardController extends Controller
             COUNT(*) as total,
             SUM(CASE WHEN role = 'mahasiswa' THEN 1 ELSE 0 END) as mahasiswa,
             SUM(CASE WHEN role = 'tendik' THEN 1 ELSE 0 END) as tendik,
-            SUM(CASE WHEN role IN ('akademik', 'kadep', 'kaprodi', 'sekprodi', 'sekdep') THEN 1 ELSE 0 END) as akademik,
+            SUM(CASE WHEN role = 'akademik' THEN 1 ELSE 0 END) as akademik,
             SUM(CASE WHEN role = 'super_admin' THEN 1 ELSE 0 END) as super_admin
         ")->first();
 

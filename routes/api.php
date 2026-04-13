@@ -46,6 +46,14 @@ Route::middleware('throttle:api')->group(function () {
             Route::get('/dashboard', function () {
                 return response()->json(['message' => 'Halaman Dasbord Super Admin']);
             });
+            Route::get('/reports/login-activity', [\App\Http\Controllers\SuperAdmin\UserController::class, 'loginReport']);
+            Route::get('/reports/admin-logs', [\App\Http\Controllers\SuperAdmin\UserController::class, 'activityLog']);
+
+            // Bulk Operations & Export (Place above /{user} wildcard)
+            Route::post('/users/bulk-import', [\App\Http\Controllers\SuperAdmin\UserController::class, 'bulkImport']);
+            Route::get('/users/import-template', [\App\Http\Controllers\SuperAdmin\UserController::class, 'importTemplate']);
+            Route::get('/users/export', [\App\Http\Controllers\SuperAdmin\UserController::class, 'export']);
+
             Route::get('/users', [\App\Http\Controllers\SuperAdmin\UserController::class, 'index']);
             Route::post('/users', [\App\Http\Controllers\SuperAdmin\UserController::class, 'store']); // Tambah User Baru
             Route::get('/users/{user}', [\App\Http\Controllers\SuperAdmin\UserController::class, 'show']); // Detail User
@@ -53,12 +61,6 @@ Route::middleware('throttle:api')->group(function () {
             Route::delete('/users/{user}', [\App\Http\Controllers\SuperAdmin\UserController::class, 'destroy']); // Hapus User
             Route::patch('/users/{user}/block', [\App\Http\Controllers\SuperAdmin\UserController::class, 'block']);
             Route::patch('/users/{user}/unblock', [\App\Http\Controllers\SuperAdmin\UserController::class, 'unblock']);
-            Route::get('/reports/login-activity', [\App\Http\Controllers\SuperAdmin\UserController::class, 'loginReport']);
-            Route::get('/reports/admin-logs', [\App\Http\Controllers\SuperAdmin\UserController::class, 'activityLog']);
-
-            // Bulk Operations
-            Route::post('/users/bulk-import', [\App\Http\Controllers\SuperAdmin\UserController::class, 'bulkImport']);
-            Route::get('/users/export', [\App\Http\Controllers\SuperAdmin\UserController::class, 'export']);
         });
 
 
