@@ -63,4 +63,41 @@ class TemplateController extends Controller
             ], 500);
         }
     }
+
+    /**
+     * Proxy to fetch live PDF content from Google Docs
+     */
+    public function proxyGoogleDoc($id)
+    {
+        try {
+            $url = "https://docs.google.com/document/d/{$id}/export?format=pdf";
+            
+            // Fetch content using file_get_contents with a context to handle redirects
+            $options = [
+                'http' => [
+                    'follow_location' => true,
+                    'max_redirects' => 10,
+                    'header' => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36\r\n"
+                ]
+            ];
+            $context = stream_context_create($options);
+            $content = @file_get_contents($url, false, $context);
+
+            if ($content === false) {
+                throw new \Exception('Gagal mengambil konten dari Google Docs. Pastikan dokumen bersifat publik (Anyone with the link can view).');
+            }
+
+            return response($content)
+                ->header('Content-Type', 'application/pdf')
+                ->header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                ->header('Pragma', 'no-cache')
+                ->header('Expires', '0');
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => 'Gagal mengambil pratinjau live',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
 }
