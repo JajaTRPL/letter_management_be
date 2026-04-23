@@ -11,7 +11,6 @@ return new class extends Migration {
     public function up(): void
     {
         Schema::table('scholarship_applications', function (Blueprint $table) {
-            $table->dropColumn('ktm_path');
             $table->string('transkrip_nilai_path')->nullable();
             $table->string('slip_gaji_ayah_path')->nullable();
             $table->string('slip_gaji_ibu_path')->nullable();
@@ -24,8 +23,11 @@ return new class extends Migration {
     public function down(): void
     {
         Schema::table('scholarship_applications', function (Blueprint $table) {
-            $table->string('ktm_path')->nullable();
-            $table->dropColumn(['transkrip_nilai_path', 'slip_gaji_ayah_path', 'slip_gaji_ibu_path']);
+            $table->dropColumn([
+                'transkrip_nilai_path',
+                'slip_gaji_ayah_path',
+                'slip_gaji_ibu_path'
+            ]);
         });
     }
 };
