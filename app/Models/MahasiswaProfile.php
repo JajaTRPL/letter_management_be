@@ -18,4 +18,9 @@ class MahasiswaProfile extends Model
     {
         return $this->hasMany(KeluargaMahasiswa::class, 'mahasiswa_profile_id');
     }
+
+    public function scholarshipHistories()
+    {
+        return $this->hasMany(ScholarshipHistory::class, 'mahasiswa_profile_id');
+    }
 }

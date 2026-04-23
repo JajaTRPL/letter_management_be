@@ -19,6 +19,8 @@ class User extends Authenticatable
         'sub_role',
         'status',
         'assigned_tasks',
+        'photo_path',
+        'signature_path',
     ];
 
     protected $casts = [

@@ -86,9 +86,26 @@ Route::middleware('throttle:api')->group(function () {
         |----------------------------------------------------------------------
         */
         Route::middleware('role:tendik')->prefix('tendik')->group(function () {
+            Route::get('/dashboard/tasks', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'getDashboardData']);
+            
+            // Scholarship Review Actions
+            Route::get('/scholarship/{application}', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'show']);
+            Route::patch('/scholarship/{application}/approve', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'approve']);
+            Route::patch('/scholarship/{application}/reject', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'reject']);
+            Route::patch('/scholarship/{application}/revise', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'revise']);
+
             Route::get('/dashboard', function () {
                 return response()->json(['message' => 'Halaman Dasbord Khusus Tendik']);
             });
+        });
+
+        // Akademik (Kaprodi/Sekprodi) Routes
+        Route::middleware('role:akademik')->prefix('akademik')->group(function () {
+            Route::get('/dashboard/tasks', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'getDashboardData']);
+            Route::get('/scholarship/{application}', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'show']);
+            Route::patch('/scholarship/{application}/approve', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'approve']);
+            Route::patch('/scholarship/{application}/reject', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'reject']);
+            Route::patch('/scholarship/{application}/revise', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'revise']);
         });
 
 

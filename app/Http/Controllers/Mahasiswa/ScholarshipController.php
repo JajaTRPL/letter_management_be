@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\MahasiswaProfile;
 use App\Models\KeluargaMahasiswa;
 use App\Models\ScholarshipApplication;
+use App\Services\ScholarshipAutomationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
@@ -67,7 +68,7 @@ class ScholarshipController extends Controller
 
         return response()->json([
             'message' => 'Process 1 saved successfully',
-            'application' => $application->load('mahasiswaProfile')
+            'application' => $application->load('mahasiswaProfile.keluarga')
         ]);
     }
 
@@ -117,13 +118,16 @@ class ScholarshipController extends Controller
         // 1. Update Profile
         $profile = $user->mahasiswaProfile ?? \App\Models\MahasiswaProfile::create(['user_id' => $user->id]);
 
-        $profileData = [
+        $profileData = array_filter([
             'tempat_lahir' => $request->pob,
             'tanggal_lahir' => $request->dob,
-            'jenis_kelamin' => $request->gender === 'Laki-laki' ? 'L' : 'P',
+            'jenis_kelamin' => $request->gender === 'Laki-laki' ? 'L' : ($request->gender === 'Perempuan' ? 'P' : null),
             'alamat_asal' => $request->origin_address,
             'alamat_domisili' => $request->jogja_address,
-        ];
+            'no_hp' => $request->phone,
+        ], function($value) {
+            return !is_null($value) && $value !== '';
+        });
 
         // Handle signature
         if ($request->filled('signature')) {
@@ -137,22 +141,26 @@ class ScholarshipController extends Controller
 
         $profile->update($profileData);
 
-        // 2. Update Family (Ayah, Ibu, Wali)
-        $this->updateFamilyMember($profile, 'ayah', [
-            'nama_lengkap' => $request->father_name,
-            'pekerjaan' => $request->father_job,
-            'penghasilan' => $request->father_income,
-            'status_hidup' => strtolower($request->father_status),
-            'tanggal_meninggal' => $request->father_death_date,
-        ]);
+        // 2. Update Family (Ayah, Ibu, Wali) - Hanya jika ada datanya
+        if ($request->filled('father_name')) {
+            $this->updateFamilyMember($profile, 'ayah', [
+                'nama_lengkap' => $request->father_name,
+                'pekerjaan' => $request->father_job,
+                'penghasilan' => $request->father_income,
+                'status_hidup' => strtolower($request->father_status),
+                'tanggal_meninggal' => $request->father_death_date,
+            ]);
+        }
 
-        $this->updateFamilyMember($profile, 'ibu', [
-            'nama_lengkap' => $request->mother_name,
-            'pekerjaan' => $request->mother_job,
-            'penghasilan' => $request->mother_income,
-            'status_hidup' => strtolower($request->mother_status),
-            'tanggal_meninggal' => $request->mother_death_date,
-        ]);
+        if ($request->filled('mother_name')) {
+            $this->updateFamilyMember($profile, 'ibu', [
+                'nama_lengkap' => $request->mother_name,
+                'pekerjaan' => $request->mother_job,
+                'penghasilan' => $request->mother_income,
+                'status_hidup' => strtolower($request->mother_status),
+                'tanggal_meninggal' => $request->mother_death_date,
+            ]);
+        }
 
         if ($request->filled('guardian_name')) {
             $this->updateFamilyMember($profile, 'wali', [
@@ -187,9 +195,16 @@ class ScholarshipController extends Controller
 
     private function updateFamilyMember($profile, $relation, $data)
     {
+        // Filter out empty values to avoid overwriting with null
+        $filteredData = array_filter($data, function($value) {
+            return !is_null($value) && $value !== '';
+        });
+
+        if (empty($filteredData)) return null;
+
         return $profile->keluarga()->updateOrCreate(
             ['jenis_relasi' => $relation],
-            $data
+            $filteredData
         );
     }
 
@@ -213,13 +228,13 @@ class ScholarshipController extends Controller
             'on_leave' => 'required|in:Sudah,Belum',
             'leave_semester' => 'required_if:on_leave,Sudah|nullable|integer',
             'thesis_status' => 'required|in:Sudah,Belum',
-            'exam_plan_month' => 'nullable|string',
-            'exam_plan_year' => 'nullable|string',
+            'exam_plan_date' => 'nullable|date',
             'has_scholarship_history' => 'required|boolean',
-            'history_source' => 'required_if:has_scholarship_history,true|nullable|string',
-            'history_period' => 'required_if:has_scholarship_history,true|nullable|string',
-            'history_amount' => 'required_if:has_scholarship_history,true|nullable|numeric',
-            'history_status' => 'required_if:has_scholarship_history,true|nullable|in:Masih Menerima,Tidak',
+            'scholarship_histories' => 'nullable|array|max:5',
+            'scholarship_histories.*.nama_beasiswa' => 'required_with:scholarship_histories|string',
+            'scholarship_histories.*.periode' => 'required_with:scholarship_histories|string',
+            'scholarship_histories.*.jumlah' => 'required_with:scholarship_histories|string',
+            'scholarship_histories.*.status' => 'required_with:scholarship_histories|in:Aktif,Selesai',
             'ktm' => 'nullable|file|mimes:png,jpg,pdf|max:2048',
         ]);
 
@@ -233,10 +248,26 @@ class ScholarshipController extends Controller
             $application->ktm_path = $path;
         }
 
-        $application->update($request->except(['ktm']));
+        // Handle sync to profile's scholarship_histories
+        if ($request->has('scholarship_histories')) {
+            $profile = \App\Models\MahasiswaProfile::where('user_id', \Illuminate\Support\Facades\Auth::id())->first();
+            if ($profile) {
+                $profile->scholarshipHistories()->delete();
+                foreach ($request->scholarship_histories as $sh) {
+                    $profile->scholarshipHistories()->create([
+                        'nama_beasiswa' => $sh['nama_beasiswa'] ?? '',
+                        'periode' => $sh['periode'] ?? '',
+                        'jumlah' => $sh['jumlah'] ?? '',
+                        'status' => $sh['status'] ?? 'Selesai',
+                    ]);
+                }
+            }
+        }
+
+        $application->update($request->except(['ktm', 'scholarship_histories']));
 
         return response()->json([
-            'message' => 'Process 3 saved successfully',
+            'message' => 'Step 3 saved successfully',
             'application' => $application->load('mahasiswaProfile.keluarga')
         ]);
     }
@@ -244,20 +275,34 @@ class ScholarshipController extends Controller
     /**
      * Process 4: Preview and Submit
      */
-    public function submitApplication()
+    public function submitApplication(ScholarshipAutomationService $automationService)
     {
         $application = ScholarshipApplication::where('user_id', Auth::id())
             ->where('status', 'Draft')
             ->firstOrFail();
 
-        // Final validation can be done here to ensure all fields are complete
+        // 1. Mark as submitted
         $application->status = 'Submitted';
         $application->submitted_at = now();
         $application->save();
 
+        // 2. Automate: Assign to Tendik
+        $assignedTendik = $automationService->assignApplication($application);
+
+        // 3. Automate: Generate populated Word Document from Google Doc Template
+        $documentPath = $automationService->generateDocument($application);
+
+        // 4. Notify Tendik (Email & Dashboard)
+        if ($assignedTendik) {
+            $application->load('mahasiswaProfile');
+            $assignedTendik->notify(new \App\Notifications\ScholarshipSubmittedNotification($application));
+        }
+
         return response()->json([
-            'message' => 'Application submitted successfully',
-            'application' => $application->load('mahasiswaProfile.keluarga')
+            'message' => 'Aplikasi berhasil dikirim dan sedang diproses oleh staf beasiswa.',
+            'application' => $application->load('mahasiswaProfile.keluarga'),
+            'assigned_to' => $assignedTendik ? $assignedTendik->name : null,
+            'docx_path' => $documentPath
         ]);
     }
 }
