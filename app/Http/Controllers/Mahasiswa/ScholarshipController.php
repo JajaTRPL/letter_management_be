@@ -221,32 +221,43 @@ class ScholarshipController extends Controller
             'scholarship_name' => 'required|string',
             'current_semester' => 'required|integer',
             'family_dependents' => 'required|integer',
-            'gpa_last_2_semesters' => 'required|numeric',
+            'gpa_last_semesters' => 'required|numeric',
             'ipk' => 'required|numeric',
-            'sks_last_2_semesters' => 'required|integer',
+            'sks_last_semesters' => 'required|integer',
             'total_sks_passed' => 'required|integer',
             'on_leave' => 'required|in:Sudah,Belum',
             'leave_semester' => 'required_if:on_leave,Sudah|nullable|integer',
             'thesis_status' => 'required|in:Sudah,Belum',
             'exam_plan_date' => 'nullable|date',
-            'has_scholarship_history' => 'required|boolean',
+            'has_scholarship_history' => 'required',
             'scholarship_histories' => 'nullable|array|max:5',
             'scholarship_histories.*.nama_beasiswa' => 'required_with:scholarship_histories|string',
             'scholarship_histories.*.periode' => 'required_with:scholarship_histories|string',
             'scholarship_histories.*.jumlah' => 'required_with:scholarship_histories|string',
             'scholarship_histories.*.status' => 'required_with:scholarship_histories|in:Aktif,Selesai',
-            'ktm' => 'nullable|file|mimes:png,jpg,pdf|max:2048',
+            'transkrip_nilai' => 'nullable|file|mimes:pdf|max:2048',
+            'slip_gaji_ayah' => 'nullable|file|mimes:png,jpg,pdf|max:2048',
+            'slip_gaji_ibu' => 'nullable|file|mimes:png,jpg,pdf|max:2048',
         ]);
 
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        // Handle KTM file upload
-        if ($request->hasFile('ktm')) {
-            $path = $request->file('ktm')->store('ktm_files', 'public');
-            $application->ktm_path = $path;
+        // Handle File Uploads
+        if ($request->hasFile('transkrip_nilai')) {
+            $path = $request->file('transkrip_nilai')->store('scholarships/transcripts', 'public');
+            $application->transkrip_nilai_path = Storage::url($path);
         }
+        if ($request->hasFile('slip_gaji_ayah')) {
+            $path = $request->file('slip_gaji_ayah')->store('scholarships/slips', 'public');
+            $application->slip_gaji_ayah_path = Storage::url($path);
+        }
+        if ($request->hasFile('slip_gaji_ibu')) {
+            $path = $request->file('slip_gaji_ibu')->store('scholarships/slips', 'public');
+            $application->slip_gaji_ibu_path = Storage::url($path);
+        }
+        $application->save();
 
         // Handle sync to profile's scholarship_histories
         if ($request->has('scholarship_histories')) {
@@ -264,7 +275,19 @@ class ScholarshipController extends Controller
             }
         }
 
-        $application->update($request->except(['ktm', 'scholarship_histories']));
+        $updateData = $request->except(['transkrip_nilai', 'slip_gaji_ayah', 'slip_gaji_ibu', 'scholarship_histories']);
+        
+        // Map frontend fields to backend columns
+        if (isset($updateData['gpa_last_semesters'])) {
+            $updateData['gpa_last_2_semesters'] = $updateData['gpa_last_semesters'];
+            unset($updateData['gpa_last_semesters']);
+        }
+        if (isset($updateData['sks_last_semesters'])) {
+            $updateData['sks_last_2_semesters'] = $updateData['sks_last_semesters'];
+            unset($updateData['sks_last_semesters']);
+        }
+
+        $application->update($updateData);
 
         return response()->json([
             'message' => 'Step 3 saved successfully',

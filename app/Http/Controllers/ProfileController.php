@@ -118,11 +118,19 @@ class ProfileController extends Controller
                 $validatedProfile['tanda_tangan_path'] = \Illuminate\Support\Facades\Storage::url($path);
             }
 
+            // Sanitize empty date fields for PostgreSQL
+            if (isset($validatedProfile['tanggal_lahir']) && $validatedProfile['tanggal_lahir'] === '') {
+                $validatedProfile['tanggal_lahir'] = null;
+            }
+
             $profile->update($validatedProfile);
 
             // Update keluargas if provided
             if ($request->has('keluarga')) {
                 $keluargaData = $request->input('keluarga');
+                if (is_string($keluargaData)) {
+                    $keluargaData = json_decode($keluargaData, true) ?? [];
+                }
                 $profile->keluarga()->delete();
                 foreach ($keluargaData as $kel) {
                     if (!empty($kel['nama_lengkap']) && !empty($kel['jenis_relasi'])) {
@@ -132,7 +140,7 @@ class ProfileController extends Controller
                             'pekerjaan' => $kel['pekerjaan'] ?? null,
                             'penghasilan' => $kel['penghasilan'] ?? null,
                             'status_hidup' => $kel['status_hidup'] ?? 'hidup',
-                            'tanggal_meninggal' => $kel['tanggal_meninggal'] ?? null,
+                            'tanggal_meninggal' => !empty($kel['tanggal_meninggal']) ? $kel['tanggal_meninggal'] : null,
                             'status_kawin' => $kel['status_kawin'] ?? null,
                             'keterangan' => $kel['keterangan'] ?? null,
                         ]);
@@ -144,6 +152,9 @@ class ProfileController extends Controller
             if ($request->has('scholarship_histories')) {
                 $profile->scholarshipHistories()->delete();
                 $histories = $request->input('scholarship_histories');
+                if (is_string($histories)) {
+                    $histories = json_decode($histories, true) ?? [];
+                }
                 $count = 0;
                 foreach ($histories as $hist) {
                     if (!empty($hist['nama_beasiswa']) && $count < 5) {

@@ -4,7 +4,10 @@ namespace App\Http\Controllers\Akademik;
 
 use App\Http\Controllers\Controller;
 use App\Models\ScholarshipApplication;
+use App\Models\User;
+use App\Notifications\ScholarshipStatusNotification;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
 
 class AkademikDashboardController extends Controller
@@ -83,15 +86,37 @@ class AkademikDashboardController extends Controller
     {
         $user = auth()->user();
         $subRole = $user->sub_role;
+        $application->load(['mahasiswaProfile', 'user']);
 
         // If approved by Kaprodi/Sekprodi, move to Kadep/Sekdep stage
         if (in_array($subRole, ['kaprodi', 'sekprodi'])) {
             $application->update(['status' => 'Menunggu Persetujuan Kadep/Sekdep']);
+            
+            // Notify Kadep and Sekdep
+            $kadeps = User::where('role', 'akademik')
+                ->whereIn('sub_role', ['kadep', 'sekdep'])
+                ->where('status', 'Active')
+                ->get();
+            
+            if ($kadeps->count() > 0) {
+                Notification::send($kadeps, new ScholarshipStatusNotification(
+                    $application,
+                    "Pendaftaran beasiswa telah disetujui Kaprodi/Sekprodi dan kini menunggu persetujuan akhir Anda."
+                ));
+            }
+
             return response()->json(['message' => 'Pendaftaran disetujui dan diteruskan ke Kadep/Sekdep']);
         }
 
         // If Kadep/Sekdep approves, it is final
         $application->update(['status' => 'Verified']);
+        
+        // Notify Student
+        $application->user->notify(new ScholarshipStatusNotification(
+            $application,
+            "Selamat! Pendaftaran beasiswa Anda telah disetujui oleh Fakultas (Verified)."
+        ));
+
         return response()->json(['message' => 'Pendaftaran berhasil disetujui (Final Verified)']);
     }
 
@@ -101,6 +126,11 @@ class AkademikDashboardController extends Controller
     public function reject(ScholarshipApplication $application)
     {
         $application->update(['status' => 'Rejected']);
+        $application->load('user');
+        $application->user->notify(new ScholarshipStatusNotification(
+            $application,
+            "Maaf, pendaftaran beasiswa Anda ditolak oleh pihak pimpinan Fakultas/Prodi."
+        ));
         return response()->json(['message' => 'Pendaftaran berhasil ditolak']);
     }
 
@@ -110,6 +140,11 @@ class AkademikDashboardController extends Controller
     public function revise(ScholarshipApplication $application, Request $request)
     {
         $application->update(['status' => 'Revision']);
+        $application->load('user');
+        $application->user->notify(new ScholarshipStatusNotification(
+            $application,
+            "Pendaftaran beasiswa Anda memerlukan revisi dari Kaprodi/Sekprodi/Kadep."
+        ));
         return response()->json(['message' => 'Permintaan revisi berhasil dikirim']);
     }
 }

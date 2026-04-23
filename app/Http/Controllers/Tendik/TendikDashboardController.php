@@ -4,8 +4,11 @@ namespace App\Http\Controllers\Tendik;
 
 use App\Http\Controllers\Controller;
 use App\Models\ScholarshipApplication;
+use App\Models\User;
+use App\Notifications\ScholarshipStatusNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Notification;
 
 class TendikDashboardController extends Controller
 {
@@ -21,13 +24,13 @@ class TendikDashboardController extends Controller
         // - Directly assigned to this user
         // - OR Unassigned (NULL) AND this user has "Beasiswa" task
         $tasks = ScholarshipApplication::where(function ($query) use ($user, $canHandleScholarship) {
-            $query->where('assigned_to', $user->id);
-            
+            // If user can handle scholarship, they see all submitted ones (Pool System)
             if ($canHandleScholarship) {
-                $query->orWhere(function ($q) {
-                    $q->whereNull('assigned_to')
-                      ->where('status', 'Submitted');
-                });
+                $query->where('status', 'Submitted')
+                      ->orWhere('assigned_to', $user->id);
+            } else {
+                // Otherwise only see what's specifically assigned to them
+                $query->where('assigned_to', $user->id);
             }
         })
         ->with(['mahasiswaProfile.user'])
@@ -92,6 +95,21 @@ class TendikDashboardController extends Controller
     public function approve(ScholarshipApplication $application)
     {
         $application->update(['status' => 'Menunggu Persetujuan Kaprodi/Sekprodi']);
+        
+        // Notify Kaprodi and Sekprodi
+        $academics = User::where('role', 'akademik')
+            ->whereIn('sub_role', ['kaprodi', 'sekprodi'])
+            ->where('status', 'Active')
+            ->get();
+            
+        if ($academics->count() > 0) {
+            $application->load('mahasiswaProfile');
+            Notification::send($academics, new ScholarshipStatusNotification(
+                $application, 
+                "Pendaftaran beasiswa baru memerlukan verifikasi Anda (Level: Kaprodi/Sekprodi)."
+            ));
+        }
+
         return response()->json(['message' => 'Pendaftaran berhasil diverifikasi dan diteruskan ke Kaprodi/Sekprodi']);
     }
 
@@ -101,6 +119,11 @@ class TendikDashboardController extends Controller
     public function reject(ScholarshipApplication $application)
     {
         $application->update(['status' => 'Rejected']);
+        $application->load('user');
+        $application->user->notify(new ScholarshipStatusNotification(
+            $application,
+            "Maaf, pendaftaran beasiswa Anda ditolak oleh staf verifikator."
+        ));
         return response()->json(['message' => 'Pendaftaran berhasil ditolak']);
     }
 
@@ -110,7 +133,11 @@ class TendikDashboardController extends Controller
     public function revise(ScholarshipApplication $application, Request $request)
     {
         $application->update(['status' => 'Revision']);
-        // Note: In real app, we might save the note in a comments table
+        $application->load('user');
+        $application->user->notify(new ScholarshipStatusNotification(
+            $application,
+            "Pendaftaran beasiswa Anda memerlukan revisi. Silakan cek catatan di dashboard mahasiswa."
+        ));
         return response()->json(['message' => 'Permintaan revisi berhasil dikirim']);
     }
 }

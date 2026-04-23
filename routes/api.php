@@ -30,7 +30,7 @@ Route::middleware('throttle:api')->group(function () {
         if (!file_exists($path)) {
             abort(404);
         }
-        return response()->file($path);
+        return response()->download($path, basename($filename));
     })->where('filename', '.*');
 
     // Public proxy for Google Docs to allow PDF.js to fetch without headers
