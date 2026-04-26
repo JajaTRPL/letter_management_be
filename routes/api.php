@@ -5,6 +5,9 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\SuperAdmin\UserController as SuperAdminUserController;
+use App\Http\Controllers\FacultyController;
+use App\Http\Controllers\DepartmentController;
+use App\Http\Controllers\StudyProgramController;
 
 use App\Http\Controllers\ProfileController;
 
@@ -15,6 +18,7 @@ use App\Http\Controllers\ProfileController;
 */
 Route::middleware('throttle:api')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/auth/google', [\App\Http\Controllers\GoogleAuthController::class, 'login']);
     Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
     Route::post('/verify-token', [AuthController::class, 'verifyToken']);
     Route::post('/reset-password', [AuthController::class, 'resetPassword']);
@@ -36,9 +40,21 @@ Route::middleware('throttle:api')->group(function () {
     // Public proxy for Google Docs to allow PDF.js to fetch without headers
     Route::get('/templates/proxy-google-doc/{id}', [\App\Http\Controllers\SuperAdmin\TemplateController::class, 'proxyGoogleDoc']);
 
-    Route::middleware('auth:sanctum')->group(function () {
+    Route::middleware(['auth:sanctum', 'profile_complete'])->group(function () {
 
         Route::post('/logout', [AuthController::class, 'logout']);
+        Route::post('/auth/complete-profile', [\App\Http\Controllers\GoogleAuthController::class, 'completeProfile']);
+
+        // Surat Analytics (accessible by all authenticated users)
+        Route::get('/surat/average-duration', function () {
+            $service = new \App\Services\SuratAnalyticsService();
+            return response()->json($service->getAverageDurationByType());
+        });
+
+        // List of Active Surat Types
+        Route::get('/surat-types', function () {
+            return response()->json(config('surat.types', []));
+        });
 
         // Mahasiswa Profile
         Route::get('/profile', [ProfileController::class, 'getProfile']);
@@ -48,6 +64,11 @@ Route::middleware('throttle:api')->group(function () {
         // Get all users (umum)
         Route::get('/users', [UserController::class, 'index']);
 
+        // Academic hierarchy (accessible to all authenticated users)
+        Route::get('/faculties', [FacultyController::class, 'index']);
+        Route::get('/departments', [DepartmentController::class, 'index']);
+        Route::get('/study-programs-grouped', [StudyProgramController::class, 'grouped']);
+
 
         /*
         |----------------------------------------------------------------------
@@ -56,6 +77,7 @@ Route::middleware('throttle:api')->group(function () {
         */
         Route::middleware('role:super_admin')->prefix('super-admin')->group(function () {
             Route::get('/dashboard/stats', [\App\Http\Controllers\SuperAdmin\DashboardController::class, 'getStats']);
+            Route::get('/dashboard/monitoring', [\App\Http\Controllers\SuperAdmin\DashboardController::class, 'getMonitoringData']);
             Route::get('/dashboard', function () {
                 return response()->json(['message' => 'Halaman Dasbord Super Admin']);
             });
@@ -66,9 +88,13 @@ Route::middleware('throttle:api')->group(function () {
             Route::post('/templates/update-pdf', [\App\Http\Controllers\SuperAdmin\TemplateController::class, 'updatePdf']);
 
             // Bulk Operations & Export (Place above /{user} wildcard)
+            Route::post('/users/validate-import', [\App\Http\Controllers\SuperAdmin\UserController::class, 'validateImport']);
             Route::post('/users/bulk-import', [\App\Http\Controllers\SuperAdmin\UserController::class, 'bulkImport']);
+            Route::post('/users/import-errors', [\App\Http\Controllers\SuperAdmin\UserController::class, 'importErrors']);
             Route::get('/users/import-template', [\App\Http\Controllers\SuperAdmin\UserController::class, 'importTemplate']);
             Route::get('/users/export', [\App\Http\Controllers\SuperAdmin\UserController::class, 'export']);
+
+            Route::get('/departments', [DepartmentController::class, 'basicList']);
 
             Route::get('/users', [\App\Http\Controllers\SuperAdmin\UserController::class, 'index']);
             Route::post('/users', [\App\Http\Controllers\SuperAdmin\UserController::class, 'store']); // Tambah User Baru
@@ -133,6 +159,7 @@ Route::middleware('throttle:api')->group(function () {
 
             // Scholarship Application Routes
             Route::prefix('scholarship')->group(function () {
+                Route::get('/applications', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'getApplications']);
                 Route::get('/step-1', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'getStep1']);
                 Route::post('/step-1', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'saveStep1']);
                 Route::post('/step-2', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'saveStep2']);
