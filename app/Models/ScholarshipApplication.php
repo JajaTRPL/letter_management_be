@@ -39,11 +39,17 @@ class ScholarshipApplication extends Model
         'assigned_to',
         'status',
         'submitted_at',
+        'tendik_approved_at',
+        'kaprodi_approved_at',
+        'kadep_approved_at',
     ];
 
     protected $casts = [
         'history_amount' => 'decimal:2',
         'submitted_at' => 'datetime',
+        'tendik_approved_at' => 'datetime',
+        'kaprodi_approved_at' => 'datetime',
+        'kadep_approved_at' => 'datetime',
     ];
 
     protected $appends = [
@@ -61,6 +67,11 @@ class ScholarshipApplication extends Model
     }
 
     public function assignedTendik()
+    {
+        return $this->belongsTo(User::class, 'assigned_to');
+    }
+
+    public function assignedUser()
     {
         return $this->belongsTo(User::class, 'assigned_to');
     }

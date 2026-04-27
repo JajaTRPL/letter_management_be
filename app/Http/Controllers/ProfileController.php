@@ -18,15 +18,31 @@ class ProfileController extends Controller
         $user = Auth::user();
 
         if ($user->role === 'mahasiswa') {
+            // Eager-load relational chain for study program → department → faculty
+            $user->load('studyProgram.department.faculty');
+
             $profile = $user->mahasiswaProfile;
             if (!$profile) {
                 $profile = $user->mahasiswaProfile()->create([]);
             }
             $profile->load('keluarga', 'scholarshipHistories');
-            $completeness = $this->checkProfileCompleteness($profile);
+            $completeness = $this->checkProfileCompleteness($profile, $user);
 
             return response()->json([
-                'user' => $user->only(['name', 'email', 'role', 'sub_role']),
+                'user' => array_merge(
+                    $user->only(['name', 'email', 'role', 'sub_role']),
+                    ['study_program' => $user->studyProgram ? [
+                        'code' => $user->studyProgram->code,
+                        'name' => $user->studyProgram->name,
+                        'department' => $user->studyProgram->department ? [
+                            'code' => $user->studyProgram->department->code,
+                            'name' => $user->studyProgram->department->name,
+                            'faculty' => $user->studyProgram->department->faculty ? [
+                                'name' => $user->studyProgram->department->faculty->name,
+                            ] : null,
+                        ] : null,
+                    ] : null]
+                ),
                 'profile' => $profile,
                 'completeness' => $completeness
             ]);
@@ -45,14 +61,20 @@ class ProfileController extends Controller
     /**
      * Check if the student profile is complete
      */
-    private function checkProfileCompleteness($profile)
+    private function checkProfileCompleteness($profile, $user = null)
     {
         $missingFields = [];
 
+        // Check relational fields via user model instead of legacy string columns
+        if ($user && !$user->study_program_id) {
+            $missingFields[] = 'Program Studi';
+        }
+        if ($user && (!$user->studyProgram || !$user->studyProgram->department)) {
+            // Departemen & Fakultas are derived — only flag if prodi is missing
+        }
+
         $fields = [
             'nim' => 'NIM',
-            'fakultas' => 'Fakultas',
-            'program_studi' => 'Program Studi',
             'tempat_lahir' => 'Tempat Lahir',
             'tanggal_lahir' => 'Tanggal Lahir',
             'jenis_kelamin' => 'Jenis Kelamin',

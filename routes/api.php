@@ -40,7 +40,7 @@ Route::middleware('throttle:api')->group(function () {
     // Public proxy for Google Docs to allow PDF.js to fetch without headers
     Route::get('/templates/proxy-google-doc/{id}', [\App\Http\Controllers\SuperAdmin\TemplateController::class, 'proxyGoogleDoc']);
 
-    Route::middleware(['auth:sanctum', 'profile_complete'])->group(function () {
+    Route::middleware(['auth:sanctum', 'check_status', 'profile_complete'])->group(function () {
 
         Route::post('/logout', [AuthController::class, 'logout']);
         Route::post('/auth/complete-profile', [\App\Http\Controllers\GoogleAuthController::class, 'completeProfile']);

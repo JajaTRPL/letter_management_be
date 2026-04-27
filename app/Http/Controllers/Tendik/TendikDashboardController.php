@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ScholarshipApplication;
 use App\Models\User;
 use App\Notifications\ScholarshipStatusNotification;
+use App\Enums\UserStatus;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Notification;
@@ -18,33 +19,37 @@ class TendikDashboardController extends Controller
     public function getDashboardData()
     {
         $user = Auth::user();
-        $canHandleScholarship = is_array($user->assigned_tasks) && in_array('Beasiswa', $user->assigned_tasks);
+        $canHandleScholarship = is_array($user->assigned_tasks) && 
+            collect($user->assigned_tasks)->contains(fn($t) => str_contains(strtolower($t), 'beasiswa'));
 
-        // 1. Fetch scholarship applications:
-        // - Directly assigned to this user
-        // - OR Unassigned (NULL) AND this user has "Beasiswa" task
-        $tasks = ScholarshipApplication::where(function ($query) use ($user, $canHandleScholarship) {
-            // If user can handle scholarship, they see all submitted ones (Pool System)
+        // Fetch scholarship applications:
+        // - Directly assigned to this user (any status)
+        // - OR status = 'Submitted' AND (assigned to this user OR this user can handle scholarship)
+        $baseQuery = ScholarshipApplication::where(function ($query) use ($user, $canHandleScholarship) {
+            $query->where('assigned_to', $user->id);
             if ($canHandleScholarship) {
-                $query->where('status', 'Submitted')
-                      ->orWhere('assigned_to', $user->id);
-            } else {
-                // Otherwise only see what's specifically assigned to them
-                $query->where('assigned_to', $user->id);
+                $query->orWhere(function ($q) {
+                    $q->where('status', 'Submitted')
+                      ->whereNull('assigned_to');
+                });
             }
         })
-        ->with(['mahasiswaProfile.user'])
-        ->orderBy('submitted_at', 'desc')
-        ->get();
+        ->whereNotIn('status', ['Draft']);
 
-        // 2. Calculate Stats
+        // Calculate Stats
         $stats = [
-            'total_incoming' => $tasks->count(),
-            'needs_verification' => $tasks->where('status', 'Submitted')->count(),
-            'finished_this_month' => $tasks->whereIn('status', ['Approved', 'Selesai', 'Verified', 'Menunggu Persetujuan Kaprodi/Sekprodi'])
+            'total_incoming' => (clone $baseQuery)->count(),
+            'needs_verification' => (clone $baseQuery)->where('status', 'Submitted')->count(),
+            'finished_this_month' => (clone $baseQuery)->whereIn('status', ['Approved_Tendik', 'Approved_Kaprodi', 'Approved_Kadep', 'Completed'])
                 ->where('updated_at', '>=', now()->startOfMonth())
                 ->count(),
         ];
+
+        $tasks = (clone $baseQuery)
+            ->with(['mahasiswaProfile.user', 'user'])
+            ->orderBy('submitted_at', 'desc')
+            ->limit(100)
+            ->get();
 
         return response()->json([
             'stats' => $stats,
@@ -52,7 +57,7 @@ class TendikDashboardController extends Controller
                 return [
                     'id' => $task->id,
                     'submitted_at' => $task->submitted_at ? $task->submitted_at->format('d M Y, H.i') : $task->created_at->format('d M Y, H.i'),
-                    'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? ($task->mahasiswaProfile?->user?->name ?? '-'),
+                    'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? ($task->mahasiswaProfile?->user?->name ?? $task->user?->name ?? '-'),
                     'nim' => $task->mahasiswaProfile?->nim ?? '-',
                     'type' => 'Surat Beasiswa',
                     'scholarship_name' => $task->scholarship_name,
@@ -69,7 +74,7 @@ class TendikDashboardController extends Controller
      */
     public function show(ScholarshipApplication $application)
     {
-        $application->load(['mahasiswaProfile.user', 'mahasiswaProfile.keluarga']);
+        $application->load(['mahasiswaProfile.user', 'mahasiswaProfile.keluarga', 'user']);
         
         return response()->json([
             'application' => $application,
@@ -80,7 +85,7 @@ class TendikDashboardController extends Controller
                 'prodi' => $application->mahasiswaProfile?->program_studi,
                 'email' => $application->user->email,
                 'ipk' => $application->ipk,
-                'phone' => $application->mahasiswaProfile?->phone ?? '0812345678910',
+                'phone' => $application->mahasiswaProfile?->no_hp ?? '-',
                 'term' => 'Angkatan ' . ($application->mahasiswaProfile?->tahun_masuk ?? '2023') . ' Semester ' . ($application->current_semester ?? '6'),
                 'target' => $application->scholarship_name ?? 'Beasiswa',
                 'submitted_at' => $application->submitted_at ? $application->submitted_at->format('d F Y, H.i') : $application->created_at->format('d F Y, H.i'),
@@ -90,23 +95,26 @@ class TendikDashboardController extends Controller
     }
 
     /**
-     * Approve scholarship application
+     * Approve scholarship application (Tendik → forward to Kaprodi)
      */
     public function approve(ScholarshipApplication $application)
     {
-        $application->update(['status' => 'Menunggu Persetujuan Kaprodi/Sekprodi']);
+        $application->update([
+            'status' => 'Approved_Tendik',
+            'tendik_approved_at' => now(),
+        ]);
         
         // Notify Kaprodi and Sekprodi
         $academics = User::where('role', 'akademik')
             ->whereIn('sub_role', ['kaprodi', 'sekprodi'])
-            ->where('status', 'Active')
+            ->where('status', UserStatus::Active)
             ->get();
             
         if ($academics->count() > 0) {
             $application->load('mahasiswaProfile');
             Notification::send($academics, new ScholarshipStatusNotification(
                 $application, 
-                "Pendaftaran beasiswa baru memerlukan verifikasi Anda (Level: Kaprodi/Sekprodi)."
+                "Pendaftaran beasiswa baru telah diverifikasi Tendik dan memerlukan persetujuan Anda."
             ));
         }
 
