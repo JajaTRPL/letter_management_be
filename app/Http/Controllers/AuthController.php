@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Mail;
 use App\Mail\ResetPasswordTokenMail;
+use App\Enums\UserStatus;
 
 class AuthController extends Controller
 {
@@ -27,28 +28,17 @@ class AuthController extends Controller
 
         $user = Auth::user();
 
-        // Cek jika user diblokir
-        if ($user->status === 'Blocked') {
+        // Deny login if account is suspended
+        if ($user->status === UserStatus::Suspended) {
             Auth::logout();
             return response()->json([
-                'message' => 'Akun Anda telah diblokir. Silakan hubungi admin.',
+                'message' => 'Akun Anda telah disuspend. Silakan hubungi admin.',
             ], 403);
         }
 
-        // Ubah status jadi Active
-        $user->status = 'Active';
+        // Track login activity (NOT status — status is lifecycle only)
+        $user->last_login_at = now();
         $user->save();
-
-        // Catat Log Login (Dinonaktifkan sesuai permintaan: Hanya CRUD)
-        /*
-        \App\Models\ActivityLog::create([
-            'user_id' => $user->id,
-            'type' => 'login',
-            'action' => 'Login Berhasil',
-            'ip_address' => $request->ip(),
-            'user_agent' => $request->userAgent(),
-        ]);
-        */
 
         // Hapus token lama agar tidak numpuk
         $user->tokens()->delete();
@@ -58,12 +48,16 @@ class AuthController extends Controller
         return response()->json([
             'message' => 'Login berhasil',
             'token' => $token,
+            'needs_completion' => $user->status === UserStatus::PendingProfile,
             'user' => [
                 'id' => $user->id,
                 'name' => $user->name,
                 'email' => $user->email,
                 'role' => $user->role,
+                'sub_role' => $user->sub_role,
+                'role_level' => $user->role_level,
                 'status' => $user->status,
+                'assigned_tasks' => $user->assigned_tasks,
             ],
         ], 200);
     }
@@ -199,10 +193,7 @@ class AuthController extends Controller
     {
         $user = $request->user();
 
-        // Ubah status jadi Inactive
-        $user->status = 'Inactive';
-        $user->save();
-
+        // Logout: revoke token only — do NOT change status
         $user->currentAccessToken()->delete();
 
         return response()->json([

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Models\ActivityLog;
 use App\Models\ScholarshipApplication;
+use App\Enums\UserStatus;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
@@ -20,6 +21,78 @@ class DashboardController extends Controller
             'activity_stats' => $this->getActivityStats(),
             'scholarship_stats' => $this->getScholarshipStats(),
             'approval_durations' => $this->getApprovalDurations(),
+        ]);
+    }
+
+    /**
+     * Get monitoring data for LetterMonitoring page.
+     * Returns real stats + real application list ordered by newest first.
+     */
+    public function getMonitoringData(Request $request)
+    {
+        $period = $request->query('period', 'today');
+
+        // Determine date filter
+        $startDate = match ($period) {
+            'today' => Carbon::today(),
+            'week' => Carbon::today()->subDays(7),
+            '1month' => Carbon::today()->subMonth(),
+            '3months' => Carbon::today()->subMonths(3),
+            '6months' => Carbon::today()->subMonths(6),
+            '12months' => Carbon::today()->subYear(),
+            default => Carbon::today(),
+        };
+
+        // Stats counts
+        $baseQuery = ScholarshipApplication::where('status', '!=', 'Draft');
+
+        $suratMasuk = (clone $baseQuery)
+            ->where('submitted_at', '>=', $startDate)
+            ->count();
+
+        $menungguPersetujuan = (clone $baseQuery)
+            ->whereIn('status', ['Submitted', 'Approved_Tendik', 'Approved_Kaprodi'])
+            ->count();
+
+        $perluRevisi = (clone $baseQuery)
+            ->where('status', 'Revision')
+            ->count();
+
+        $selesai = (clone $baseQuery)
+            ->whereIn('status', ['Completed', 'Approved_Kadep'])
+            ->where('submitted_at', '>=', $startDate)
+            ->count();
+
+        // Overdue applications (more than 3 days without progress)
+        $overdueThreshold = Carbon::now()->subDays(3);
+        
+        $overdueApplications = ScholarshipApplication::with(['user', 'mahasiswaProfile', 'assignedUser'])
+            ->whereNotIn('status', ['Draft', 'Completed', 'Rejected', 'Approved_Kadep'])
+            ->where('submitted_at', '<=', $overdueThreshold)
+            ->orderBy('submitted_at', 'desc')
+            ->get()
+            ->map(function ($app) {
+                $daysOverdue = Carbon::parse($app->submitted_at)->diffInDays(now());
+                return [
+                    'id' => $app->id,
+                    'submitted_at' => Carbon::parse($app->submitted_at)->format('d M Y, H.i'),
+                    'student_name' => $app->mahasiswaProfile?->nama_lengkap ?? $app->user?->name ?? '-',
+                    'nim' => $app->mahasiswaProfile?->nim ?? '-',
+                    'status' => $app->status,
+                    'assigned_to_name' => $app->assignedUser?->name ?? '-',
+                    'days_overdue' => $daysOverdue,
+                    'type' => $app->scholarship_name ?? 'Beasiswa',
+                ];
+            });
+
+        return response()->json([
+            'stats' => [
+                'surat_masuk' => $suratMasuk,
+                'menunggu_persetujuan' => $menungguPersetujuan,
+                'perlu_revisi' => $perluRevisi,
+                'selesai' => $selesai,
+            ],
+            'overdue' => $overdueApplications,
         ]);
     }
 
@@ -46,10 +119,14 @@ class DashboardController extends Controller
     {
         $stats = User::selectRaw("
             COUNT(*) as total,
-            SUM(CASE WHEN status = 'Active' THEN 1 ELSE 0 END) as active,
-            SUM(CASE WHEN status = 'Inactive' THEN 1 ELSE 0 END) as inactive,
-            SUM(CASE WHEN status = 'Blocked' THEN 1 ELSE 0 END) as blocked
-        ")->first();
+            SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as active,
+            SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as suspended,
+            SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as pending
+        ", [
+            UserStatus::Active->value,
+            UserStatus::Suspended->value,
+            UserStatus::PendingProfile->value,
+        ])->first();
 
         $total = (int) $stats->total;
 
@@ -58,13 +135,13 @@ class DashboardController extends Controller
                 'count' => (int) $stats->active,
                 'percentage' => $total > 0 ? round(($stats->active / $total) * 100) : 0
             ],
-            'nonaktif' => [
-                'count' => (int) $stats->inactive,
-                'percentage' => $total > 0 ? round(($stats->inactive / $total) * 100) : 0
-            ],
             'suspended' => [
-                'count' => (int) $stats->blocked,
-                'percentage' => $total > 0 ? round(($stats->blocked / $total) * 100) : 0
+                'count' => (int) $stats->suspended,
+                'percentage' => $total > 0 ? round(($stats->suspended / $total) * 100) : 0
+            ],
+            'pending' => [
+                'count' => (int) $stats->pending,
+                'percentage' => $total > 0 ? round(($stats->pending / $total) * 100) : 0
             ],
         ];
     }
@@ -73,7 +150,7 @@ class DashboardController extends Controller
     {
         $startDate = Carbon::today()->subDays(6);
 
-        $stats = ActivityLog::where('type', 'admin') // Diubah dari 'login' ke 'admin' (CRUD)
+        $stats = ActivityLog::where('type', 'admin')
             ->where('created_at', '>=', $startDate)
             ->selectRaw('DATE(created_at) as date, COUNT(*) as count')
             ->groupBy('date')
@@ -117,9 +194,6 @@ class DashboardController extends Controller
 
     private function getApprovalDurations()
     {
-        // Calculate average duration from submitted_at to tendik_approved_at
-        // And from tendik_approved_at to akademik_approved_at
-
         $tendikAvg = ScholarshipApplication::whereNotNull('submitted_at')
             ->whereNotNull('tendik_approved_at')
             ->select(DB::raw('AVG(EXTRACT(EPOCH FROM (tendik_approved_at - submitted_at))) as avg_time'))

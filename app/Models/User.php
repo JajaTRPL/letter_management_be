@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
+use App\Enums\UserStatus;
 
 class User extends Authenticatable
 {
@@ -15,18 +16,37 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+        'google_id',
+        'avatar_url',
         'role',
         'sub_role',
+        'tendik_role',
+        'laboratory_id',
+        'study_program_id',
+        'department_id',
+        'role_level',
         'status',
+        'last_login_at',
         'assigned_tasks',
         'photo_path',
         'signature_path',
     ];
 
+    protected $hidden = [
+        'password',
+        'remember_token',
+        'google_id',
+        'last_login_at',
+    ];
+
+    protected $appends = ['akademik_label'];
+
     protected $casts = [
         'assigned_tasks' => 'array',
         'email_verified_at' => 'datetime',
+        'last_login_at' => 'datetime',
         'password' => 'hashed',
+        'status' => UserStatus::class,
     ];
 
     public function activityLogs(): \Illuminate\Database\Eloquent\Relations\HasMany
@@ -37,5 +57,100 @@ class User extends Authenticatable
     public function mahasiswaProfile()
     {
         return $this->hasOne(MahasiswaProfile::class);
+    }
+
+    public function studyProgram()
+    {
+        return $this->belongsTo(StudyProgram::class);
+    }
+
+    public function department()
+    {
+        return $this->belongsTo(Department::class);
+    }
+
+    public function laboratory()
+    {
+        return $this->belongsTo(Laboratory::class);
+    }
+
+    /**
+     * Check if this user is a Primary Super Admin
+     */
+    public function isPrimarySuperAdmin(): bool
+    {
+        return $this->role === 'super_admin' && $this->role_level === 'primary';
+    }
+
+    /**
+     * Check if this user is a Secondary Super Admin
+     */
+    public function isSecondarySuperAdmin(): bool
+    {
+        return $this->role === 'super_admin' && $this->role_level === 'secondary';
+    }
+
+    /**
+     * Accessor: Returns formatted akademik label.
+     * Kaprodi TRPL, Sekprodi TRI, Kadep, Sekdep
+     */
+    public function getAkademikLabelAttribute(): ?string
+    {
+        if ($this->role !== 'akademik' || !$this->sub_role) {
+            return null;
+        }
+
+        $labels = [
+            'kaprodi' => 'Kaprodi',
+            'sekprodi' => 'Sekprodi',
+            'kadep' => 'Kadep',
+            'sekdep' => 'Sekdep',
+        ];
+
+        $label = $labels[$this->sub_role] ?? ucfirst($this->sub_role);
+
+        // Append study program code for kaprodi/sekprodi
+        if (in_array($this->sub_role, ['kaprodi', 'sekprodi']) && $this->study_program_id) {
+            $program = $this->relationLoaded('studyProgram')
+                ? $this->studyProgram
+                : $this->studyProgram()->first();
+            if ($program) {
+                $label .= ' ' . $program->code;
+            }
+        }
+
+        return $label;
+    }
+
+    /**
+     * Check if this user is a Tendik with Persuratan specialization.
+     */
+    public function isTendikPersuratan(): bool
+    {
+        return $this->role === 'tendik' && $this->tendik_role === 'persuratan';
+    }
+
+    /**
+     * Check if this user is a Tendik with Sarpras specialization.
+     */
+    public function isTendikSarpras(): bool
+    {
+        return $this->role === 'tendik' && $this->tendik_role === 'sarpras';
+    }
+
+    /**
+     * Check if this user is Kepala Lab.
+     */
+    public function isKalab(): bool
+    {
+        return $this->role === 'tendik' && $this->tendik_role === 'kepala_lab';
+    }
+
+    /**
+     * Check if this user is Laboran.
+     */
+    public function isLaboran(): bool
+    {
+        return $this->role === 'tendik' && $this->tendik_role === 'laboran';
     }
 }

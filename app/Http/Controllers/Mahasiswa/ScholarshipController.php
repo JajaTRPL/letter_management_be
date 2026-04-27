@@ -328,4 +328,19 @@ class ScholarshipController extends Controller
             'docx_path' => $documentPath
         ]);
     }
+
+    /**
+     * Get all applications for the authenticated Mahasiswa
+     */
+    public function getApplications()
+    {
+        $applications = ScholarshipApplication::where('user_id', Auth::id())
+            ->where('status', '!=', 'Draft')
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        return response()->json([
+            'applications' => $applications
+        ]);
+    }
 }

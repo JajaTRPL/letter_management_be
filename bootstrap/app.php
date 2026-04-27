@@ -15,6 +15,9 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
             'role' => CheckRole::class,
+            'primary_admin' => \App\Http\Middleware\CheckPrimarySuperAdmin::class,
+            'check_status' => \App\Http\Middleware\CheckUserStatus::class,
+            'profile_complete' => \App\Http\Middleware\EnsureProfileComplete::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\ScholarshipApplication;
 use App\Models\User;
+use App\Enums\UserStatus;
 use Illuminate\Support\Facades\Storage;
 use PhpOffice\PhpWord\TemplateProcessor;
 use Illuminate\Support\Facades\Log;
@@ -15,10 +16,10 @@ class ScholarshipAutomationService
      */
     public function assignApplication(ScholarshipApplication $application)
     {
-        // Search for a Tendik that has "Beasiswa" in their assigned_tasks JSON
+        // Search for a Tendik that has any task containing "Beasiswa" in their assigned_tasks JSON
         $assignedTendik = User::where('role', 'tendik')
-            ->where('status', 'Active')
-            ->whereJsonContains('assigned_tasks', 'Beasiswa')
+            ->where('status', UserStatus::Active)
+            ->where('assigned_tasks', 'LIKE', '%Beasiswa%')
             ->first();
 
         if ($assignedTendik) {
