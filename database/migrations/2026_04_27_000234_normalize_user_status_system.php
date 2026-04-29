@@ -16,11 +16,17 @@ return new class extends Migration {
     public function up(): void
     {
         // 1. Add last_login_at column
+        if (!Schema::hasColumn('users', 'last_login_at')) {
+            Schema::table('users', function (Blueprint $table) {
+                $table->timestamp('last_login_at')->nullable()->after('status');
+            });
+        }
+
+        // 2. Force change column default and normalize values
         Schema::table('users', function (Blueprint $table) {
-            $table->timestamp('last_login_at')->nullable()->after('status');
+            $table->string('status')->default('Active')->change();
         });
 
-        // 2. Normalize status values
         DB::table('users')->where('status', 'Inactive')->update(['status' => 'Active']);
         DB::table('users')->where('status', 'Blocked')->update(['status' => 'Suspended']);
         DB::table('users')->where('status', 'pending_profile')->update(['status' => 'Pending_Profile']);
