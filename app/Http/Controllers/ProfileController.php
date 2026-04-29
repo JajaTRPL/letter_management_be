@@ -39,9 +39,14 @@ class ProfileController extends Controller
                             'name' => $user->studyProgram->department->name,
                             'faculty' => $user->studyProgram->department->faculty ? [
                                 'name' => $user->studyProgram->department->faculty->name,
-                            ] : null,
+                            ] : ($profile->fakultas ? ['name' => $profile->fakultas] : null),
                         ] : null,
-                    ] : null]
+                    ] : ($profile->program_studi ? [
+                        'name' => $profile->program_studi,
+                        'department' => $profile->fakultas ? [
+                            'faculty' => ['name' => $profile->fakultas]
+                        ] : null
+                    ] : null)]
                 ),
                 'profile' => $profile,
                 'completeness' => $completeness
