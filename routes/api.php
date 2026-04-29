@@ -120,6 +120,12 @@ Route::middleware('throttle:api')->group(function () {
             Route::patch('/scholarship/{application}/reject', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'reject']);
             Route::patch('/scholarship/{application}/revise', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'revise']);
 
+            // Letter Review Actions
+            Route::get('/letter/{application}', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'showLetter']);
+            Route::patch('/letter/{application}/approve', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'approveLetter']);
+            Route::patch('/letter/{application}/reject', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'rejectLetter']);
+            Route::patch('/letter/{application}/revise', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'reviseLetter']);
+
             Route::get('/dashboard', function () {
                 return response()->json(['message' => 'Halaman Dasbord Khusus Tendik']);
             });
@@ -165,6 +171,13 @@ Route::middleware('throttle:api')->group(function () {
                 Route::post('/step-2', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'saveStep2']);
                 Route::post('/step-3', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'saveStep3']);
                 Route::post('/submit', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'submitApplication']);
+            });
+
+            // Aktif Letter Routes
+            Route::prefix('aktif')->group(function () {
+                Route::get('/step-1', [\App\Http\Controllers\Mahasiswa\AktifLetterController::class, 'getStep1']);
+                Route::post('/step-1', [\App\Http\Controllers\Mahasiswa\AktifLetterController::class, 'saveStep1']);
+                Route::post('/submit', [\App\Http\Controllers\Mahasiswa\AktifLetterController::class, 'submitApplication']);
             });
         });
 
