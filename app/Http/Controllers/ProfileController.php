@@ -4,7 +4,10 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use App\Models\MahasiswaProfile;
 use App\Models\KeluargaMahasiswa;
 
@@ -109,6 +112,75 @@ class ProfileController extends Controller
         ];
     }
 
+    private function publicDiskPath(?string $filePath): ?string
+    {
+        if (!$filePath) {
+            return null;
+        }
+
+        $path = parse_url($filePath, PHP_URL_PATH) ?: $filePath;
+        $path = str_replace('\\', '/', $path);
+        $path = ltrim($path, '/');
+
+        if (str_starts_with($path, 'storage/')) {
+            $path = substr($path, strlen('storage/'));
+        }
+
+        if (str_starts_with($path, 'api/storage/')) {
+            $path = substr($path, strlen('api/storage/'));
+        }
+
+        $allowedPrefixes = [
+            'profiles/fotos/',
+            'profiles/signatures/',
+            'signatures/',
+        ];
+
+        if ($path === '' || str_contains($path, '..')) {
+            return null;
+        }
+
+        foreach ($allowedPrefixes as $prefix) {
+            if (str_starts_with($path, $prefix)) {
+                return $path;
+            }
+        }
+
+        return null;
+    }
+
+    private function deletePublicFile(?string $filePath, ?int $userId = null): void
+    {
+        $path = $this->publicDiskPath($filePath);
+
+        if (!$path) {
+            if ($filePath) {
+                Log::warning('Skipped deleting profile file outside allowed storage paths.', [
+                    'user_id' => $userId,
+                    'file_path' => $filePath,
+                ]);
+            }
+            return;
+        }
+
+        try {
+            if (Storage::disk('public')->exists($path) && !Storage::disk('public')->delete($path)) {
+                Log::warning('Failed to delete profile file.', [
+                    'user_id' => $userId,
+                    'file_path' => $filePath,
+                    'disk_path' => $path,
+                ]);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Exception while deleting profile file.', [
+                'user_id' => $userId,
+                'file_path' => $filePath,
+                'disk_path' => $path,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
     /**
      * Update the authenticated user's profile
      */
@@ -125,70 +197,113 @@ class ProfileController extends Controller
                 'no_hp' => 'nullable|string|max:20',
                 'alamat_asal' => 'nullable|string',
                 'alamat_domisili' => 'nullable|string',
+                'pas_foto' => 'nullable|image|mimes:jpeg,jpg,png,webp|max:2048',
+                'tanda_tangan' => 'nullable|image|mimes:jpeg,jpg,png,webp|max:2048',
             ]);
+            unset($validatedProfile['pas_foto'], $validatedProfile['tanda_tangan']);
 
             $profile = $user->mahasiswaProfile()->firstOrCreate([]);
+            $oldFiles = [];
+            $newFiles = [];
 
-            // Handle File Uploads
-            if ($request->hasFile('pas_foto')) {
-                $path = $request->file('pas_foto')->store('profiles/fotos', 'public');
-                $validatedProfile['pas_foto_path'] = \Illuminate\Support\Facades\Storage::url($path);
-            }
-
-            if ($request->hasFile('tanda_tangan')) {
-                $path = $request->file('tanda_tangan')->store('profiles/signatures', 'public');
-                $validatedProfile['tanda_tangan_path'] = \Illuminate\Support\Facades\Storage::url($path);
-            }
-
-            // Sanitize empty date fields for PostgreSQL
-            if (isset($validatedProfile['tanggal_lahir']) && $validatedProfile['tanggal_lahir'] === '') {
-                $validatedProfile['tanggal_lahir'] = null;
-            }
-
-            $profile->update($validatedProfile);
-
-            // Update keluargas if provided
-            if ($request->has('keluarga')) {
-                $keluargaData = $request->input('keluarga');
-                if (is_string($keluargaData)) {
-                    $keluargaData = json_decode($keluargaData, true) ?? [];
-                }
-                $profile->keluarga()->delete();
-                foreach ($keluargaData as $kel) {
-                    if (!empty($kel['nama_lengkap']) && !empty($kel['jenis_relasi'])) {
-                        $profile->keluarga()->create([
-                            'jenis_relasi' => $kel['jenis_relasi'],
-                            'nama_lengkap' => $kel['nama_lengkap'],
-                            'pekerjaan' => $kel['pekerjaan'] ?? null,
-                            'penghasilan' => $kel['penghasilan'] ?? null,
-                            'status_hidup' => $kel['status_hidup'] ?? 'hidup',
-                            'tanggal_meninggal' => !empty($kel['tanggal_meninggal']) ? $kel['tanggal_meninggal'] : null,
-                            'status_kawin' => $kel['status_kawin'] ?? null,
-                            'keterangan' => $kel['keterangan'] ?? null,
-                        ]);
+            try {
+                // Handle File Uploads
+                if ($request->hasFile('pas_foto')) {
+                    $path = $request->file('pas_foto')->store('profiles/fotos', 'public');
+                    if (!$path) {
+                        throw new \RuntimeException('Failed to store profile photo.');
                     }
+                    $newFiles[] = $path;
+                    $oldFiles[] = $profile->pas_foto_path;
+                    $validatedProfile['pas_foto_path'] = Storage::url($path);
                 }
-            }
 
-            // Handle scholarship histories if provided
-            if ($request->has('scholarship_histories')) {
-                $profile->scholarshipHistories()->delete();
-                $histories = $request->input('scholarship_histories');
-                if (is_string($histories)) {
-                    $histories = json_decode($histories, true) ?? [];
-                }
-                $count = 0;
-                foreach ($histories as $hist) {
-                    if (!empty($hist['nama_beasiswa']) && $count < 5) {
-                        $profile->scholarshipHistories()->create([
-                            'nama_beasiswa' => $hist['nama_beasiswa'],
-                            'periode' => $hist['periode'] ?? null,
-                            'jumlah' => $hist['jumlah'] ?? null,
-                            'status' => $hist['status'] ?? 'Selesai',
-                        ]);
-                        $count++;
+                if ($request->hasFile('tanda_tangan')) {
+                    $path = $request->file('tanda_tangan')->store('profiles/signatures', 'public');
+                    if (!$path) {
+                        throw new \RuntimeException('Failed to store profile signature.');
                     }
+                    $newFiles[] = $path;
+                    $oldFiles[] = $profile->tanda_tangan_path;
+                    $validatedProfile['tanda_tangan_path'] = Storage::url($path);
                 }
+
+                // Sanitize empty date fields for PostgreSQL
+                if (isset($validatedProfile['tanggal_lahir']) && $validatedProfile['tanggal_lahir'] === '') {
+                    $validatedProfile['tanggal_lahir'] = null;
+                }
+
+                $profile = DB::transaction(function () use ($profile, $validatedProfile, $request) {
+                    $profile->update($validatedProfile);
+
+                    // Update keluargas if provided
+                    if ($request->has('keluarga')) {
+                        $keluargaData = $request->input('keluarga');
+                        if (is_string($keluargaData)) {
+                            $keluargaData = json_decode($keluargaData, true) ?? [];
+                        }
+                        $profile->keluarga()->delete();
+                        foreach ($keluargaData as $kel) {
+                            if (!empty($kel['nama_lengkap']) && !empty($kel['jenis_relasi'])) {
+                                $profile->keluarga()->create([
+                                    'jenis_relasi' => $kel['jenis_relasi'],
+                                    'nama_lengkap' => $kel['nama_lengkap'],
+                                    'pekerjaan' => $kel['pekerjaan'] ?? null,
+                                    'penghasilan' => $kel['penghasilan'] ?? null,
+                                    'status_hidup' => $kel['status_hidup'] ?? 'hidup',
+                                    'tanggal_meninggal' => !empty($kel['tanggal_meninggal']) ? $kel['tanggal_meninggal'] : null,
+                                    'status_kawin' => $kel['status_kawin'] ?? null,
+                                    'keterangan' => $kel['keterangan'] ?? null,
+                                ]);
+                            }
+                        }
+                    }
+
+                    // Handle scholarship histories if provided
+                    if ($request->has('scholarship_histories')) {
+                        $profile->scholarshipHistories()->delete();
+                        $histories = $request->input('scholarship_histories');
+                        if (is_string($histories)) {
+                            $histories = json_decode($histories, true) ?? [];
+                        }
+                        $count = 0;
+                        foreach ($histories as $hist) {
+                            if (!empty($hist['nama_beasiswa']) && $count < 5) {
+                                $profile->scholarshipHistories()->create([
+                                    'nama_beasiswa' => $hist['nama_beasiswa'],
+                                    'periode' => $hist['periode'] ?? null,
+                                    'jumlah' => $hist['jumlah'] ?? null,
+                                    'status' => $hist['status'] ?? 'Selesai',
+                                ]);
+                                $count++;
+                            }
+                        }
+                    }
+
+                    return $profile;
+                });
+
+                foreach ($oldFiles as $oldFile) {
+                    $this->deletePublicFile($oldFile, $user->id);
+                }
+
+                foreach ($newFiles as $newFile) {
+                    Log::info('Profile file upload committed.', [
+                        'user_id' => $user->id,
+                        'file_path' => Storage::url($newFile),
+                    ]);
+                }
+            } catch (\Throwable $e) {
+                foreach ($newFiles as $newFile) {
+                    $this->deletePublicFile($newFile, $user->id);
+                }
+
+                Log::error('Profile update failed after file upload.', [
+                    'user_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]);
+
+                throw $e;
             }
 
             return response()->json([
@@ -202,23 +317,64 @@ class ProfileController extends Controller
             'name' => 'nullable|string|max:255',
             'email' => 'nullable|email|max:255|unique:users,email,' . $user->id,
             'password' => 'nullable|string|min:8|confirmed',
+            'pas_foto' => 'nullable|image|mimes:jpeg,jpg,png,webp|max:2048',
+            'tanda_tangan' => 'nullable|image|mimes:jpeg,jpg,png,webp|max:2048',
         ]);
 
         if ($request->filled('name')) $user->name = $request->name;
         if ($request->filled('email')) $user->email = $request->email;
         if ($request->filled('password')) $user->password = Hash::make($request->password);
 
-        if ($request->hasFile('pas_foto')) {
-            $path = $request->file('pas_foto')->store('profiles/fotos', 'public');
-            $user->photo_path = \Illuminate\Support\Facades\Storage::url($path);
-        }
+        $oldFiles = [];
+        $newFiles = [];
 
-        if ($request->hasFile('tanda_tangan')) {
-            $path = $request->file('tanda_tangan')->store('profiles/signatures', 'public');
-            $user->signature_path = \Illuminate\Support\Facades\Storage::url($path);
-        }
+        try {
+            if ($request->hasFile('pas_foto')) {
+                $path = $request->file('pas_foto')->store('profiles/fotos', 'public');
+                if (!$path) {
+                    throw new \RuntimeException('Failed to store profile photo.');
+                }
+                $newFiles[] = $path;
+                $oldFiles[] = $user->photo_path;
+                $user->photo_path = Storage::url($path);
+            }
 
-        $user->save();
+            if ($request->hasFile('tanda_tangan')) {
+                $path = $request->file('tanda_tangan')->store('profiles/signatures', 'public');
+                if (!$path) {
+                    throw new \RuntimeException('Failed to store profile signature.');
+                }
+                $newFiles[] = $path;
+                $oldFiles[] = $user->signature_path;
+                $user->signature_path = Storage::url($path);
+            }
+
+            DB::transaction(function () use ($user) {
+                $user->save();
+            });
+
+            foreach ($oldFiles as $oldFile) {
+                $this->deletePublicFile($oldFile, $user->id);
+            }
+
+            foreach ($newFiles as $newFile) {
+                Log::info('Profile file upload committed.', [
+                    'user_id' => $user->id,
+                    'file_path' => Storage::url($newFile),
+                ]);
+            }
+        } catch (\Throwable $e) {
+            foreach ($newFiles as $newFile) {
+                $this->deletePublicFile($newFile, $user->id);
+            }
+
+            Log::error('Profile update failed after file upload.', [
+                'user_id' => $user->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            throw $e;
+        }
 
         return response()->json([
             'message' => 'Profil berhasil diperbarui',
