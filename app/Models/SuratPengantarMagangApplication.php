@@ -6,7 +6,7 @@ use App\Support\LetterWorkflowStatus;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
-class ScholarshipApplication extends Model
+class SuratPengantarMagangApplication extends Model
 {
     use HasFactory;
 
@@ -18,35 +18,20 @@ class ScholarshipApplication extends Model
     public const STATUS_APPROVED_KAPRODI = LetterWorkflowStatus::APPROVED_KAPRODI;
     public const STATUS_READY_FOR_STUDENT_REVIEW = LetterWorkflowStatus::READY_FOR_STUDENT_REVIEW;
     public const STATUS_COMPLETED = LetterWorkflowStatus::COMPLETED;
-    public const LETTER_TYPE = 'surat-permohonan-beasiswa';
+    public const LETTER_TYPE = 'surat-pengantar-magang';
+
+    public const STATUSES = LetterWorkflowStatus::ALL;
 
     protected $fillable = [
         'user_id',
         'mahasiswa_profile_id',
-        'scholarship_name',
-        'study_level',
-        'current_semester',
-        'family_dependents',
-        'gpa_last_2_semesters',
-        'ipk',
-        'sks_last_2_semesters',
-        'total_sks_passed',
-        'on_leave',
-        'leave_semester',
-        'thesis_status',
-        'exam_plan_month',
-        'exam_plan_year',
-        'exam_plan_date',
-        'has_scholarship_history',
-        'history_source',
-        'history_period',
-        'history_amount',
-        'history_status',
-        'ktm_path',
-        'transkrip_nilai_path',
-        'slip_gaji_ayah_path',
-        'slip_gaji_ibu_path',
-        'generated_docx_path',
+        'nama_penerima',
+        'nama_perusahaan',
+        'alamat_perusahaan',
+        'peran',
+        'rentang_tanggal',
+        'dosen_pembimbing_dpa',
+        'proposal_kegiatan_magang_path',
         'nomor_surat',
         'generated_pdf_path',
         'assigned_to',
@@ -62,17 +47,12 @@ class ScholarshipApplication extends Model
     ];
 
     protected $casts = [
-        'history_amount' => 'decimal:2',
         'submitted_at' => 'datetime',
         'tendik_approved_at' => 'datetime',
         'kaprodi_approved_at' => 'datetime',
         'kadep_approved_at' => 'datetime',
         'student_reviewed_at' => 'datetime',
         'completed_at' => 'datetime',
-    ];
-
-    protected $appends = [
-        // Redundant profile data removed
     ];
 
     public function user()

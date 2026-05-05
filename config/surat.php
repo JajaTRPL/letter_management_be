@@ -3,20 +3,33 @@
 return [
     'types' => [
         [
-            'key' => 'aktif',
-            'name' => 'Surat Keterangan Aktif',
+            'key' => 'surat-keterangan-aktif',
+            'label' => 'Surat Keterangan Aktif',
+            'category' => 'administrasi',
+            'legacy_keys' => ['aktif'],
         ],
         [
-            'key' => 'magang',
-            'name' => 'Surat Pengantar Magang',
+            'key' => 'surat-pengantar-magang',
+            'label' => 'Surat Pengantar Magang',
+            'category' => 'administrasi',
+            'legacy_keys' => ['magang'],
         ],
         [
-            'key' => 'beasiswa',
-            'name' => 'Surat Permohonan Beasiswa',
+            'key' => 'surat-permohonan-beasiswa',
+            'label' => 'Surat Permohonan Beasiswa',
+            'category' => 'administrasi',
+            'legacy_keys' => [
+                'beasiswa',
+                'Beasiswa',
+                'Surat Beasiswa',
+                'Surat Permohonan Beasiswa',
+            ],
         ],
         [
-            'key' => 'luar_negeri',
-            'name' => 'Proses Luar Negeri',
+            'key' => 'proses-luar-negeri',
+            'label' => 'Proses Luar Negeri',
+            'category' => 'administrasi',
+            'legacy_keys' => ['luar_negeri'],
         ],
     ],
 ];
