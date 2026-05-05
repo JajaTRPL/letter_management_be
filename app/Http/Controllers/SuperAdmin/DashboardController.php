@@ -44,22 +44,26 @@ class DashboardController extends Controller
         };
 
         // Stats counts
-        $baseQuery = ScholarshipApplication::where('status', '!=', 'Draft');
+        $baseQuery = ScholarshipApplication::where('status', '!=', ScholarshipApplication::STATUS_DRAFT);
 
         $suratMasuk = (clone $baseQuery)
             ->where('submitted_at', '>=', $startDate)
             ->count();
 
         $menungguPersetujuan = (clone $baseQuery)
-            ->whereIn('status', ['Submitted', 'Approved_Tendik', 'Approved_Kaprodi'])
+            ->whereIn('status', [
+                ScholarshipApplication::STATUS_SUBMITTED,
+                ScholarshipApplication::STATUS_APPROVED_TENDIK,
+                ScholarshipApplication::STATUS_APPROVED_KAPRODI,
+            ])
             ->count();
 
         $perluRevisi = (clone $baseQuery)
-            ->where('status', 'Revision')
+            ->where('status', ScholarshipApplication::STATUS_REVISION)
             ->count();
 
         $selesai = (clone $baseQuery)
-            ->whereIn('status', ['Completed', 'Approved_Kadep'])
+            ->where('status', ScholarshipApplication::STATUS_COMPLETED)
             ->where('submitted_at', '>=', $startDate)
             ->count();
 
@@ -67,7 +71,11 @@ class DashboardController extends Controller
         $overdueThreshold = Carbon::now()->subDays(3);
         
         $overdueApplications = ScholarshipApplication::with(['user', 'mahasiswaProfile', 'assignedUser'])
-            ->whereNotIn('status', ['Draft', 'Completed', 'Rejected', 'Approved_Kadep'])
+            ->whereNotIn('status', [
+                ScholarshipApplication::STATUS_DRAFT,
+                ScholarshipApplication::STATUS_COMPLETED,
+                ScholarshipApplication::STATUS_REJECTED,
+            ])
             ->where('submitted_at', '<=', $overdueThreshold)
             ->orderBy('submitted_at', 'desc')
             ->get()
@@ -82,6 +90,7 @@ class DashboardController extends Controller
                     'assigned_to_name' => $app->assignedUser?->name ?? '-',
                     'days_overdue' => $daysOverdue,
                     'type' => $app->scholarship_name ?? 'Beasiswa',
+                    'letter_type' => ScholarshipApplication::LETTER_TYPE,
                 ];
             });
 
