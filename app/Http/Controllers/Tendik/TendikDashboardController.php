@@ -3,98 +3,152 @@
 namespace App\Http\Controllers\Tendik;
 
 use App\Http\Controllers\Controller;
+use App\Models\ProsesLuarNegeriApplication;
 use App\Models\ScholarshipApplication;
+use App\Models\SuratKeteranganAktifApplication;
+use App\Models\SuratPengantarMagangApplication;
 use App\Models\User;
 use App\Notifications\ScholarshipStatusNotification;
 use App\Enums\UserStatus;
+use App\Services\LetterAssignmentService;
+use App\Services\LetterTaskFeedService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Notification;
 
 class TendikDashboardController extends Controller
 {
+    public function __construct(
+        private LetterAssignmentService $assignmentService,
+        private LetterTaskFeedService $taskFeedService
+    )
+    {
+    }
+
     /**
      * Get dashboard data for the authenticated Tendik
      */
     public function getDashboardData()
     {
         $user = Auth::user();
-        $canHandleScholarship = is_array($user->assigned_tasks) && 
-            collect($user->assigned_tasks)->contains(fn($t) => str_contains(strtolower($t), 'beasiswa'));
-        
-        $canHandleLetter = is_array($user->assigned_tasks) && 
-            collect($user->assigned_tasks)->contains(fn($t) => str_contains(strtolower($t), 'aktif'));
+        $canHandleMagang = $this->assignmentService->canHandle($user, SuratPengantarMagangApplication::LETTER_TYPE);
+        $canHandleAktif = $this->assignmentService->canHandle($user, SuratKeteranganAktifApplication::LETTER_TYPE);
+        $canHandleProsesLuarNegeri = $this->assignmentService->canHandle($user, ProsesLuarNegeriApplication::LETTER_TYPE);
 
-        // Fetch scholarship applications
-        $scholarshipQuery = ScholarshipApplication::where(function ($query) use ($user, $canHandleScholarship) {
-            $query->where('assigned_to', $user->id);
-            if ($canHandleScholarship) {
-                $query->orWhere(function ($q) {
-                    $q->where('status', 'Submitted')
-                      ->whereNull('assigned_to');
-                });
-            }
-        })
-        ->whereNotIn('status', ['Draft']);
-
-        // Fetch letter applications
-        $letterQuery = \App\Models\LetterApplication::where(function ($query) use ($user, $canHandleLetter) {
-            $query->where('assigned_to', $user->id);
-            if ($canHandleLetter) {
-                $query->orWhere(function ($q) {
-                    $q->where('status', 'Pending Tendik Approval')
-                      ->whereNull('assigned_to');
-                });
-            }
-        })
-        ->whereNotIn('status', ['Draft']);
+        // Fetch scholarship applications:
+        // - Directly assigned to this user (any status)
+        // - OR submitted status AND (assigned to this user OR this user can handle scholarship)
+        $baseQuery = $this->assignmentService->applyFeedVisibility(
+            ScholarshipApplication::query(),
+            $user,
+            ScholarshipApplication::LETTER_TYPE,
+            [ScholarshipApplication::STATUS_SUBMITTED]
+        )
+        ->whereNotIn('status', [ScholarshipApplication::STATUS_DRAFT]);
 
         // Calculate Stats
         $stats = [
-            'total_incoming' => $scholarshipQuery->count() + $letterQuery->count(),
-            'needs_verification' => (clone $scholarshipQuery)->where('status', 'Submitted')->count() + (clone $letterQuery)->where('status', 'Pending Tendik Approval')->count(),
-            'finished_this_month' => (clone $scholarshipQuery)->whereIn('status', ['Approved_Tendik', 'Approved_Kaprodi', 'Approved_Kadep', 'Completed'])
-                ->where('updated_at', '>=', now()->startOfMonth())->count() + 
-                (clone $letterQuery)->whereIn('status', ['Approved_Tendik', 'Completed'])
-                ->where('updated_at', '>=', now()->startOfMonth())->count(),
+            'total_incoming' => (clone $baseQuery)->count(),
+            'needs_verification' => (clone $baseQuery)->where('status', ScholarshipApplication::STATUS_SUBMITTED)->count(),
+            'finished_this_month' => (clone $baseQuery)->whereIn('status', [
+                ScholarshipApplication::STATUS_APPROVED_TENDIK,
+                ScholarshipApplication::STATUS_APPROVED_KAPRODI,
+                ScholarshipApplication::STATUS_COMPLETED,
+            ])
+                ->where('updated_at', '>=', now()->startOfMonth())
+                ->count(),
         ];
 
-        $scholarshipTasks = $scholarshipQuery->with(['mahasiswaProfile.user', 'user'])->get();
-        $letterTasks = $letterQuery->with(['mahasiswaProfile.user', 'user'])->get();
+        $tasks = (clone $baseQuery)
+            ->with(['mahasiswaProfile.user', 'user'])
+            ->orderBy('submitted_at', 'desc')
+            ->limit(100)
+            ->get();
 
-        $mergedTasks = $scholarshipTasks->map(function ($task) {
-            return [
-                'id' => $task->id,
-                'db_id' => $task->id,
-                'submitted_at' => $task->submitted_at ? $task->submitted_at->format('d M Y, H.i') : $task->created_at->format('d M Y, H.i'),
-                'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? ($task->mahasiswaProfile?->user?->name ?? $task->user?->name ?? '-'),
-                'nim' => $task->mahasiswaProfile?->nim ?? '-',
-                'type' => 'Surat Beasiswa',
-                'category' => 'beasiswa',
-                'scholarship_name' => $task->scholarship_name,
-                'status' => $task->status === 'Submitted' ? 'Menunggu Verifikasi' : $task->status,
-                'is_overdue' => $task->submitted_at && $task->submitted_at->diffInHours(now()) > 24,
-                'docx_url' => $task->generated_docx_path ? '/api/storage/' . $task->generated_docx_path : null,
-            ];
-        })->concat($letterTasks->map(function ($task) {
-            return [
-                'id' => 'letter-' . $task->id,
-                'db_id' => $task->id,
-                'submitted_at' => $task->submitted_at ? $task->submitted_at->format('d M Y, H.i') : $task->created_at->format('d M Y, H.i'),
-                'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? ($task->mahasiswaProfile?->user?->name ?? $task->user?->name ?? '-'),
-                'nim' => $task->mahasiswaProfile?->nim ?? '-',
-                'type' => 'Surat Keterangan Aktif',
-                'category' => 'aktif',
-                'scholarship_name' => $task->keperluan,
-                'status' => $task->status === 'Pending Tendik Approval' ? 'Menunggu Verifikasi' : $task->status,
-                'is_overdue' => $task->submitted_at && $task->submitted_at->diffInHours(now()) > 24,
-                'docx_url' => $task->generated_docx_path ? '/api/storage/' . $task->generated_docx_path : null,
-            ];
-        }))->sortByDesc('submitted_at')->values();
+        $magangTasks = collect();
+        if ($canHandleMagang) {
+            $magangBaseQuery = $this->assignmentService->applyFeedVisibility(
+                SuratPengantarMagangApplication::whereIn('status', [
+                    SuratPengantarMagangApplication::STATUS_SUBMITTED,
+                    SuratPengantarMagangApplication::STATUS_APPROVED_TENDIK,
+                ]),
+                $user,
+                SuratPengantarMagangApplication::LETTER_TYPE
+            );
+
+            $stats['total_incoming'] += (clone $magangBaseQuery)->count();
+            $stats['needs_verification'] += (clone $magangBaseQuery)
+                ->where('status', SuratPengantarMagangApplication::STATUS_SUBMITTED)
+                ->count();
+            $stats['finished_this_month'] += (clone $magangBaseQuery)
+                ->where('status', SuratPengantarMagangApplication::STATUS_APPROVED_TENDIK)
+                ->where('updated_at', '>=', now()->startOfMonth())
+                ->count();
+
+            $magangTasks = (clone $magangBaseQuery)
+                ->with(['mahasiswaProfile.user', 'user'])
+                ->orderBy('submitted_at', 'desc')
+                ->limit(100)
+                ->get();
+        }
+
+        $aktifTasks = collect();
+        if ($canHandleAktif) {
+            $aktifBaseQuery = $this->assignmentService->applyFeedVisibility(
+                SuratKeteranganAktifApplication::whereIn('status', [
+                    SuratKeteranganAktifApplication::STATUS_SUBMITTED,
+                    SuratKeteranganAktifApplication::STATUS_APPROVED_TENDIK,
+                ]),
+                $user,
+                SuratKeteranganAktifApplication::LETTER_TYPE
+            );
+
+            $stats['total_incoming'] += (clone $aktifBaseQuery)->count();
+            $stats['needs_verification'] += (clone $aktifBaseQuery)
+                ->where('status', SuratKeteranganAktifApplication::STATUS_SUBMITTED)
+                ->count();
+            $stats['finished_this_month'] += (clone $aktifBaseQuery)
+                ->where('status', SuratKeteranganAktifApplication::STATUS_APPROVED_TENDIK)
+                ->where('updated_at', '>=', now()->startOfMonth())
+                ->count();
+
+            $aktifTasks = (clone $aktifBaseQuery)
+                ->with(['mahasiswaProfile.user', 'user'])
+                ->orderBy('submitted_at', 'desc')
+                ->limit(100)
+                ->get();
+        }
+
+        $prosesLuarNegeriTasks = collect();
+        if ($canHandleProsesLuarNegeri) {
+            $prosesLuarNegeriBaseQuery = $this->assignmentService->applyFeedVisibility(
+                ProsesLuarNegeriApplication::whereIn('status', [
+                    ProsesLuarNegeriApplication::STATUS_SUBMITTED,
+                    ProsesLuarNegeriApplication::STATUS_APPROVED_TENDIK,
+                ]),
+                $user,
+                ProsesLuarNegeriApplication::LETTER_TYPE
+            );
+
+            $stats['total_incoming'] += (clone $prosesLuarNegeriBaseQuery)->count();
+            $stats['needs_verification'] += (clone $prosesLuarNegeriBaseQuery)
+                ->where('status', ProsesLuarNegeriApplication::STATUS_SUBMITTED)
+                ->count();
+            $stats['finished_this_month'] += (clone $prosesLuarNegeriBaseQuery)
+                ->where('status', ProsesLuarNegeriApplication::STATUS_APPROVED_TENDIK)
+                ->where('updated_at', '>=', now()->startOfMonth())
+                ->count();
+
+            $prosesLuarNegeriTasks = (clone $prosesLuarNegeriBaseQuery)
+                ->with(['mahasiswaProfile.user', 'user'])
+                ->orderBy('submitted_at', 'desc')
+                ->limit(100)
+                ->get();
+        }
 
         return response()->json([
             'stats' => $stats,
-            'tasks' => $mergedTasks
+            'tasks' => $this->taskFeedService->combinedTendikRows($tasks, $magangTasks, $aktifTasks, $prosesLuarNegeriTasks),
         ]);
     }
 
@@ -126,12 +180,18 @@ class TendikDashboardController extends Controller
     /**
      * Approve scholarship application (Tendik → forward to Kaprodi)
      */
-    public function approve(ScholarshipApplication $application)
+    public function approve(ScholarshipApplication $application, Request $request)
     {
-        $application->update([
-            'status' => 'Approved_Tendik',
+        $updateData = [
+            'status' => ScholarshipApplication::STATUS_APPROVED_TENDIK,
             'tendik_approved_at' => now(),
-        ]);
+        ];
+
+        if ($request->filled('nomor_surat')) {
+            $updateData['nomor_surat'] = $request->input('nomor_surat');
+        }
+
+        $application->update($updateData);
         
         // Notify Kaprodi and Sekprodi
         $academics = User::where('role', 'akademik')
@@ -153,9 +213,15 @@ class TendikDashboardController extends Controller
     /**
      * Reject scholarship application
      */
-    public function reject(ScholarshipApplication $application)
+    public function reject(ScholarshipApplication $application, Request $request)
     {
-        $application->update(['status' => 'Rejected']);
+        $updateData = ['status' => ScholarshipApplication::STATUS_REJECTED];
+
+        if ($request->filled('reason')) {
+            $updateData['rejection_reason'] = $request->input('reason');
+        }
+
+        $application->update($updateData);
         $application->load('user');
         $application->user->notify(new ScholarshipStatusNotification(
             $application,
@@ -169,7 +235,13 @@ class TendikDashboardController extends Controller
      */
     public function revise(ScholarshipApplication $application, Request $request)
     {
-        $application->update(['status' => 'Revision']);
+        $updateData = ['status' => ScholarshipApplication::STATUS_REVISION];
+
+        if ($request->filled('note')) {
+            $updateData['revision_note'] = $request->input('note');
+        }
+
+        $application->update($updateData);
         $application->load('user');
         $application->user->notify(new ScholarshipStatusNotification(
             $application,
@@ -178,50 +250,4 @@ class TendikDashboardController extends Controller
         return response()->json(['message' => 'Permintaan revisi berhasil dikirim']);
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Letter Application Handlers
-    |--------------------------------------------------------------------------
-    */
-
-    public function showLetter(\App\Models\LetterApplication $application)
-    {
-        $application->load(['mahasiswaProfile.user', 'user']);
-        
-        return response()->json([
-            'application' => $application,
-            'student' => [
-                'name' => $application->mahasiswaProfile?->nama_lengkap ?? $application->user->name,
-                'nim' => $application->mahasiswaProfile?->nim,
-                'prodi' => $application->mahasiswaProfile?->program_studi,
-                'email' => $application->user->email,
-                'submitted_at' => $application->submitted_at ? $application->submitted_at->format('d F Y, H.i') : $application->created_at->format('d F Y, H.i'),
-            ],
-            'docx_url' => $application->generated_docx_path ? '/api/storage/' . $application->generated_docx_path : null
-        ]);
-    }
-
-    public function approveLetter(\App\Models\LetterApplication $application)
-    {
-        $application->update([
-            'status' => 'Completed',
-            'updated_at' => now(),
-        ]);
-        
-        // You could add a notification here
-        
-        return response()->json(['message' => 'Surat Keterangan Aktif berhasil disetujui dan diselesaikan.']);
-    }
-
-    public function rejectLetter(\App\Models\LetterApplication $application)
-    {
-        $application->update(['status' => 'Rejected']);
-        return response()->json(['message' => 'Surat Keterangan Aktif berhasil ditolak.']);
-    }
-
-    public function reviseLetter(\App\Models\LetterApplication $application)
-    {
-        $application->update(['status' => 'Revision']);
-        return response()->json(['message' => 'Permintaan revisi berhasil dikirim.']);
-    }
 }
