@@ -4,38 +4,34 @@ namespace App\Services;
 
 use App\Models\ScholarshipApplication;
 use App\Models\User;
-use App\Enums\UserStatus;
 use Illuminate\Support\Facades\Storage;
 use PhpOffice\PhpWord\TemplateProcessor;
 use Illuminate\Support\Facades\Log;
+use RuntimeException;
 
 class ScholarshipAutomationService
 {
-    /**
-     * Assign the application to a Tendik based on "Beasiswa" task.
-     */
-    public function assignApplication(ScholarshipApplication $application)
+    public function __construct(private LetterAssignmentService $assignmentService)
     {
-        // Search for a Tendik that has any task containing "Beasiswa" in their assigned_tasks JSON
-        $assignedTendik = User::where('role', 'tendik')
-            ->where('status', UserStatus::Active)
-            ->where('assigned_tasks', 'LIKE', '%Beasiswa%')
-            ->first();
+    }
 
-        if ($assignedTendik) {
-            $application->assigned_to = $assignedTendik->id;
-            $application->save();
-            return $assignedTendik;
-        }
-
-        return null;
+    /**
+     * Assign the application to an active Tendik Persuratan responsible for Beasiswa letters.
+     */
+    public function assignApplication(ScholarshipApplication $application): ?User
+    {
+        return $this->assignmentService->assignToEligibleTendik($application, ScholarshipApplication::LETTER_TYPE);
     }
 
     /**
      * Generate populated DOCX from Google Docs template.
      */
-    public function generateDocument(ScholarshipApplication $application)
+    public function generateDocument(ScholarshipApplication $application): string|false
     {
+        $tempTemplatePath = null;
+        $tempOutputPath = null;
+        $publicPath = null;
+
         try {
             $templateId = env('TEMPLATE_BEASISWA_ID', '1wnQYvwVO45M3LDDLEitsfjMFgkwj9S7f'); 
             $url = "https://docs.google.com/document/d/{$templateId}/export?format=docx";
@@ -55,16 +51,22 @@ class ScholarshipAutomationService
                 return false;
             }
 
-            // Save temporarily
-            $tempPath = storage_path('app/temp_template_' . $application->id . '.docx');
-            file_put_contents($tempPath, $templateContent);
+            $tempDirectory = storage_path('app/temp/scholarships');
+            if (!is_dir($tempDirectory) && !mkdir($tempDirectory, 0775, true) && !is_dir($tempDirectory)) {
+                throw new RuntimeException("Unable to create temporary scholarship directory.");
+            }
+
+            $tempTemplatePath = $tempDirectory . DIRECTORY_SEPARATOR . 'template_' . $application->id . '_' . uniqid('', true) . '.docx';
+            if (file_put_contents($tempTemplatePath, $templateContent) === false) {
+                throw new RuntimeException("Unable to write temporary scholarship template.");
+            }
 
             // Load relations
             $application->load(['mahasiswaProfile.keluarga', 'mahasiswaProfile.scholarshipHistories', 'user']);
             $profile = $application->mahasiswaProfile;
             $family = $profile->keluarga;
 
-            $templateProcessor = new TemplateProcessor($tempPath);
+            $templateProcessor = new TemplateProcessor($tempTemplatePath);
 
             // Fetch all variables to fix potential split tags issue (common in Google Docs exports)
             // TemplateProcessor handles this internally but sometimes needs explicit values.
@@ -141,27 +143,86 @@ class ScholarshipAutomationService
             $this->mapImages($templateProcessor, $profile);
 
             // 7. Save
-            $filename = 'scholarship_application_' . $application->id . '_' . time() . '.docx';
+            $filename = 'scholarship_application_' . $application->id . '_' . time() . '_' . str_replace('.', '', uniqid('', true)) . '.docx';
             $publicPath = 'scholarships/' . $filename;
             
             if (!Storage::disk('public')->exists('scholarships')) {
                 Storage::disk('public')->makeDirectory('scholarships');
             }
 
+            $tempOutputPath = $tempDirectory . DIRECTORY_SEPARATOR . 'generated_' . $application->id . '_' . uniqid('', true) . '.docx';
+            $templateProcessor->saveAs($tempOutputPath);
+
+            if (!file_exists($tempOutputPath) || filesize($tempOutputPath) <= 0) {
+                throw new RuntimeException("Generated scholarship document is empty or missing.");
+            }
+
             $savePath = Storage::disk('public')->path($publicPath);
-            $templateProcessor->saveAs($savePath);
+            if (!@rename($tempOutputPath, $savePath)) {
+                if (!@copy($tempOutputPath, $savePath)) {
+                    throw new RuntimeException("Unable to move generated scholarship document into public storage.");
+                }
+                @unlink($tempOutputPath);
+            }
 
-            if (file_exists($tempPath)) unlink($tempPath);
-
-            $application->generated_docx_path = $publicPath;
-            $application->save();
+            if (!Storage::disk('public')->exists($publicPath)) {
+                throw new RuntimeException("Generated scholarship document was not saved.");
+            }
 
             return $publicPath;
 
         } catch (\Exception $e) {
+            if ($publicPath && Storage::disk('public')->exists($publicPath)) {
+                Storage::disk('public')->delete($publicPath);
+            }
+
             Log::error("Error generating document: " . $e->getMessage());
             return false;
+        } finally {
+            foreach ([$tempTemplatePath, $tempOutputPath] as $tempPath) {
+                if ($tempPath && file_exists($tempPath)) {
+                    @unlink($tempPath);
+                }
+            }
         }
+    }
+
+    public function deleteGeneratedDocument(?string $path): void
+    {
+        $publicPath = $this->normalizeGeneratedDocumentPath($path);
+        if ($publicPath && Storage::disk('public')->exists($publicPath)) {
+            Storage::disk('public')->delete($publicPath);
+        }
+    }
+
+    private function normalizeGeneratedDocumentPath(?string $path): ?string
+    {
+        if (!$path) {
+            return null;
+        }
+
+        $path = parse_url($path, PHP_URL_PATH) ?: $path;
+        $path = str_replace('\\', '/', trim($path));
+        $path = ltrim($path, '/');
+
+        if (str_starts_with($path, 'storage/')) {
+            $path = substr($path, strlen('storage/'));
+        }
+
+        if (str_starts_with($path, 'api/storage/')) {
+            $path = substr($path, strlen('api/storage/'));
+        }
+
+        if (
+            $path === ''
+            || str_contains($path, '..')
+            || !str_starts_with($path, 'scholarships/')
+            || !str_ends_with(strtolower($path), '.docx')
+        ) {
+            return null;
+        }
+
+        return $path;
     }
 
     private function mapFamilyData(TemplateProcessor $templateProcessor, $family)

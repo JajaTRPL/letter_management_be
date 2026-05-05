@@ -4,7 +4,6 @@ namespace App\Services;
 
 use App\Models\ScholarshipApplication;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 
 class SuratAnalyticsService
 {
@@ -117,7 +116,7 @@ class SuratAnalyticsService
     private function queryCompletedDurations($since)
     {
         $query = ScholarshipApplication::whereNotNull('submitted_at')
-            ->whereIn('status', ['Completed', 'Approved_Kadep'])
+            ->where('status', ScholarshipApplication::STATUS_COMPLETED)
             ->where(function ($q) {
                 $q->whereNotNull('kadep_approved_at')
                   ->orWhereNotNull('kaprodi_approved_at');

@@ -3,9 +3,8 @@
 namespace App\Http\Controllers\Mahasiswa;
 
 use App\Http\Controllers\Controller;
-use App\Models\MahasiswaProfile;
-use App\Models\KeluargaMahasiswa;
 use App\Models\ScholarshipApplication;
+use App\Services\LetterDocumentAccessService;
 use App\Services\ScholarshipAutomationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -14,14 +13,17 @@ use Illuminate\Support\Facades\Validator;
 
 class ScholarshipController extends Controller
 {
+    public function __construct(private LetterDocumentAccessService $documentAccessService)
+    {
+    }
+
     /**
      * Get the current draft or a new application with auto-filled user data.
      */
     public function getStep1()
     {
         $user = Auth::user();
-        $application = ScholarshipApplication::where('user_id', $user->id)
-            ->where('status', 'Draft')
+        $application = $this->editableApplicationQuery($user->id)
             ->with('mahasiswaProfile.keluarga')
             ->first();
 
@@ -30,7 +32,7 @@ class ScholarshipController extends Controller
                 'name' => $user->name,
                 'email' => $user->email,
             ],
-            'application' => $application
+            'application' => $application ? $this->redactGeneratedDocumentPath($application) : null
         ]);
     }
 
@@ -61,14 +63,21 @@ class ScholarshipController extends Controller
             ]
         );
 
-        $application = ScholarshipApplication::updateOrCreate(
-            ['user_id' => $user->id, 'status' => 'Draft'],
-            ['mahasiswa_profile_id' => $profile->id]
-        );
+        $application = $this->editableApplicationQuery($user->id)->first();
+
+        if ($application) {
+            $application->update(['mahasiswa_profile_id' => $profile->id]);
+        } else {
+            $application = ScholarshipApplication::create([
+                'user_id' => $user->id,
+                'mahasiswa_profile_id' => $profile->id,
+                'status' => ScholarshipApplication::STATUS_DRAFT,
+            ]);
+        }
 
         return response()->json([
             'message' => 'Process 1 saved successfully',
-            'application' => $application->load('mahasiswaProfile.keluarga')
+            'application' => $this->redactGeneratedDocumentPath($application->load('mahasiswaProfile.keluarga'))
         ]);
     }
 
@@ -78,9 +87,7 @@ class ScholarshipController extends Controller
     public function saveStep2(Request $request)
     {
         $user = Auth::user();
-        $application = ScholarshipApplication::where('user_id', $user->id)
-            ->where('status', 'Draft')
-            ->firstOrFail();
+        $application = $this->editableApplicationQuery($user->id)->firstOrFail();
 
         $validator = Validator::make($request->all(), [
             'pob' => 'required|string',
@@ -189,7 +196,7 @@ class ScholarshipController extends Controller
 
         return response()->json([
             'message' => 'Process 2 saved successfully',
-            'application' => $application->load('mahasiswaProfile.keluarga')
+            'application' => $this->redactGeneratedDocumentPath($application->load('mahasiswaProfile.keluarga'))
         ]);
     }
 
@@ -213,9 +220,7 @@ class ScholarshipController extends Controller
      */
     public function saveStep3(Request $request)
     {
-        $application = ScholarshipApplication::where('user_id', Auth::id())
-            ->where('status', 'Draft')
-            ->firstOrFail();
+        $application = $this->editableApplicationQuery(Auth::id())->firstOrFail();
 
         $validator = Validator::make($request->all(), [
             'scholarship_name' => 'required|string',
@@ -291,7 +296,7 @@ class ScholarshipController extends Controller
 
         return response()->json([
             'message' => 'Step 3 saved successfully',
-            'application' => $application->load('mahasiswaProfile.keluarga')
+            'application' => $this->redactGeneratedDocumentPath($application->load('mahasiswaProfile.keluarga'))
         ]);
     }
 
@@ -300,22 +305,17 @@ class ScholarshipController extends Controller
      */
     public function submitApplication(ScholarshipAutomationService $automationService)
     {
-        $application = ScholarshipApplication::where('user_id', Auth::id())
-            ->where('status', 'Draft')
-            ->firstOrFail();
+        $application = $this->editableApplicationQuery(Auth::id())->firstOrFail();
 
         // 1. Mark as submitted
-        $application->status = 'Submitted';
+        $application->status = ScholarshipApplication::STATUS_SUBMITTED;
         $application->submitted_at = now();
         $application->save();
 
         // 2. Automate: Assign to Tendik
         $assignedTendik = $automationService->assignApplication($application);
 
-        // 3. Automate: Generate populated Word Document from Google Doc Template
-        $documentPath = $automationService->generateDocument($application);
-
-        // 4. Notify Tendik (Email & Dashboard)
+        // 3. Notify Tendik (Email & Dashboard)
         if ($assignedTendik) {
             $application->load('mahasiswaProfile');
             $assignedTendik->notify(new \App\Notifications\ScholarshipSubmittedNotification($application));
@@ -323,9 +323,9 @@ class ScholarshipController extends Controller
 
         return response()->json([
             'message' => 'Aplikasi berhasil dikirim dan sedang diproses oleh staf beasiswa.',
-            'application' => $application->load('mahasiswaProfile.keluarga'),
+            'application' => $this->redactGeneratedDocumentPath($application->load('mahasiswaProfile.keluarga')),
             'assigned_to' => $assignedTendik ? $assignedTendik->name : null,
-            'docx_path' => $documentPath
+            'docx_path' => null
         ]);
     }
 
@@ -335,12 +335,99 @@ class ScholarshipController extends Controller
     public function getApplications()
     {
         $applications = ScholarshipApplication::where('user_id', Auth::id())
-            ->where('status', '!=', 'Draft')
+            ->where('status', '!=', ScholarshipApplication::STATUS_DRAFT)
             ->orderBy('created_at', 'desc')
-            ->get();
+            ->get()
+            ->map(function (ScholarshipApplication $application) {
+                return $this->forMahasiswaApplicationListResponse($application);
+            });
 
         return response()->json([
             'applications' => $applications
         ]);
+    }
+
+    public function preview(ScholarshipApplication $application)
+    {
+        $this->documentAccessService->ensureOwner($application, Auth::user());
+
+        if (!$this->documentAccessService->canPreview($application)) {
+            return response()->json([
+                'message' => 'Dokumen belum tersedia untuk direview.'
+            ], 403);
+        }
+
+        $path = $this->documentAccessService->resolveGeneratedDocumentPath($application, 'generated_docx_path');
+        if (!$path) {
+            return response()->json([
+                'message' => 'Dokumen pengajuan belum tersedia.'
+            ], 404);
+        }
+
+        return response()->file($path, [
+            'Content-Type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'Content-Disposition' => 'inline; filename="' . $this->generatedDocumentFilename($application) . '"',
+            'Cache-Control' => 'private, no-store',
+        ]);
+    }
+
+    public function complete(ScholarshipApplication $application)
+    {
+        $this->documentAccessService->ensureOwner($application, Auth::user());
+
+        if (!$this->documentAccessService->canComplete($application)) {
+            return response()->json([
+                'message' => 'Pengajuan tidak berada pada tahap review mahasiswa.'
+            ], 403);
+        }
+
+        if (!$this->documentAccessService->resolveGeneratedDocumentPath($application, 'generated_docx_path')) {
+            return response()->json([
+                'message' => 'Dokumen pengajuan belum tersedia.'
+            ], 404);
+        }
+
+        $application->update([
+            'status' => ScholarshipApplication::STATUS_COMPLETED,
+            'student_reviewed_at' => $application->student_reviewed_at ?? now(),
+            'completed_at' => now(),
+        ]);
+
+        return response()->json([
+            'message' => 'Pengajuan berhasil diselesaikan.',
+            'application' => $application->fresh(),
+        ]);
+    }
+
+    private function editableApplicationQuery($userId)
+    {
+        return ScholarshipApplication::where('user_id', $userId)
+            ->whereIn('status', [
+                ScholarshipApplication::STATUS_REVISION,
+                ScholarshipApplication::STATUS_DRAFT,
+            ])
+            ->orderByRaw('CASE WHEN status = ? THEN 0 ELSE 1 END', [ScholarshipApplication::STATUS_REVISION])
+            ->latest();
+    }
+
+    private function redactGeneratedDocumentPath(ScholarshipApplication $application): ScholarshipApplication
+    {
+        return $this->documentAccessService->redactGeneratedPathIfNeeded($application, 'generated_docx_path');
+    }
+
+    private function forMahasiswaApplicationListResponse(ScholarshipApplication $application): ScholarshipApplication
+    {
+        $application = $this->redactGeneratedDocumentPath($application);
+        $application->setAttribute('letter_type', ScholarshipApplication::LETTER_TYPE);
+
+        return $application;
+    }
+
+    private function generatedDocumentFilename(ScholarshipApplication $application): string
+    {
+        $nim = $application->mahasiswaProfile?->nim ?: $application->id;
+        $safeNim = preg_replace('/[^A-Za-z0-9_-]+/', '_', (string) $nim);
+
+        return 'Surat_Permohonan_Beasiswa_' . $safeNim . '.docx';
     }
 }
