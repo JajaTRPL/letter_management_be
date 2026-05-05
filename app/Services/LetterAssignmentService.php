@@ -27,7 +27,7 @@ class LetterAssignmentService
                 return false;
             }
 
-            return strtolower(trim($task)) === strtolower($canonicalKey);
+            return LetterTypeRegistry::canonicalize($task) === $canonicalKey;
         });
     }
 
@@ -43,7 +43,13 @@ class LetterAssignmentService
             return $query->whereRaw('1 = 0');
         }
 
-        return $query->whereJsonContains('assigned_tasks', $canonicalKey);
+        $keys = LetterTypeRegistry::assignmentKeysFor($canonicalKey, true);
+
+        return $query->where(function (Builder $q) use ($keys) {
+            foreach ($keys as $key) {
+                $q->orWhereJsonContains('assigned_tasks', $key);
+            }
+        });
     }
 
     public function findEligiblePersuratanTendik(string $letterType): ?User
