@@ -10,10 +10,12 @@ use App\Helpers\NimHelper;
 use App\Helpers\DateHelper;
 use App\Services\ActivityLogService;
 use App\Enums\UserStatus;
+use App\Support\LetterTypeRegistry;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Maatwebsite\Excel\Facades\Excel;
 use App\Exports\UsersExport;
@@ -65,6 +67,7 @@ class UserController extends Controller
             'department_id' => 'nullable|integer|exists:departments,id',
             'role_level' => 'nullable|in:primary,secondary',
             'assigned_tasks' => 'nullable|array',
+            'assigned_tasks.*' => ['string', Rule::in(LetterTypeRegistry::canonicalKeys())],
             'nim' => 'nullable|string|unique:mahasiswa_profiles,nim',
             'tanggal_lahir' => 'nullable|date',
         ];
@@ -112,6 +115,11 @@ class UserController extends Controller
             $validated['tendik_role'] = null;
             $validated['laboratory_id'] = null;
         }
+        $validated['assigned_tasks'] = $this->assignedTasksForRole(
+            $validated['role'],
+            $validated['tendik_role'] ?? null,
+            $validated['assigned_tasks'] ?? null
+        );
 
         // Only Primary Super Admin can create super_admin accounts
         if ($validated['role'] === 'super_admin') {
@@ -221,6 +229,7 @@ class UserController extends Controller
             'department_id' => 'nullable|integer|exists:departments,id',
             'role_level' => 'nullable|in:primary,secondary',
             'assigned_tasks' => 'nullable|array',
+            'assigned_tasks.*' => ['string', Rule::in(LetterTypeRegistry::canonicalKeys())],
             'status' => 'nullable|' . UserStatus::validationRule(),
             // Mahasiswa details
             'nim' => 'sometimes|nullable|string|unique:mahasiswa_profiles,nim,' . ($user->mahasiswaProfile->id ?? 'NULL'),
@@ -305,6 +314,18 @@ class UserController extends Controller
 
         if (isset($validated['password'])) {
             $validated['password'] = Hash::make($validated['password']);
+        }
+
+        if (
+            array_key_exists('role', $validated)
+            || array_key_exists('tendik_role', $validated)
+            || array_key_exists('assigned_tasks', $validated)
+        ) {
+            $validated['assigned_tasks'] = $this->assignedTasksForRole(
+                $validated['role'] ?? $user->role,
+                $validated['tendik_role'] ?? $user->tendik_role,
+                $validated['assigned_tasks'] ?? $user->assigned_tasks
+            );
         }
 
         $user->update($validated);
@@ -906,5 +927,14 @@ class UserController extends Controller
             fputcsv($file, ['Jane Smith', 'jane.smith@mail.ugm.ac.id', '24/535279/SV/12346', 'TRI', '2004-08-22']);
             fclose($file);
         }, 200, $headers);
+    }
+
+    private function assignedTasksForRole(string $role, ?string $tendikRole, ?array $assignedTasks): ?array
+    {
+        if ($role !== 'tendik' || $tendikRole !== 'persuratan') {
+            return null;
+        }
+
+        return array_values(array_unique($assignedTasks ?? []));
     }
 }

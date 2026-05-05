@@ -29,7 +29,21 @@ Route::middleware('throttle:api')->group(function () {
     |--------------------------------------------------------------------------
     */
     // Route to serve PDF files directly bypassing IIS/Windows symlink issues
-    Route::get('/storage/{folder}/{filename}', function ($folder, $filename) {
+        Route::get('/storage/{folder}/{filename}', function ($folder, $filename) {
+        $relativePath = str_replace('\\', '/', trim($folder . '/' . $filename, '/'));
+        if ($relativePath === 'surat-pengantar-magang/generated' || str_starts_with($relativePath, 'surat-pengantar-magang/generated/')) {
+            abort(403);
+        }
+        if ($relativePath === 'surat-keterangan-aktif/generated' || str_starts_with($relativePath, 'surat-keterangan-aktif/generated/')) {
+            abort(403);
+        }
+        if ($relativePath === 'proses-luar-negeri/generated' || str_starts_with($relativePath, 'proses-luar-negeri/generated/')) {
+            abort(403);
+        }
+        if ($relativePath === 'scholarships' || str_starts_with($relativePath, 'scholarships/') || str_contains($relativePath, '/scholarships/')) {
+            abort(403);
+        }
+
         $path = storage_path('app/public/' . $folder . '/' . $filename);
         if (!file_exists($path)) {
             abort(404);
@@ -53,7 +67,7 @@ Route::middleware('throttle:api')->group(function () {
 
         // List of Active Surat Types
         Route::get('/surat-types', function () {
-            return response()->json(config('surat.types', []));
+            return response()->json(\App\Support\LetterTypeRegistry::forApi());
         });
 
         // Mahasiswa Profile
@@ -115,10 +129,42 @@ Route::middleware('throttle:api')->group(function () {
             Route::get('/dashboard/tasks', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'getDashboardData']);
             
             // Scholarship Review Actions
-            Route::get('/scholarship/{application}', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'show']);
-            Route::patch('/scholarship/{application}/approve', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'approve']);
-            Route::patch('/scholarship/{application}/reject', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'reject']);
-            Route::patch('/scholarship/{application}/revise', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'revise']);
+            foreach (['scholarship', 'surat-permohonan-beasiswa'] as $scholarshipRoutePrefix) {
+                Route::prefix($scholarshipRoutePrefix)->group(function () {
+                    Route::get('/{application}', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'show']);
+                    Route::patch('/{application}/approve', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'approve']);
+                    Route::patch('/{application}/reject', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'reject']);
+                    Route::patch('/{application}/revise', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'revise']);
+                });
+            }
+
+            // Surat Pengantar Magang Review Actions
+            Route::prefix('surat-pengantar-magang')->group(function () {
+                Route::get('/{application}', [\App\Http\Controllers\SuratPengantarMagangController::class, 'showForReviewer']);
+                Route::patch('/{application}/approve', [\App\Http\Controllers\SuratPengantarMagangController::class, 'approveByTendik']);
+                Route::patch('/{application}/reject', [\App\Http\Controllers\SuratPengantarMagangController::class, 'rejectByTendik']);
+                Route::patch('/{application}/revise', [\App\Http\Controllers\SuratPengantarMagangController::class, 'reviseByTendik']);
+            });
+
+            Route::prefix('surat-keterangan-aktif')->group(function () {
+                Route::get('/{application}', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'showForReviewer']);
+                Route::patch('/{application}/approve', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'approveByTendik']);
+                Route::patch('/{application}/reject', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'rejectByTendik']);
+                Route::patch('/{application}/revise', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'reviseByTendik']);
+            });
+
+            Route::prefix('proses-luar-negeri')->group(function () {
+                Route::get('/{application}', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'showForReviewer']);
+                Route::patch('/{application}/approve', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'approveByTendik']);
+                Route::patch('/{application}/reject', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'rejectByTendik']);
+                Route::patch('/{application}/revise', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'reviseByTendik']);
+            });
+
+            // Letter Review Actions
+            Route::get('/letter/{application}', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'showLetter']);
+            Route::patch('/letter/{application}/approve', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'approveLetter']);
+            Route::patch('/letter/{application}/reject', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'rejectLetter']);
+            Route::patch('/letter/{application}/revise', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'reviseLetter']);
 
             Route::get('/dashboard', function () {
                 return response()->json(['message' => 'Halaman Dasbord Khusus Tendik']);
@@ -128,10 +174,36 @@ Route::middleware('throttle:api')->group(function () {
         // Akademik (Kaprodi/Sekprodi) Routes
         Route::middleware('role:akademik')->prefix('akademik')->group(function () {
             Route::get('/dashboard/tasks', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'getDashboardData']);
-            Route::get('/scholarship/{application}', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'show']);
-            Route::patch('/scholarship/{application}/approve', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'approve']);
-            Route::patch('/scholarship/{application}/reject', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'reject']);
-            Route::patch('/scholarship/{application}/revise', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'revise']);
+
+            foreach (['scholarship', 'surat-permohonan-beasiswa'] as $scholarshipRoutePrefix) {
+                Route::prefix($scholarshipRoutePrefix)->group(function () {
+                    Route::get('/{application}', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'show']);
+                    Route::patch('/{application}/approve', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'approve']);
+                    Route::patch('/{application}/reject', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'reject']);
+                    Route::patch('/{application}/revise', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'revise']);
+                });
+            }
+
+            Route::prefix('surat-pengantar-magang')->group(function () {
+                Route::get('/{application}', [\App\Http\Controllers\SuratPengantarMagangController::class, 'showForReviewer']);
+                Route::patch('/{application}/approve', [\App\Http\Controllers\SuratPengantarMagangController::class, 'approveByAkademik']);
+                Route::patch('/{application}/reject', [\App\Http\Controllers\SuratPengantarMagangController::class, 'rejectByAkademik']);
+                Route::patch('/{application}/revise', [\App\Http\Controllers\SuratPengantarMagangController::class, 'reviseByAkademik']);
+            });
+
+            Route::prefix('surat-keterangan-aktif')->group(function () {
+                Route::get('/{application}', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'showForReviewer']);
+                Route::patch('/{application}/approve', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'approveByAkademik']);
+                Route::patch('/{application}/reject', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'rejectByAkademik']);
+                Route::patch('/{application}/revise', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'reviseByAkademik']);
+            });
+
+            Route::prefix('proses-luar-negeri')->group(function () {
+                Route::get('/{application}', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'showForReviewer']);
+                Route::patch('/{application}/approve', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'approveByAkademik']);
+                Route::patch('/{application}/reject', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'rejectByAkademik']);
+                Route::patch('/{application}/revise', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'reviseByAkademik']);
+            });
         });
 
 
@@ -158,13 +230,54 @@ Route::middleware('throttle:api')->group(function () {
             });
 
             // Scholarship Application Routes
-            Route::prefix('scholarship')->group(function () {
-                Route::get('/applications', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'getApplications']);
-                Route::get('/step-1', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'getStep1']);
-                Route::post('/step-1', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'saveStep1']);
-                Route::post('/step-2', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'saveStep2']);
-                Route::post('/step-3', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'saveStep3']);
-                Route::post('/submit', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'submitApplication']);
+            foreach (['scholarship', 'surat-permohonan-beasiswa'] as $scholarshipRoutePrefix) {
+                Route::prefix($scholarshipRoutePrefix)->group(function () {
+                    Route::get('/applications', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'getApplications']);
+                    Route::get('/{application}/preview', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'preview']);
+                    Route::post('/{application}/complete', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'complete']);
+                    Route::get('/step-1', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'getStep1']);
+                    Route::post('/step-1', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'saveStep1']);
+                    Route::post('/step-2', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'saveStep2']);
+                    Route::post('/step-3', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'saveStep3']);
+                    Route::post('/submit', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'submitApplication']);
+                });
+            }
+
+            Route::prefix('surat-pengantar-magang')->group(function () {
+                Route::get('/applications', [\App\Http\Controllers\SuratPengantarMagangController::class, 'getApplications']);
+                Route::get('/draft', [\App\Http\Controllers\SuratPengantarMagangController::class, 'getDraft']);
+                Route::post('/draft', [\App\Http\Controllers\SuratPengantarMagangController::class, 'saveDraft']);
+                Route::post('/submit', [\App\Http\Controllers\SuratPengantarMagangController::class, 'submitApplication']);
+                Route::get('/{application}/preview', [\App\Http\Controllers\SuratPengantarMagangController::class, 'preview']);
+                Route::post('/{application}/complete', [\App\Http\Controllers\SuratPengantarMagangController::class, 'complete']);
+                Route::get('/{application}', [\App\Http\Controllers\SuratPengantarMagangController::class, 'showForMahasiswa']);
+            });
+
+            Route::prefix('surat-keterangan-aktif')->group(function () {
+                Route::get('/applications', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'getApplications']);
+                Route::get('/draft', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'getDraft']);
+                Route::post('/draft', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'saveDraft']);
+                Route::post('/submit', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'submitApplication']);
+                Route::get('/{application}/preview', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'preview']);
+                Route::post('/{application}/complete', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'complete']);
+                Route::get('/{application}', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'showForMahasiswa']);
+            });
+
+            Route::prefix('proses-luar-negeri')->group(function () {
+                Route::get('/applications', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'getApplications']);
+                Route::get('/draft', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'getDraft']);
+                Route::post('/draft', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'saveDraft']);
+                Route::post('/submit', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'submitApplication']);
+                Route::get('/{application}/preview', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'preview']);
+                Route::post('/{application}/complete', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'complete']);
+                Route::get('/{application}', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'showForMahasiswa']);
+            });
+
+            // Aktif Letter Routes
+            Route::prefix('aktif')->group(function () {
+                Route::get('/step-1', [\App\Http\Controllers\Mahasiswa\AktifLetterController::class, 'getStep1']);
+                Route::post('/step-1', [\App\Http\Controllers\Mahasiswa\AktifLetterController::class, 'saveStep1']);
+                Route::post('/submit', [\App\Http\Controllers\Mahasiswa\AktifLetterController::class, 'submitApplication']);
             });
         });
 
