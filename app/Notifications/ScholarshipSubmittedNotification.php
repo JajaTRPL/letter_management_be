@@ -36,7 +36,7 @@ class ScholarshipSubmittedNotification extends Notification
      */
     public function toMail(object $notifiable): MailMessage
     {
-        $url = url('/tendik/dashboard/scholarship/' . $this->application->id);
+        $url = url('/tendik/dashboard/surat-permohonan-beasiswa/' . $this->application->id);
         
         return (new MailMessage)
             ->subject('Pengajuan Beasiswa Baru: ' . $this->application->scholarship_name)
@@ -60,7 +60,7 @@ class ScholarshipSubmittedNotification extends Notification
             'mahasiswa_name' => $this->application->mahasiswaProfile->nama_lengkap ?? ($this->application->user->name ?? '-'),
             'scholarship_name' => $this->application->scholarship_name,
             'message' => 'Pengajuan beasiswa baru dari ' . ($this->application->mahasiswaProfile->nama_lengkap ?? ($this->application->user->name ?? '-')) . ' telah ditugaskan kepada Anda.',
-            'action_url' => '/tendik/dashboard/scholarship/' . $this->application->id,
+            'action_url' => '/tendik/dashboard/surat-permohonan-beasiswa/' . $this->application->id,
         ];
     }
 }
