@@ -156,6 +156,9 @@ Route::middleware('throttle:api')->group(function () {
 
             // Template Operations
             Route::post('/templates/update-pdf', [\App\Http\Controllers\SuperAdmin\TemplateController::class, 'updatePdf']);
+            Route::get('/templates', [\App\Http\Controllers\SuperAdmin\TemplateManagementController::class, 'index']);
+            Route::post('/templates/{key}/refresh', [\App\Http\Controllers\SuperAdmin\TemplateManagementController::class, 'refresh'])
+                ->where('key', '[a-z0-9\-]+');
 
             // Bulk Operations & Export (Place above /{user} wildcard)
             Route::post('/users/validate-import', [\App\Http\Controllers\SuperAdmin\UserController::class, 'validateImport']);
