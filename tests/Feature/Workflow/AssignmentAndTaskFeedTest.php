@@ -312,6 +312,102 @@ class AssignmentAndTaskFeedTest extends TestCase
         );
     }
 
+    public function test_tendik_active_dashboard_excludes_rejected_beasiswa(): void
+    {
+        $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
+        $app = $this->scholarshipApplication(null, [
+            'assigned_to' => $tendik->id,
+            'status' => ScholarshipApplication::STATUS_REJECTED,
+        ]);
+
+        $tasks = $this->actingAs($tendik, 'sanctum')
+            ->getJson('/api/tendik/dashboard/tasks')
+            ->assertOk()
+            ->json('tasks');
+
+        $this->assertFalse(collect($tasks)->contains('id', $app->id));
+    }
+
+    public function test_tendik_active_dashboard_excludes_approved_kaprodi_beasiswa(): void
+    {
+        $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
+        $app = $this->scholarshipApplication(null, [
+            'assigned_to' => $tendik->id,
+            'status' => ScholarshipApplication::STATUS_APPROVED_KAPRODI,
+        ]);
+
+        $tasks = $this->actingAs($tendik, 'sanctum')
+            ->getJson('/api/tendik/dashboard/tasks')
+            ->assertOk()
+            ->json('tasks');
+
+        $this->assertFalse(collect($tasks)->contains('id', $app->id));
+    }
+
+    public function test_tendik_active_dashboard_excludes_completed_beasiswa(): void
+    {
+        $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
+        $app = $this->scholarshipApplication(null, [
+            'assigned_to' => $tendik->id,
+            'status' => ScholarshipApplication::STATUS_COMPLETED,
+        ]);
+
+        $tasks = $this->actingAs($tendik, 'sanctum')
+            ->getJson('/api/tendik/dashboard/tasks')
+            ->assertOk()
+            ->json('tasks');
+
+        $this->assertFalse(collect($tasks)->contains('id', $app->id));
+    }
+
+    public function test_tendik_active_dashboard_excludes_revision_beasiswa(): void
+    {
+        $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
+        $app = $this->scholarshipApplication(null, [
+            'assigned_to' => $tendik->id,
+            'status' => ScholarshipApplication::STATUS_REVISION,
+        ]);
+
+        $tasks = $this->actingAs($tendik, 'sanctum')
+            ->getJson('/api/tendik/dashboard/tasks')
+            ->assertOk()
+            ->json('tasks');
+
+        $this->assertFalse(collect($tasks)->contains('id', $app->id));
+    }
+
+    public function test_tendik_active_dashboard_excludes_draft_beasiswa(): void
+    {
+        $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
+        $app = $this->scholarshipApplication(null, [
+            'assigned_to' => $tendik->id,
+            'status' => ScholarshipApplication::STATUS_DRAFT,
+        ]);
+
+        $tasks = $this->actingAs($tendik, 'sanctum')
+            ->getJson('/api/tendik/dashboard/tasks')
+            ->assertOk()
+            ->json('tasks');
+
+        $this->assertFalse(collect($tasks)->contains('id', $app->id));
+    }
+
+    public function test_tendik_active_dashboard_includes_approved_tendik_beasiswa(): void
+    {
+        $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
+        $app = $this->scholarshipApplication(null, [
+            'assigned_to' => $tendik->id,
+            'status' => ScholarshipApplication::STATUS_APPROVED_TENDIK,
+        ]);
+
+        $tasks = $this->actingAs($tendik, 'sanctum')
+            ->getJson('/api/tendik/dashboard/tasks')
+            ->assertOk()
+            ->json('tasks');
+
+        $this->assertTrue(collect($tasks)->contains('id', $app->id));
+    }
+
     public function test_legacy_short_assignment_keys_are_rejected_on_write(): void
     {
         $admin = $this->primarySuperAdmin();

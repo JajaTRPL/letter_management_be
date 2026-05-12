@@ -127,6 +127,7 @@ Route::middleware('throttle:api')->group(function () {
         */
         Route::middleware('role:tendik')->prefix('tendik')->group(function () {
             Route::get('/dashboard/tasks', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'getDashboardData']);
+            Route::get('/riwayat', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'getRiwayatData']);
             
             // Scholarship Review Actions
             foreach (['scholarship', 'surat-permohonan-beasiswa'] as $scholarshipRoutePrefix) {

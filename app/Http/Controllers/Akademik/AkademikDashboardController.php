@@ -10,8 +10,11 @@ use App\Models\SuratPengantarMagangApplication;
 use App\Models\User;
 use App\Notifications\ScholarshipStatusNotification;
 use App\Enums\UserStatus;
+use App\Services\AcademicRoutingService;
+use App\Services\LetterTaskCursorFeedService;
 use App\Services\LetterTaskFeedService;
 use App\Services\ScholarshipAutomationService;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
@@ -20,64 +23,153 @@ use Throwable;
 
 class AkademikDashboardController extends Controller
 {
-    public function __construct(private LetterTaskFeedService $taskFeedService)
+    private const DASHBOARD_TASK_LIMIT = 100;
+
+    public function __construct(
+        private LetterTaskCursorFeedService $cursorFeedService,
+        private LetterTaskFeedService $taskFeedService,
+        private AcademicRoutingService $academicRoutingService
+    )
     {
     }
 
     /**
      * Get dashboard stats and task list for Kaprodi/Sekprodi/Kadep/Sekdep
      */
-    public function getDashboardData()
+    public function getDashboardData(Request $request)
     {
         $user = auth()->user();
         $subRole = $user->sub_role; // kadep, sekdep, kaprodi, sekprodi
 
-        // Determine which status this user should see
-        $targetStatus = ScholarshipApplication::STATUS_APPROVED_TENDIK; // Kaprodi/Sekprodi see Tendik-approved
-        if (in_array($subRole, ['kadep', 'sekdep'])) {
-            $targetStatus = ScholarshipApplication::STATUS_APPROVED_KAPRODI; // Kadep/Sekdep see Kaprodi-approved
+        if (in_array($subRole, ['kaprodi', 'sekprodi'], true)) {
+            $targetStatus = ScholarshipApplication::STATUS_APPROVED_TENDIK;
+            $applyAcademicScope = fn ($query) => $this->academicRoutingService->applyProdiStageScope($query, $user);
+        } elseif (in_array($subRole, ['kadep', 'sekdep'], true)) {
+            $targetStatus = ScholarshipApplication::STATUS_APPROVED_KAPRODI;
+            $applyAcademicScope = fn ($query) => $this->academicRoutingService->applyDepartmentStageScope($query, $user);
+        } else {
+            $targetStatus = null;
+            $applyAcademicScope = null;
         }
 
-        $tasks = ScholarshipApplication::with('user', 'mahasiswaProfile')
-            ->where('status', $targetStatus)
-            ->orderBy('created_at', 'desc')
-            ->get();
+        if ($this->cursorFeedService->cursorModeRequested($request)) {
+            $matchingTaskCount = $targetStatus && $applyAcademicScope
+                ? $this->countAcademicDashboardTasks($targetStatus, $applyAcademicScope)
+                : 0;
+            $feed = $this->cursorFeedService->akademikDashboard($user, $request);
+            $taskRows = $this->taskFeedService->orderedAkademikRows($feed['models']);
+            $displayedTaskCount = $taskRows->count();
+
+            return response()->json([
+                'stats' => [
+                    'total_incoming' => $matchingTaskCount,
+                    'needs_verification' => $matchingTaskCount,
+                    'finished_this_month' => $this->finishedThisMonthCount(),
+                ],
+                'tasks' => $taskRows,
+                'meta' => array_merge([
+                    'displayed_tasks' => $displayedTaskCount,
+                    'total_matching_tasks' => $matchingTaskCount,
+                    'is_limited' => $matchingTaskCount > $displayedTaskCount,
+                    'limit' => $feed['meta']['page_size'],
+                    'per_type_limit' => null,
+                    'limit_scope' => 'global_cursor_page',
+                ], $feed['meta']),
+            ]);
+        }
+
+        $tasks = collect();
 
         $magangTasks = collect();
         $aktifTasks = collect();
         $prosesLuarNegeriTasks = collect();
-        if (in_array($subRole, ['kaprodi', 'sekprodi', 'kadep', 'sekdep'], true)) {
-            $magangTasks = SuratPengantarMagangApplication::with('user', 'mahasiswaProfile')
-                ->where('status', $targetStatus)
+        $matchingTaskCount = 0;
+
+        if ($targetStatus && $applyAcademicScope) {
+            $matchingTaskCount = $this->countAcademicDashboardTasks($targetStatus, $applyAcademicScope);
+
+            $tasks = $this->academicDashboardQuery(ScholarshipApplication::class, $targetStatus, $applyAcademicScope, true)
                 ->orderBy('created_at', 'desc')
+                ->limit(self::DASHBOARD_TASK_LIMIT)
                 ->get();
 
-            $aktifTasks = SuratKeteranganAktifApplication::with('user', 'mahasiswaProfile')
-                ->where('status', $targetStatus)
+            $magangTasks = $this->academicDashboardQuery(SuratPengantarMagangApplication::class, $targetStatus, $applyAcademicScope, true)
                 ->orderBy('created_at', 'desc')
+                ->limit(self::DASHBOARD_TASK_LIMIT)
                 ->get();
 
-            $prosesLuarNegeriTasks = ProsesLuarNegeriApplication::with('user', 'mahasiswaProfile')
-                ->where('status', $targetStatus)
+            $aktifTasks = $this->academicDashboardQuery(SuratKeteranganAktifApplication::class, $targetStatus, $applyAcademicScope, true)
                 ->orderBy('created_at', 'desc')
+                ->limit(self::DASHBOARD_TASK_LIMIT)
+                ->get();
+
+            $prosesLuarNegeriTasks = $this->academicDashboardQuery(ProsesLuarNegeriApplication::class, $targetStatus, $applyAcademicScope, true)
+                ->orderBy('created_at', 'desc')
+                ->limit(self::DASHBOARD_TASK_LIMIT)
                 ->get();
         }
 
         $taskRows = $this->taskFeedService->combinedAkademikRows($tasks, $magangTasks, $aktifTasks, $prosesLuarNegeriTasks);
+        $displayedTaskCount = $taskRows->count();
 
         return response()->json([
             'stats' => [
-                'total_incoming' => $taskRows->count(),
-                'needs_verification' => $taskRows->count(),
-                'finished_this_month' => ScholarshipApplication::whereIn('status', [
-                    ScholarshipApplication::STATUS_APPROVED_KAPRODI,
-                    ScholarshipApplication::STATUS_COMPLETED,
-                ])
-                    ->whereMonth('updated_at', now()->month)
-                    ->count(),
+                'total_incoming' => $matchingTaskCount,
+                'needs_verification' => $matchingTaskCount,
+                'finished_this_month' => $this->finishedThisMonthCount(),
             ],
             'tasks' => $taskRows,
+            'meta' => [
+                'displayed_tasks' => $displayedTaskCount,
+                'total_matching_tasks' => $matchingTaskCount,
+                'is_limited' => $matchingTaskCount > $displayedTaskCount,
+                'limit' => self::DASHBOARD_TASK_LIMIT,
+                'per_type_limit' => self::DASHBOARD_TASK_LIMIT,
+                'limit_scope' => 'per_letter_type',
+            ],
         ]);
+    }
+
+    private function countAcademicDashboardTasks(string $targetStatus, callable $applyAcademicScope): int
+    {
+        return collect($this->academicDashboardModels())
+            ->sum(fn (string $modelClass): int => $this->academicDashboardQuery($modelClass, $targetStatus, $applyAcademicScope)->count());
+    }
+
+    private function academicDashboardQuery(string $modelClass, string $targetStatus, callable $applyAcademicScope, bool $withRelations = false): Builder
+    {
+        $query = $modelClass::query()->where('status', $targetStatus);
+
+        if ($withRelations) {
+            $query->with($this->academicDashboardRelations());
+        }
+
+        return $applyAcademicScope($query);
+    }
+
+    private function academicDashboardModels(): array
+    {
+        return [
+            ScholarshipApplication::class,
+            SuratPengantarMagangApplication::class,
+            SuratKeteranganAktifApplication::class,
+            ProsesLuarNegeriApplication::class,
+        ];
+    }
+
+    private function finishedThisMonthCount(): int
+    {
+        return ScholarshipApplication::whereIn('status', [
+            ScholarshipApplication::STATUS_APPROVED_KAPRODI,
+            ScholarshipApplication::STATUS_COMPLETED,
+        ])
+            ->whereMonth('updated_at', now()->month)
+            ->count();
+    }
+
+    private function academicDashboardRelations(): array
+    {
+        return ['user', 'mahasiswaProfile'];
     }
 
     /**

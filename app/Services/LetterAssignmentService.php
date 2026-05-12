@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Support\LetterTypeRegistry;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 
 class LetterAssignmentService
 {
@@ -81,6 +82,28 @@ class LetterAssignmentService
         return $query->where(function (Builder $query) use ($user, $unassignedStatuses) {
             $query->where('assigned_to', $user->id)
                 ->orWhere(function (Builder $query) use ($unassignedStatuses) {
+                    $query->whereNull('assigned_to');
+
+                    if ($unassignedStatuses !== null) {
+                        $query->whereIn('status', $unassignedStatuses);
+                    }
+                });
+        });
+    }
+
+    public function applyFeedVisibilityToQueryBuilder(
+        QueryBuilder $query,
+        User $user,
+        string $letterType,
+        ?array $unassignedStatuses = null
+    ): QueryBuilder {
+        if (!$this->canHandle($user, $letterType)) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->where(function (QueryBuilder $query) use ($user, $unassignedStatuses) {
+            $query->where('assigned_to', $user->id)
+                ->orWhere(function (QueryBuilder $query) use ($unassignedStatuses) {
                     $query->whereNull('assigned_to');
 
                     if ($unassignedStatuses !== null) {

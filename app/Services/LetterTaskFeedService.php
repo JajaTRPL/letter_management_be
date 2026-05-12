@@ -7,6 +7,7 @@ use App\Models\ProsesLuarNegeriApplication;
 use App\Models\SuratKeteranganAktifApplication;
 use App\Models\SuratPengantarMagangApplication;
 use App\Support\LetterTypeRegistry;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 
 class LetterTaskFeedService
@@ -31,6 +32,20 @@ class LetterTaskFeedService
             ->merge($this->akademikProsesLuarNegeriRows($prosesLuarNegeriTasks ?? collect()))
             ->sortByDesc('sort_timestamp')
             ->map(fn (array $task): array => $this->withoutSortFields($task))
+            ->values();
+    }
+
+    public function orderedTendikRows($tasks): Collection
+    {
+        return collect($tasks)
+            ->map(fn (Model $task): array => $this->withoutSortFields($this->tendikRowForModel($task)))
+            ->values();
+    }
+
+    public function orderedAkademikRows($tasks): Collection
+    {
+        return collect($tasks)
+            ->map(fn (Model $task): array => $this->withoutSortFields($this->akademikRowForModel($task)))
             ->values();
     }
 
@@ -255,6 +270,26 @@ class LetterTaskFeedService
     private function formatDate($value): string
     {
         return $value->format('d M Y, H.i');
+    }
+
+    private function tendikRowForModel(Model $task): array
+    {
+        return match (true) {
+            $task instanceof ScholarshipApplication => $this->tendikScholarshipRow($task),
+            $task instanceof SuratPengantarMagangApplication => $this->tendikMagangRow($task),
+            $task instanceof SuratKeteranganAktifApplication => $this->tendikAktifRow($task),
+            $task instanceof ProsesLuarNegeriApplication => $this->tendikProsesLuarNegeriRow($task),
+        };
+    }
+
+    private function akademikRowForModel(Model $task): array
+    {
+        return match (true) {
+            $task instanceof ScholarshipApplication => $this->akademikScholarshipRow($task),
+            $task instanceof SuratPengantarMagangApplication => $this->akademikMagangRow($task),
+            $task instanceof SuratKeteranganAktifApplication => $this->akademikAktifRow($task),
+            $task instanceof ProsesLuarNegeriApplication => $this->akademikProsesLuarNegeriRow($task),
+        };
     }
 
     private function withoutSortFields(array $task): array

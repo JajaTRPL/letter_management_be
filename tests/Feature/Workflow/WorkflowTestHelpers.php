@@ -16,6 +16,8 @@ use Illuminate\Support\Str;
 
 trait WorkflowTestHelpers
 {
+    private ?StudyProgram $workflowDefaultStudyProgram = null;
+
     private function activeUser(array $attributes = []): User
     {
         return User::create(array_merge([
@@ -27,9 +29,10 @@ trait WorkflowTestHelpers
         ], $attributes));
     }
 
-    private function completeMahasiswa(array $userAttributes = [], array $profileAttributes = []): array
+    private function completeMahasiswa(array $userAttributes = [], array $profileAttributes = [], ?StudyProgram $studyProgram = null): array
     {
-        $studyProgram = $this->studyProgram();
+        $studyProgram ??= $this->defaultStudyProgram();
+        $studyProgram->loadMissing('department.faculty');
 
         $user = $this->activeUser(array_merge([
             'role' => 'mahasiswa',
@@ -72,10 +75,24 @@ trait WorkflowTestHelpers
 
     private function akademik(string $subRole, array $attributes = []): User
     {
-        return $this->activeUser(array_merge([
+        $defaults = [
             'role' => 'akademik',
             'sub_role' => $subRole,
-        ], $attributes));
+        ];
+
+        if (in_array($subRole, ['kaprodi', 'sekprodi'], true)) {
+            $programId = $attributes['study_program_id'] ?? $this->defaultStudyProgram()->id;
+            $program = StudyProgram::find($programId);
+            $defaults['study_program_id'] = $programId;
+            $defaults['department_id'] = $attributes['department_id'] ?? $program?->department_id;
+        }
+
+        if (in_array($subRole, ['kadep', 'sekdep'], true)) {
+            $defaults['department_id'] = $attributes['department_id'] ?? $this->defaultStudyProgram()->department_id;
+            $defaults['study_program_id'] = null;
+        }
+
+        return $this->activeUser(array_merge($defaults, $attributes));
     }
 
     private function primarySuperAdmin(array $attributes = []): User
@@ -165,7 +182,18 @@ trait WorkflowTestHelpers
         ], $attributes));
     }
 
-    private function studyProgram(): StudyProgram
+    private function defaultStudyProgram(): StudyProgram
+    {
+        if ($this->workflowDefaultStudyProgram
+            && StudyProgram::whereKey($this->workflowDefaultStudyProgram->id)->exists()
+        ) {
+            return $this->workflowDefaultStudyProgram;
+        }
+
+        return $this->workflowDefaultStudyProgram = $this->studyProgram();
+    }
+
+    private function department(array $attributes = []): Department
     {
         $suffix = Str::upper(Str::random(8));
         $faculty = Faculty::create([
@@ -173,16 +201,22 @@ trait WorkflowTestHelpers
             'name' => 'Faculty ' . $suffix,
         ]);
 
-        $department = Department::create([
+        return Department::create(array_merge([
             'code' => 'D' . $suffix,
             'name' => 'Department ' . $suffix,
             'faculty_id' => $faculty->id,
-        ]);
+        ], $attributes));
+    }
 
-        return StudyProgram::create([
+    private function studyProgram(?Department $department = null, array $attributes = []): StudyProgram
+    {
+        $suffix = Str::upper(Str::random(8));
+        $department ??= $this->department();
+
+        return StudyProgram::create(array_merge([
             'code' => 'SP' . $suffix,
             'name' => 'Study Program ' . $suffix,
             'department_id' => $department->id,
-        ]);
+        ], $attributes));
     }
 }
