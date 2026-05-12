@@ -230,18 +230,39 @@ class DocumentAccessGateTest extends TestCase
 
     public function test_raw_storage_routes_block_generated_document_folders(): void
     {
-        $blockedUrls = [
+        $apiUrls = [
             '/api/storage/surat-pengantar-magang/generated/final.pdf',
             '/api/storage/surat-keterangan-aktif/generated/final.pdf',
             '/api/storage/proses-luar-negeri/generated/final.pdf',
             '/api/storage/scholarships/final.docx',
+        ];
+
+        foreach ($apiUrls as $url) {
+            $this->getJson($url)->assertUnauthorized();
+        }
+
+        Storage::fake('public');
+        [$student] = $this->completeMahasiswa();
+
+        Storage::disk('public')->put('surat-pengantar-magang/generated/final.pdf', '%PDF-1.4 test');
+        Storage::disk('public')->put('surat-keterangan-aktif/generated/final.pdf', '%PDF-1.4 test');
+        Storage::disk('public')->put('proses-luar-negeri/generated/final.pdf', '%PDF-1.4 test');
+        Storage::disk('public')->put('scholarships/final.docx', 'docx test');
+
+        foreach ($apiUrls as $url) {
+            $this->actingAs($student, 'sanctum')
+                ->get($url)
+                ->assertForbidden();
+        }
+
+        $publicUrls = [
             '/storage/surat-pengantar-magang/generated/final.pdf',
             '/storage/surat-keterangan-aktif/generated/final.pdf',
             '/storage/proses-luar-negeri/generated/final.pdf',
             '/storage/scholarships/final.docx',
         ];
 
-        foreach ($blockedUrls as $url) {
+        foreach ($publicUrls as $url) {
             $this->get($url)->assertForbidden();
         }
     }

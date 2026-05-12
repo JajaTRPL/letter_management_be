@@ -23,38 +23,94 @@ Route::middleware('throttle:api')->group(function () {
     Route::post('/verify-token', [AuthController::class, 'verifyToken']);
     Route::post('/reset-password', [AuthController::class, 'resetPassword']);
 
-    /*
-    |--------------------------------------------------------------------------
-    | Authenticated Routes (semua role yang sudah login)
-    |--------------------------------------------------------------------------
-    */
-    // Route to serve PDF files directly bypassing IIS/Windows symlink issues
-        Route::get('/storage/{folder}/{filename}', function ($folder, $filename) {
-        $relativePath = str_replace('\\', '/', trim($folder . '/' . $filename, '/'));
-        if ($relativePath === 'surat-pengantar-magang/generated' || str_starts_with($relativePath, 'surat-pengantar-magang/generated/')) {
-            abort(403);
-        }
-        if ($relativePath === 'surat-keterangan-aktif/generated' || str_starts_with($relativePath, 'surat-keterangan-aktif/generated/')) {
-            abort(403);
-        }
-        if ($relativePath === 'proses-luar-negeri/generated' || str_starts_with($relativePath, 'proses-luar-negeri/generated/')) {
-            abort(403);
-        }
-        if ($relativePath === 'scholarships' || str_starts_with($relativePath, 'scholarships/') || str_contains($relativePath, '/scholarships/')) {
-            abort(403);
-        }
-
-        $path = storage_path('app/public/' . $folder . '/' . $filename);
-        if (!file_exists($path)) {
-            abort(404);
-        }
-        return response()->download($path, basename($filename));
-    })->where('filename', '.*');
-
     // Public proxy for Google Docs to allow PDF.js to fetch without headers
     Route::get('/templates/proxy-google-doc/{id}', [\App\Http\Controllers\SuperAdmin\TemplateController::class, 'proxyGoogleDoc']);
 
     Route::middleware(['auth:sanctum', 'check_status', 'profile_complete'])->group(function () {
+
+        Route::get('/storage/{folder}/{filename}', function ($folder, $filename) {
+            $user = auth()->user();
+            $decodedPath = trim($folder . '/' . $filename, '/');
+
+            for ($i = 0; $i < 3; $i++) {
+                $next = rawurldecode($decodedPath);
+                if ($next === $decodedPath) {
+                    break;
+                }
+                $decodedPath = $next;
+            }
+
+            $relativePath = str_replace('\\', '/', trim($decodedPath, '/'));
+            $segments = array_values(array_filter(explode('/', $relativePath), 'strlen'));
+            if ($relativePath === '' || str_contains($relativePath, "\0") || in_array('..', $segments, true) || in_array('.', $segments, true)) {
+                abort(403);
+            }
+
+            foreach (['surat-pengantar-magang/generated', 'surat-keterangan-aktif/generated', 'proses-luar-negeri/generated'] as $blocked) {
+                if ($relativePath === $blocked || str_starts_with($relativePath, $blocked . '/')) {
+                    abort(403);
+                }
+            }
+
+            if (str_starts_with($relativePath, 'scholarships/') && str_ends_with($relativePath, '.docx')) {
+                abort(403);
+            }
+
+            if (str_starts_with($relativePath, 'profiles/signatures/')) {
+                abort(403);
+            }
+
+            $storedUrl = \Illuminate\Support\Facades\Storage::url($relativePath);
+            $storageCandidates = [$storedUrl, $relativePath, '/api/storage/' . $relativePath];
+
+            if (str_starts_with($relativePath, 'profiles/fotos/')) {
+                if (!in_array($user->role, ['tendik', 'akademik', 'super_admin'], true)) {
+                    $profile = \App\Models\MahasiswaProfile::whereIn('pas_foto_path', $storageCandidates)->first();
+                    abort_unless($profile && (int) $profile->user_id === (int) $user->id, 403);
+                }
+            } elseif (str_starts_with($relativePath, 'surat-pengantar-magang/proposals/')) {
+                $application = \App\Models\SuratPengantarMagangApplication::whereIn('proposal_kegiatan_magang_path', $storageCandidates)->first();
+                abort_unless($application, 403);
+
+                $authorized = match ($user->role) {
+                    'super_admin' => true,
+                    'tendik' => app(\App\Services\LetterAssignmentService::class)
+                        ->canHandle($user, \App\Models\SuratPengantarMagangApplication::LETTER_TYPE),
+                    'akademik' => app(\App\Services\AcademicRoutingService::class)->canHandleProdiStage($user, $application)
+                        || app(\App\Services\AcademicRoutingService::class)->canHandleDepartmentStage($user, $application),
+                    'mahasiswa' => (int) $application->user_id === (int) $user->id,
+                    default => false,
+                };
+                abort_unless($authorized, 403);
+            } elseif (str_starts_with($relativePath, 'scholarships/transcripts/') || str_starts_with($relativePath, 'scholarships/slips/')) {
+                $application = \App\Models\ScholarshipApplication::where(function ($query) use ($storageCandidates) {
+                    $query->whereIn('transkrip_nilai_path', $storageCandidates)
+                        ->orWhereIn('slip_gaji_ayah_path', $storageCandidates)
+                        ->orWhereIn('slip_gaji_ibu_path', $storageCandidates);
+                })->first();
+                abort_unless($application, 403);
+
+                $authorized = match ($user->role) {
+                    'super_admin' => true,
+                    'tendik' => app(\App\Services\LetterAssignmentService::class)
+                        ->canHandle($user, \App\Models\ScholarshipApplication::LETTER_TYPE),
+                    'akademik' => app(\App\Services\AcademicRoutingService::class)->canHandleProdiStage($user, $application)
+                        || app(\App\Services\AcademicRoutingService::class)->canHandleDepartmentStage($user, $application),
+                    'mahasiswa' => (int) $application->user_id === (int) $user->id,
+                    default => false,
+                };
+                abort_unless($authorized, 403);
+            } else {
+                abort(403);
+            }
+
+            abort_unless(\Illuminate\Support\Facades\Storage::disk('public')->exists($relativePath), 404);
+
+            return response()->download(
+                \Illuminate\Support\Facades\Storage::disk('public')->path($relativePath),
+                basename($relativePath)
+            );
+        })->where('filename', '.*');
 
         Route::post('/logout', [AuthController::class, 'logout']);
         Route::post('/auth/complete-profile', [\App\Http\Controllers\GoogleAuthController::class, 'completeProfile']);

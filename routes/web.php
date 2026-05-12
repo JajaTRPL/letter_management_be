@@ -7,23 +7,23 @@ Route::get('/', function () {
 });
 
 Route::get('/storage/{folder}/{filename}', function ($folder, $filename) {
-    $relativePath = str_replace('\\', '/', trim($folder . '/' . $filename, '/'));
-    if ($relativePath === 'surat-pengantar-magang/generated' || str_starts_with($relativePath, 'surat-pengantar-magang/generated/')) {
-        abort(403);
+    $decodedPath = trim($folder . '/' . $filename, '/');
+
+    for ($i = 0; $i < 3; $i++) {
+        $next = rawurldecode($decodedPath);
+        if ($next === $decodedPath) {
+            break;
+        }
+        $decodedPath = $next;
     }
-    if ($relativePath === 'surat-keterangan-aktif/generated' || str_starts_with($relativePath, 'surat-keterangan-aktif/generated/')) {
-        abort(403);
-    }
-    if ($relativePath === 'proses-luar-negeri/generated' || str_starts_with($relativePath, 'proses-luar-negeri/generated/')) {
-        abort(403);
-    }
-    if ($relativePath === 'scholarships' || str_starts_with($relativePath, 'scholarships/') || str_contains($relativePath, '/scholarships/')) {
+
+    $relativePath = str_replace('\\', '/', trim($decodedPath, '/'));
+    $segments = array_values(array_filter(explode('/', $relativePath), 'strlen'));
+    if ($relativePath === '' || str_contains($relativePath, "\0") || in_array('..', $segments, true) || in_array('.', $segments, true)) {
         abort(403);
     }
 
-    $path = storage_path('app/public/' . $folder . '/' . $filename);
-    if (!file_exists($path)) {
-        abort(404);
-    }
-    return response()->file($path);
+    // Public storage is intentionally closed. Private uploads and generated documents
+    // must go through /api/storage or workflow-specific preview/download endpoints.
+    abort(403);
 })->where('filename', '.*');

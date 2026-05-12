@@ -5,10 +5,29 @@ namespace App\Services;
 use App\Models\StudyProgram;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 
 class AcademicRoutingService
 {
+    public function canHandleProdiStage(User $akademikUser, Model $application): bool
+    {
+        if (!$this->isProdiApprover($akademikUser) || !$akademikUser->study_program_id) {
+            return false;
+        }
+
+        return $this->studentStudyProgramId($application) === (int) $akademikUser->study_program_id;
+    }
+
+    public function canHandleDepartmentStage(User $akademikUser, Model $application): bool
+    {
+        if (!$this->isDepartmentApprover($akademikUser) || !$akademikUser->department_id) {
+            return false;
+        }
+
+        return $this->studentDepartmentId($application) === (int) $akademikUser->department_id;
+    }
+
     public function applyProdiStageScope(Builder $query, User $akademikUser): Builder
     {
         if (!$this->isProdiApprover($akademikUser) || !$akademikUser->study_program_id) {
@@ -111,5 +130,46 @@ class AcademicRoutingService
     private function emptyQueryScope(QueryBuilder $query): QueryBuilder
     {
         return $query->whereRaw('1 = 0');
+    }
+
+    private function studentStudyProgramId(Model $application): ?int
+    {
+        $student = $this->studentFor($application);
+        $studyProgramId = $student?->study_program_id;
+
+        return $studyProgramId ? (int) $studyProgramId : null;
+    }
+
+    private function studentDepartmentId(Model $application): ?int
+    {
+        $student = $this->studentFor($application);
+        if (!$student) {
+            return null;
+        }
+
+        if ($student->department_id) {
+            return (int) $student->department_id;
+        }
+
+        $studyProgram = $student->relationLoaded('studyProgram')
+            ? $student->studyProgram
+            : $student->studyProgram()->first();
+
+        return $studyProgram?->department_id ? (int) $studyProgram->department_id : null;
+    }
+
+    private function studentFor(Model $application): ?User
+    {
+        if (!$application->getAttribute('user_id')) {
+            return null;
+        }
+
+        if ($application->relationLoaded('user')) {
+            return $application->getRelationValue('user');
+        }
+
+        return method_exists($application, 'user')
+            ? $application->user()->first()
+            : User::find($application->getAttribute('user_id'));
     }
 }
