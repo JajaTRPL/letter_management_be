@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Mahasiswa;
 use App\Http\Controllers\Controller;
 use App\Models\ScholarshipApplication;
 use App\Services\LetterDocumentAccessService;
+use App\Services\MahasiswaProfileDataService;
 use App\Services\ScholarshipAutomationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -13,7 +14,10 @@ use Illuminate\Support\Facades\Validator;
 
 class ScholarshipController extends Controller
 {
-    public function __construct(private LetterDocumentAccessService $documentAccessService)
+    public function __construct(
+        private LetterDocumentAccessService $documentAccessService,
+        private MahasiswaProfileDataService $profileDataService
+    )
     {
     }
 
@@ -23,8 +27,9 @@ class ScholarshipController extends Controller
     public function getStep1()
     {
         $user = Auth::user();
+        $user->load('studyProgram.department.faculty', 'department.faculty', 'mahasiswaProfile');
         $application = $this->editableApplicationQuery($user->id)
-            ->with('mahasiswaProfile.keluarga')
+            ->with(['mahasiswaProfile.keluarga', 'user.studyProgram.department.faculty', 'user.department.faculty'])
             ->first();
 
         return response()->json([
@@ -32,7 +37,8 @@ class ScholarshipController extends Controller
                 'name' => $user->name,
                 'email' => $user->email,
             ],
-            'application' => $application ? $this->redactGeneratedDocumentPath($application) : null
+            'student' => $this->profileDataService->studentForUser($user),
+            'application' => $application ? $this->applicationPayload($this->redactGeneratedDocumentPath($application)) : null
         ]);
     }
 
@@ -56,11 +62,7 @@ class ScholarshipController extends Controller
         // Update Profile
         $profile = \App\Models\MahasiswaProfile::updateOrCreate(
             ['user_id' => $user->id],
-            [
-                'nim' => $request->nim,
-                'fakultas' => $request->faculty,
-                'program_studi' => $request->study_program,
-            ]
+            ['nim' => $request->nim]
         );
 
         $application = $this->editableApplicationQuery($user->id)->first();
@@ -77,7 +79,9 @@ class ScholarshipController extends Controller
 
         return response()->json([
             'message' => 'Process 1 saved successfully',
-            'application' => $this->redactGeneratedDocumentPath($application->load('mahasiswaProfile.keluarga'))
+            'application' => $this->applicationPayload(
+                $this->redactGeneratedDocumentPath($application->load(['mahasiswaProfile.keluarga', 'user.studyProgram.department.faculty', 'user.department.faculty']))
+            )
         ]);
     }
 
@@ -95,7 +99,6 @@ class ScholarshipController extends Controller
             'gender' => 'required|in:Laki-laki,Perempuan',
             'origin_address' => 'required|string',
             'jogja_address' => 'required|string',
-            'signature' => 'nullable|string', // Base64 signature
             'father_name' => 'required|string',
             'father_job' => 'required|string',
             'father_income' => 'required|numeric',
@@ -135,16 +138,6 @@ class ScholarshipController extends Controller
         ], function($value) {
             return !is_null($value) && $value !== '';
         });
-
-        // Handle signature
-        if ($request->filled('signature')) {
-            $imageData = $request->signature;
-            $fileName = 'signatures/' . $user->id . '_' . time() . '.png';
-            $image = str_replace('data:image/png;base64,', '', $imageData);
-            $image = str_replace(' ', '+', $image);
-            Storage::disk('public')->put($fileName, base64_decode($image));
-            $profileData['tanda_tangan_path'] = $fileName;
-        }
 
         $profile->update($profileData);
 
@@ -196,7 +189,9 @@ class ScholarshipController extends Controller
 
         return response()->json([
             'message' => 'Process 2 saved successfully',
-            'application' => $this->redactGeneratedDocumentPath($application->load('mahasiswaProfile.keluarga'))
+            'application' => $this->applicationPayload(
+                $this->redactGeneratedDocumentPath($application->load(['mahasiswaProfile.keluarga', 'user.studyProgram.department.faculty', 'user.department.faculty']))
+            )
         ]);
     }
 
@@ -230,6 +225,7 @@ class ScholarshipController extends Controller
             'ipk' => 'required|numeric',
             'sks_last_semesters' => 'required|integer',
             'total_sks_passed' => 'required|integer',
+            'total_sks_required' => 'nullable|integer|min:0',
             'on_leave' => 'required|in:Sudah,Belum',
             'leave_semester' => 'required_if:on_leave,Sudah|nullable|integer',
             'thesis_status' => 'required|in:Sudah,Belum',
@@ -296,7 +292,9 @@ class ScholarshipController extends Controller
 
         return response()->json([
             'message' => 'Step 3 saved successfully',
-            'application' => $this->redactGeneratedDocumentPath($application->load('mahasiswaProfile.keluarga'))
+            'application' => $this->applicationPayload(
+                $this->redactGeneratedDocumentPath($application->load(['mahasiswaProfile.keluarga', 'user.studyProgram.department.faculty', 'user.department.faculty']))
+            )
         ]);
     }
 
@@ -323,7 +321,9 @@ class ScholarshipController extends Controller
 
         return response()->json([
             'message' => 'Aplikasi berhasil dikirim dan sedang diproses oleh staf beasiswa.',
-            'application' => $this->redactGeneratedDocumentPath($application->load('mahasiswaProfile.keluarga')),
+            'application' => $this->applicationPayload(
+                $this->redactGeneratedDocumentPath($application->load(['mahasiswaProfile.keluarga', 'user.studyProgram.department.faculty', 'user.department.faculty']))
+            ),
             'assigned_to' => $assignedTendik ? $assignedTendik->name : null,
             'docx_path' => null
         ]);
@@ -395,7 +395,7 @@ class ScholarshipController extends Controller
 
         return response()->json([
             'message' => 'Pengajuan berhasil diselesaikan.',
-            'application' => $application->fresh(),
+            'application' => $this->applicationPayload($application->fresh()),
         ]);
     }
 
@@ -415,12 +415,23 @@ class ScholarshipController extends Controller
         return $this->documentAccessService->redactGeneratedPathIfNeeded($application, 'generated_docx_path');
     }
 
-    private function forMahasiswaApplicationListResponse(ScholarshipApplication $application): ScholarshipApplication
+    private function forMahasiswaApplicationListResponse(ScholarshipApplication $application): array
     {
         $application = $this->redactGeneratedDocumentPath($application);
         $application->setAttribute('letter_type', ScholarshipApplication::LETTER_TYPE);
 
-        return $application;
+        return $this->applicationPayload($application);
+    }
+
+    private function applicationPayload(ScholarshipApplication $application): array
+    {
+        $application->loadMissing([
+            'mahasiswaProfile.keluarga',
+            'user.studyProgram.department.faculty',
+            'user.department.faculty',
+        ]);
+
+        return $this->profileDataService->applicationPayload($application);
     }
 
     private function generatedDocumentFilename(ScholarshipApplication $application): string

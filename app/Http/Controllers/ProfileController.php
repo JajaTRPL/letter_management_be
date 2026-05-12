@@ -10,9 +10,14 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use App\Models\MahasiswaProfile;
 use App\Models\KeluargaMahasiswa;
+use App\Services\MahasiswaProfileDataService;
 
 class ProfileController extends Controller
 {
+    public function __construct(private MahasiswaProfileDataService $profileDataService)
+    {
+    }
+
     /**
      * Get the authenticated user's profile
      */
@@ -21,7 +26,6 @@ class ProfileController extends Controller
         $user = Auth::user();
 
         if ($user->role === 'mahasiswa') {
-            // Eager-load relational chain for study program → department → faculty
             $user->load('studyProgram.department.faculty');
 
             $profile = $user->mahasiswaProfile;
@@ -29,34 +33,25 @@ class ProfileController extends Controller
                 $profile = $user->mahasiswaProfile()->create([]);
             }
             $profile->load('keluarga', 'scholarshipHistories');
-            $completeness = $this->checkProfileCompleteness($profile, $user);
+            $normalized = $this->profileDataService->forUser($user);
+            $student = $this->profileDataService->studentForUser($user);
+            $readiness = $this->profileDataService->readinessForUser($user);
+            $completeness = $this->checkProfileCompleteness($profile, $readiness);
 
             return response()->json([
                 'user' => array_merge(
                     $user->only(['name', 'email', 'role', 'sub_role']),
-                    ['study_program' => $user->studyProgram ? [
-                        'code' => $user->studyProgram->code,
-                        'name' => $user->studyProgram->name,
-                        'department' => $user->studyProgram->department ? [
-                            'code' => $user->studyProgram->department->code,
-                            'name' => $user->studyProgram->department->name,
-                            'faculty' => $user->studyProgram->department->faculty ? [
-                                'name' => $user->studyProgram->department->faculty->name,
-                            ] : ($profile->fakultas ? ['name' => $profile->fakultas] : null),
-                        ] : null,
-                    ] : ($profile->program_studi ? [
-                        'name' => $profile->program_studi,
-                        'department' => $profile->fakultas ? [
-                            'faculty' => ['name' => $profile->fakultas]
-                        ] : null
-                    ] : null)]
+                    ['study_program' => $this->studyProgramResponse($normalized)]
                 ),
+                'normalized' => $normalized,
+                'student' => $student,
                 'profile' => $profile,
-                'completeness' => $completeness
+                'completeness' => $completeness,
+                'readiness' => $readiness,
             ]);
         }
 
-        // For non-mahasiswa (staff, akademik, super_admin)
+        // For non-mahasiswa (staff, akademik, super_admin) — Bundle 6 baseline shape preserved.
         return response()->json([
             'user' => $user->only(['name', 'email', 'role', 'sub_role', 'status']),
             'profile' => [
@@ -67,37 +62,14 @@ class ProfileController extends Controller
     }
 
     /**
-     * Check if the student profile is complete
+     * Check if the student profile is complete (mahasiswa flow).
      */
-    private function checkProfileCompleteness($profile, $user = null)
+    private function checkProfileCompleteness($profile, array $readiness)
     {
-        $missingFields = [];
-
-        // Check relational fields via user model instead of legacy string columns
-        if ($user && !$user->study_program_id) {
-            $missingFields[] = 'Program Studi';
-        }
-        if ($user && (!$user->studyProgram || !$user->studyProgram->department)) {
-            // Departemen & Fakultas are derived — only flag if prodi is missing
-        }
-
-        $fields = [
-            'nim' => 'NIM',
-            'tempat_lahir' => 'Tempat Lahir',
-            'tanggal_lahir' => 'Tanggal Lahir',
-            'jenis_kelamin' => 'Jenis Kelamin',
-            'no_hp' => 'No. HP',
-            'alamat_asal' => 'Alamat Asal',
-            'alamat_domisili' => 'Alamat Domisili',
-            'pas_foto_path' => 'Pas Foto',
-            'tanda_tangan_path' => 'Tanda Tangan',
-        ];
-
-        foreach ($fields as $field => $label) {
-            if ($profile->$field === null || $profile->$field === '') {
-                $missingFields[] = $label;
-            }
-        }
+        $missingFields = array_merge(
+            $readiness['academic_master_data']['missing_fields'] ?? [],
+            $readiness['editable_personal_profile_data']['missing_fields'] ?? []
+        );
 
         $keluarga = $profile->keluarga;
 
@@ -113,7 +85,33 @@ class ProfileController extends Controller
 
         return [
             'is_complete' => count($missingFields) === 0,
-            'missing_fields' => $missingFields
+            'missing_fields' => $missingFields,
+            'categories' => $readiness,
+        ];
+    }
+
+    private function studyProgramResponse(array $normalized): ?array
+    {
+        if (
+            $normalized['study_program_id'] === null
+            && $normalized['program_studi_display'] === '-'
+        ) {
+            return null;
+        }
+
+        return [
+            'id' => $normalized['study_program_id'],
+            'code' => $normalized['study_program_code'],
+            'name' => $normalized['program_studi_display'],
+            'department' => $normalized['department_id'] || $normalized['department_display'] !== '-' ? [
+                'id' => $normalized['department_id'],
+                'code' => $normalized['department_code'],
+                'name' => $normalized['department_display'],
+                'faculty' => $normalized['faculty_id'] || $normalized['fakultas_display'] !== '-' ? [
+                    'id' => $normalized['faculty_id'],
+                    'name' => $normalized['fakultas_display'],
+                ] : null,
+            ] : null,
         ];
     }
 
@@ -194,7 +192,6 @@ class ProfileController extends Controller
         $user = Auth::user();
 
         if ($user->role === 'mahasiswa') {
-            // Validate basic profile input
             $validatedProfile = $request->validate([
                 'tempat_lahir' => 'nullable|string|max:100',
                 'tanggal_lahir' => 'nullable|date',
@@ -202,7 +199,7 @@ class ProfileController extends Controller
                 'no_hp' => 'nullable|string|max:20',
                 'alamat_asal' => 'nullable|string',
                 'alamat_domisili' => 'nullable|string',
-                'pas_foto' => 'nullable|image|mimes:jpeg,jpg,png,webp|max:2048',
+                'pas_foto' => 'nullable|image|mimes:jpeg,jpg,png,webp|max:5120',
                 'tanda_tangan' => 'nullable|image|mimes:jpeg,jpg,png,webp|max:2048',
             ]);
             unset($validatedProfile['pas_foto'], $validatedProfile['tanda_tangan']);
@@ -212,7 +209,6 @@ class ProfileController extends Controller
             $newFiles = [];
 
             try {
-                // Handle File Uploads
                 if ($request->hasFile('pas_foto')) {
                     $path = $request->file('pas_foto')->store('profiles/fotos', 'public');
                     if (!$path) {
@@ -233,7 +229,6 @@ class ProfileController extends Controller
                     $validatedProfile['tanda_tangan_path'] = Storage::url($path);
                 }
 
-                // Sanitize empty date fields for PostgreSQL
                 if (isset($validatedProfile['tanggal_lahir']) && $validatedProfile['tanggal_lahir'] === '') {
                     $validatedProfile['tanggal_lahir'] = null;
                 }
@@ -241,7 +236,6 @@ class ProfileController extends Controller
                 $profile = DB::transaction(function () use ($profile, $validatedProfile, $request) {
                     $profile->update($validatedProfile);
 
-                    // Update keluargas if provided
                     if ($request->has('keluarga')) {
                         $keluargaData = $request->input('keluarga');
                         if (is_string($keluargaData)) {
@@ -264,7 +258,6 @@ class ProfileController extends Controller
                         }
                     }
 
-                    // Handle scholarship histories if provided
                     if ($request->has('scholarship_histories')) {
                         $profile->scholarshipHistories()->delete();
                         $histories = $request->input('scholarship_histories');
@@ -317,7 +310,7 @@ class ProfileController extends Controller
             ]);
         }
 
-        // For Staff / Akademik
+        // For Staff / Akademik — Bundle 6 baseline shape preserved.
         $request->validate([
             'name' => 'nullable|string|max:255',
             'email' => 'nullable|email|max:255|unique:users,email,' . $user->id,

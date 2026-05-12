@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\User;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Storage;
 
 class AcademicSignatoryService
 {
@@ -17,37 +18,41 @@ class AcademicSignatoryService
     public function officialKaprodiForApplication(Model $application): ?User
     {
         $studyProgramId = $this->routingService->studentStudyProgramId($application);
+        if (!$studyProgramId) {
+            return null;
+        }
 
-        return $studyProgramId
-            ? $this->academicContextService->currentKaprodiForStudyProgram($studyProgramId)
-            : null;
+        return $this->academicContextService->currentKaprodiForStudyProgram($studyProgramId);
     }
 
     public function officialSekprodiForApplication(Model $application): ?User
     {
         $studyProgramId = $this->routingService->studentStudyProgramId($application);
+        if (!$studyProgramId) {
+            return null;
+        }
 
-        return $studyProgramId
-            ? $this->academicContextService->currentSekprodiForStudyProgram($studyProgramId)
-            : null;
+        return $this->academicContextService->currentSekprodiForStudyProgram($studyProgramId);
     }
 
     public function officialKadepForApplication(Model $application): ?User
     {
         $departmentId = $this->routingService->studentDepartmentId($application);
+        if (!$departmentId) {
+            return null;
+        }
 
-        return $departmentId
-            ? $this->academicContextService->currentKadepForDepartment($departmentId)
-            : null;
+        return $this->academicContextService->currentKadepForDepartment($departmentId);
     }
 
     public function officialSekdepForApplication(Model $application): ?User
     {
         $departmentId = $this->routingService->studentDepartmentId($application);
+        if (!$departmentId) {
+            return null;
+        }
 
-        return $departmentId
-            ? $this->academicContextService->currentSekdepForDepartment($departmentId)
-            : null;
+        return $this->academicContextService->currentSekdepForDepartment($departmentId);
     }
 
     public function nipLikeValue(?User $user): string
@@ -74,5 +79,85 @@ class AcademicSignatoryService
         $path = is_string($path) ? trim($path) : '';
 
         return $path !== '' ? $path : null;
+    }
+
+    public function globalParafFilePath(): ?string
+    {
+        $path = $this->globalParafPath();
+        if (!$path) {
+            return null;
+        }
+
+        if ($this->isAbsolutePath($path)) {
+            return is_file($path) ? $path : null;
+        }
+
+        $publicPath = $this->normalizePublicStoragePath($path);
+        if (!$publicPath || !Storage::disk('public')->exists($publicPath)) {
+            return null;
+        }
+
+        return Storage::disk('public')->path($publicPath);
+    }
+
+    public function globalParafExists(): bool
+    {
+        return $this->globalParafFilePath() !== null;
+    }
+
+    public function publicImageDataUri(?string $path): ?string
+    {
+        $publicPath = $this->normalizePublicStoragePath((string) $path);
+        if (!$publicPath || !Storage::disk('public')->exists($publicPath)) {
+            return null;
+        }
+
+        $mimeType = Storage::disk('public')->mimeType($publicPath) ?: 'image/png';
+        $content = Storage::disk('public')->get($publicPath);
+
+        return 'data:' . $mimeType . ';base64,' . base64_encode($content);
+    }
+
+    public function globalParafDataUri(): ?string
+    {
+        $path = $this->globalParafFilePath();
+        if (!$path || !is_file($path)) {
+            return null;
+        }
+
+        $mimeType = mime_content_type($path) ?: 'image/png';
+        $content = file_get_contents($path);
+        if ($content === false) {
+            return null;
+        }
+
+        return 'data:' . $mimeType . ';base64,' . base64_encode($content);
+    }
+
+    private function isAbsolutePath(string $path): bool
+    {
+        return str_starts_with($path, '/')
+            || preg_match('/^[A-Za-z]:[\/\\\\]/', $path) === 1;
+    }
+
+    private function normalizePublicStoragePath(string $path): ?string
+    {
+        $path = parse_url($path, PHP_URL_PATH) ?: $path;
+        $path = str_replace('\\', '/', trim($path));
+        $path = ltrim($path, '/');
+
+        if (str_starts_with($path, 'storage/')) {
+            $path = substr($path, strlen('storage/'));
+        }
+
+        if (str_starts_with($path, 'api/storage/')) {
+            $path = substr($path, strlen('api/storage/'));
+        }
+
+        if ($path === '' || str_contains($path, '..')) {
+            return null;
+        }
+
+        return $path;
     }
 }

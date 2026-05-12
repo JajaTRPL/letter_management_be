@@ -12,7 +12,11 @@ use Throwable;
 
 class ProsesLuarNegeriService
 {
-    public function __construct(private LetterAssignmentService $assignmentService)
+    public function __construct(
+        private LetterAssignmentService $assignmentService,
+        private MahasiswaProfileDataService $profileDataService,
+        private AcademicSignatoryService $signatoryService
+    )
     {
     }
 
@@ -25,6 +29,7 @@ class ProsesLuarNegeriService
     {
         $application->loadMissing([
             'user.studyProgram.department.faculty',
+            'user.department.faculty',
             'mahasiswaProfile',
             'assignedTendik',
         ]);
@@ -36,6 +41,10 @@ class ProsesLuarNegeriService
 
         if (!$application->nomor_surat) {
             throw new RuntimeException('Nomor surat belum tersedia untuk dokumen Proses Luar Negeri.');
+        }
+
+        if (!$this->signatoryService->officialKadepForApplication($application)) {
+            throw new RuntimeException('Dokumen Proses Luar Negeri tidak dapat dibuat: belum ada Ketua Departemen aktif untuk program studi mahasiswa.');
         }
 
         $directory = 'proses-luar-negeri/generated';
@@ -107,14 +116,15 @@ class ProsesLuarNegeriService
 
     private function buildDocumentHtml(ProsesLuarNegeriApplication $application, ?User $finalApprover): string
     {
-        $profile = $application->mahasiswaProfile;
-        $student = $application->user;
-        $program = $student?->studyProgram;
-        $department = $program?->department;
-        $faculty = $department?->faculty;
-        $finalSignature = $this->imageDataUri($finalApprover?->signature_path);
-        $finalApproverName = $finalApprover?->name ?: 'Kadep/Sekdep';
-        $finalApproverRole = $finalApprover?->akademik_label ?: 'Kadep/Sekdep';
+        $studentData = $this->profileDataService->forApplication($application);
+        $departmentDisplay = $studentData['department_display'] !== '-' ? $studentData['department_display'] : 'Departemen';
+        $facultyDisplay = $studentData['fakultas_display'] !== '-' ? $studentData['fakultas_display'] : 'Universitas Gadjah Mada';
+        $officialKadep = $this->signatoryService->officialKadepForApplication($application);
+        $finalSignature = $this->signatoryService->publicImageDataUri($officialKadep?->signature_path);
+        $parafImage = $this->signatoryService->globalParafDataUri();
+        $finalApproverName = $officialKadep?->name ?: 'Kadep';
+        $finalApproverRole = $officialKadep?->akademik_label ?: 'Kadep';
+        $finalApproverNip = $this->signatoryService->nipLikeValue($officialKadep);
 
         return '<!DOCTYPE html>
 <html lang="id">
@@ -136,6 +146,7 @@ class ProsesLuarNegeriService
         .signature-grid { width: 100%; margin-top: 42px; border-collapse: collapse; }
         .signature-grid td { width: 50%; vertical-align: top; text-align: center; padding: 0 20px; }
         .approval-box { min-height: 95px; display: flex; align-items: center; justify-content: center; flex-direction: column; }
+        .paraf-img { max-width: 80px; max-height: 45px; margin: 0 auto 6px; display: block; }
         .signature-img { max-width: 150px; max-height: 70px; margin: 0 auto 6px; display: block; }
         .muted { color: #6b7280; font-size: 10px; }
         .name { font-weight: bold; text-decoration: underline; margin-top: 4px; }
@@ -144,9 +155,9 @@ class ProsesLuarNegeriService
 </head>
 <body>
     <div class="header">
-        <h1>DEPARTEMEN TEKNIK ELEKTRO DAN INFORMATIKA</h1>
-        <p>' . $this->escape($faculty?->name ?: 'Universitas Gadjah Mada') . '</p>
-        <p>' . $this->escape($department?->name ?: 'Departemen Teknik Elektro dan Informatika') . '</p>
+        <h1>' . $this->escape($departmentDisplay) . '</h1>
+        <p>' . $this->escape($facultyDisplay) . '</p>
+        <p>Universitas Gadjah Mada</p>
     </div>
 
     <div class="meta">
@@ -164,15 +175,16 @@ class ProsesLuarNegeriService
     <div class="section-title">Data Mahasiswa</div>
     <div class="data">
         <table>
-            <tr><td class="label">Nama Lengkap</td><td class="colon">:</td><td>' . $this->escape($profile?->nama_lengkap ?: $student?->name) . '</td></tr>
-            <tr><td class="label">NIM</td><td class="colon">:</td><td>' . $this->escape($profile?->nim) . '</td></tr>
+            <tr><td class="label">Nama Lengkap</td><td class="colon">:</td><td>' . $this->escape($studentData['name']) . '</td></tr>
+            <tr><td class="label">NIM</td><td class="colon">:</td><td>' . $this->escape($studentData['nim']) . '</td></tr>
             <tr><td class="label">Tempat, Tanggal Lahir</td><td class="colon">:</td><td>' . $this->escape($application->tempat_lahir . ', ' . $this->formatDate($application->tanggal_lahir, false)) . '</td></tr>
             <tr><td class="label">Jenis Kelamin</td><td class="colon">:</td><td>' . $this->escape($application->jenis_kelamin) . '</td></tr>
             <tr><td class="label">Semester</td><td class="colon">:</td><td>' . $this->escape((string) $application->semester) . '</td></tr>
             <tr><td class="label">Nomor Paspor</td><td class="colon">:</td><td>' . $this->escape($application->nomor_paspor) . '</td></tr>
-            <tr><td class="label">Program Studi</td><td class="colon">:</td><td>' . $this->escape($profile?->program_studi ?: $program?->name) . '</td></tr>
-            <tr><td class="label">Fakultas</td><td class="colon">:</td><td>' . $this->escape($profile?->fakultas ?: $faculty?->name) . '</td></tr>
-            <tr><td class="label">Email</td><td class="colon">:</td><td>' . $this->escape($profile?->email ?: $student?->email) . '</td></tr>
+            <tr><td class="label">Program Studi</td><td class="colon">:</td><td>' . $this->escape($studentData['program_studi_display']) . '</td></tr>
+            <tr><td class="label">Departemen</td><td class="colon">:</td><td>' . $this->escape($studentData['department_display']) . '</td></tr>
+            <tr><td class="label">Fakultas</td><td class="colon">:</td><td>' . $this->escape($studentData['fakultas_display']) . '</td></tr>
+            <tr><td class="label">Email</td><td class="colon">:</td><td>' . $this->escape($studentData['email']) . '</td></tr>
         </table>
     </div>
 
@@ -188,16 +200,17 @@ class ProsesLuarNegeriService
             <td>
                 <p>Paraf Kaprodi/Sekprodi</p>
                 <div class="approval-box">
-                    <div class="muted">Diparaf secara elektronik</div>
+                    ' . ($parafImage ? '<img class="paraf-img" src="' . $parafImage . '" alt="Paraf">' : '<div class="muted">Paraf belum tersedia</div>') . '
                     <div class="muted">' . $this->escape($this->formatDate($application->kaprodi_approved_at)) . '</div>
                 </div>
             </td>
             <td>
-                <p>Tanda Tangan Kadep/Sekdep</p>
+                <p>Tanda Tangan Kadep</p>
                 <div class="approval-box">
                     ' . ($finalSignature ? '<img class="signature-img" src="' . $finalSignature . '" alt="Tanda tangan">' : '<div class="muted">Ditandatangani secara elektronik</div>') . '
                     <div class="name">' . $this->escape($finalApproverName) . '</div>
                     <div class="muted">' . $this->escape($finalApproverRole) . '</div>
+                    <div class="muted">NIP. ' . $this->escape($finalApproverNip) . '</div>
                     <div class="muted">' . $this->escape($this->formatDate($application->kadep_approved_at)) . '</div>
                 </div>
             </td>
@@ -207,20 +220,6 @@ class ProsesLuarNegeriService
     <div class="footer">Dokumen ini dihasilkan oleh Sistem Persuratan.</div>
 </body>
 </html>';
-    }
-
-    private function imageDataUri(?string $filePath): ?string
-    {
-        $path = $this->publicDiskPath($filePath);
-
-        if (!$path || !Storage::disk('public')->exists($path)) {
-            return null;
-        }
-
-        $mimeType = Storage::disk('public')->mimeType($path) ?: 'image/png';
-        $content = Storage::disk('public')->get($path);
-
-        return 'data:' . $mimeType . ';base64,' . base64_encode($content);
     }
 
     private function publicDiskPath(?string $filePath): ?string

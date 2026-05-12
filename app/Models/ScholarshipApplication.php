@@ -31,6 +31,7 @@ class ScholarshipApplication extends Model
         'ipk',
         'sks_last_2_semesters',
         'total_sks_passed',
+        'total_sks_required',
         'on_leave',
         'leave_semester',
         'thesis_status',

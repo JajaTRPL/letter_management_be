@@ -1,0 +1,22 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::table('scholarship_applications', function (Blueprint $table) {
+            $table->unsignedInteger('total_sks_required')->nullable()->after('total_sks_passed');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::table('scholarship_applications', function (Blueprint $table) {
+            $table->dropColumn('total_sks_required');
+        });
+    }
+};
