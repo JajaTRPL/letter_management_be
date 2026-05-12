@@ -190,6 +190,7 @@ class SuratPengantarMagangController extends Controller
             $application->update([
                 'status' => SuratPengantarMagangApplication::STATUS_APPROVED_KAPRODI,
                 'kaprodi_approved_at' => now(),
+                'kaprodi_approved_by' => Auth::id(),
                 'revision_note' => null,
                 'rejection_reason' => null,
             ]);
@@ -216,6 +217,7 @@ class SuratPengantarMagangController extends Controller
                     $lockedApplication->update([
                         'status' => SuratPengantarMagangApplication::STATUS_READY_FOR_STUDENT_REVIEW,
                         'kadep_approved_at' => now(),
+                        'kadep_approved_by' => Auth::id(),
                         'revision_note' => null,
                         'rejection_reason' => null,
                     ]);

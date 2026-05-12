@@ -183,6 +183,7 @@ class SuratKeteranganAktifController extends Controller
             $application->update([
                 'status' => SuratKeteranganAktifApplication::STATUS_APPROVED_KAPRODI,
                 'kaprodi_approved_at' => now(),
+                'kaprodi_approved_by' => Auth::id(),
                 'revision_note' => null,
                 'rejection_reason' => null,
             ]);
@@ -209,6 +210,7 @@ class SuratKeteranganAktifController extends Controller
                     $lockedApplication->update([
                         'status' => SuratKeteranganAktifApplication::STATUS_READY_FOR_STUDENT_REVIEW,
                         'kadep_approved_at' => now(),
+                        'kadep_approved_by' => Auth::id(),
                         'revision_note' => null,
                         'rejection_reason' => null,
                     ]);

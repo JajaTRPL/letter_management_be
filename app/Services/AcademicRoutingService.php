@@ -4,12 +4,22 @@ namespace App\Services;
 
 use App\Models\StudyProgram;
 use App\Models\User;
+use App\Support\LetterWorkflowStatus;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 
 class AcademicRoutingService
 {
+    public function canHandleCurrentStage(User $akademikUser, Model $application): bool
+    {
+        return match ($application->getAttribute('status')) {
+            LetterWorkflowStatus::APPROVED_TENDIK => $this->canHandleProdiStage($akademikUser, $application),
+            LetterWorkflowStatus::APPROVED_KAPRODI => $this->canHandleDepartmentStage($akademikUser, $application),
+            default => false,
+        };
+    }
+
     public function canHandleProdiStage(User $akademikUser, Model $application): bool
     {
         if (!$this->isProdiApprover($akademikUser) || !$akademikUser->study_program_id) {
@@ -132,7 +142,7 @@ class AcademicRoutingService
         return $query->whereRaw('1 = 0');
     }
 
-    private function studentStudyProgramId(Model $application): ?int
+    public function studentStudyProgramId(Model $application): ?int
     {
         $student = $this->studentFor($application);
         $studyProgramId = $student?->study_program_id;
@@ -140,7 +150,7 @@ class AcademicRoutingService
         return $studyProgramId ? (int) $studyProgramId : null;
     }
 
-    private function studentDepartmentId(Model $application): ?int
+    public function studentDepartmentId(Model $application): ?int
     {
         $student = $this->studentFor($application);
         if (!$student) {

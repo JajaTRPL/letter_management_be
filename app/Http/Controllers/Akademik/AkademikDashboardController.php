@@ -211,6 +211,7 @@ class AkademikDashboardController extends Controller
             $application->update([
                 'status' => ScholarshipApplication::STATUS_APPROVED_KAPRODI,
                 'kaprodi_approved_at' => now(),
+                'kaprodi_approved_by' => $user->id,
             ]);
             
             // Notify Kadep and Sekdep
@@ -233,7 +234,7 @@ class AkademikDashboardController extends Controller
         $oldDocumentPath = null;
 
         try {
-            $approvedApplication = DB::transaction(function () use ($application, $automationService, &$newDocumentPath, &$oldDocumentPath) {
+            $approvedApplication = DB::transaction(function () use ($application, $automationService, $user, &$newDocumentPath, &$oldDocumentPath) {
                 $lockedApplication = ScholarshipApplication::whereKey($application->id)
                     ->lockForUpdate()
                     ->firstOrFail();
@@ -254,6 +255,7 @@ class AkademikDashboardController extends Controller
                 $lockedApplication->update([
                     'status' => ScholarshipApplication::STATUS_READY_FOR_STUDENT_REVIEW,
                     'kadep_approved_at' => now(),
+                    'kadep_approved_by' => $user->id,
                     'generated_docx_path' => $generatedDocumentPath,
                 ]);
 

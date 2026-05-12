@@ -180,6 +180,7 @@ class ProsesLuarNegeriController extends Controller
             $application->update([
                 'status' => ProsesLuarNegeriApplication::STATUS_APPROVED_KAPRODI,
                 'kaprodi_approved_at' => now(),
+                'kaprodi_approved_by' => Auth::id(),
                 'revision_note' => null,
                 'rejection_reason' => null,
             ]);
@@ -206,6 +207,7 @@ class ProsesLuarNegeriController extends Controller
                     $lockedApplication->update([
                         'status' => ProsesLuarNegeriApplication::STATUS_READY_FOR_STUDENT_REVIEW,
                         'kadep_approved_at' => now(),
+                        'kadep_approved_by' => Auth::id(),
                         'revision_note' => null,
                         'rejection_reason' => null,
                     ]);

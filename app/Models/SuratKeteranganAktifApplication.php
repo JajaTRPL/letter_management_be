@@ -43,7 +43,9 @@ class SuratKeteranganAktifApplication extends Model
         'submitted_at',
         'tendik_approved_at',
         'kaprodi_approved_at',
+        'kaprodi_approved_by',
         'kadep_approved_at',
+        'kadep_approved_by',
         'student_reviewed_at',
         'completed_at',
     ];
@@ -76,5 +78,15 @@ class SuratKeteranganAktifApplication extends Model
     public function assignedUser()
     {
         return $this->belongsTo(User::class, 'assigned_to');
+    }
+
+    public function kaprodiApprover()
+    {
+        return $this->belongsTo(User::class, 'kaprodi_approved_by');
+    }
+
+    public function kadepApprover()
+    {
+        return $this->belongsTo(User::class, 'kadep_approved_by');
     }
 }
