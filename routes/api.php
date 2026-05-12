@@ -176,6 +176,14 @@ Route::middleware('throttle:api')->group(function () {
             Route::delete('/users/{user}', [\App\Http\Controllers\SuperAdmin\UserController::class, 'destroy']); // Hapus User
             Route::patch('/users/{user}/block', [\App\Http\Controllers\SuperAdmin\UserController::class, 'block']);
             Route::patch('/users/{user}/unblock', [\App\Http\Controllers\SuperAdmin\UserController::class, 'unblock']);
+
+            // Academic Periods
+            Route::get('/academic-periods', [\App\Http\Controllers\SuperAdmin\AcademicPeriodController::class, 'index']);
+            Route::post('/academic-periods', [\App\Http\Controllers\SuperAdmin\AcademicPeriodController::class, 'store']);
+            Route::get('/academic-periods/{academicPeriod}', [\App\Http\Controllers\SuperAdmin\AcademicPeriodController::class, 'show']);
+            Route::put('/academic-periods/{academicPeriod}', [\App\Http\Controllers\SuperAdmin\AcademicPeriodController::class, 'update']);
+            Route::delete('/academic-periods/{academicPeriod}', [\App\Http\Controllers\SuperAdmin\AcademicPeriodController::class, 'destroy']);
+            Route::patch('/academic-periods/{academicPeriod}/toggle-active', [\App\Http\Controllers\SuperAdmin\AcademicPeriodController::class, 'toggleActive']);
         });
 
 

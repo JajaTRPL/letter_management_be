@@ -9,6 +9,10 @@ use Illuminate\Database\Eloquent\Model;
 
 class MahasiswaProfileDataService
 {
+    public function __construct(private AcademicContextService $academicContextService)
+    {
+    }
+
     public function forUser(User $user): array
     {
         $user->loadMissing([
@@ -123,6 +127,9 @@ class MahasiswaProfileDataService
             $profile?->nim,
             $user && array_key_exists('nim', $user->getAttributes()) ? $user->getAttribute('nim') : null
         );
+        $academicContext = $user
+            ? $this->academicContextService->studentAcademicContext($user)
+            : $this->emptyAcademicContext();
 
         return [
             'user_id' => $user?->id,
@@ -154,11 +161,11 @@ class MahasiswaProfileDataService
             'pas_foto_path' => $profile?->pas_foto_path,
             'tanda_tangan_path' => $profile?->tanda_tangan_path,
 
-            'academic_period_id' => null,
-            'current_academic_year' => null,
-            'current_semester_type' => null,
-            'current_semester_order' => null,
-            'current_semester' => null,
+            'academic_period_id' => $academicContext['academic_period_id'],
+            'current_academic_year' => $academicContext['current_academic_year'],
+            'current_semester_type' => $academicContext['current_semester_type'],
+            'current_semester_order' => $academicContext['current_semester_order'],
+            'current_semester' => $academicContext['current_semester'],
 
             'raw_profile_id' => $profile?->id,
         ];
@@ -229,6 +236,17 @@ class MahasiswaProfileDataService
         $profilePayload['no_telp'] = $normalized['no_hp'];
 
         return $profilePayload;
+    }
+
+    private function emptyAcademicContext(): array
+    {
+        return [
+            'academic_period_id' => null,
+            'current_academic_year' => null,
+            'current_semester_type' => null,
+            'current_semester_order' => null,
+            'current_semester' => null,
+        ];
     }
 
     private function firstFilled(mixed ...$values): ?string
