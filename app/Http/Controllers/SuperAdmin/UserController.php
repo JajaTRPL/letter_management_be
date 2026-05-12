@@ -25,20 +25,74 @@ use Maatwebsite\Excel\Excel as ExcelFormat;
 class UserController extends Controller
 {
     /**
-     * Mengambil daftar semua user termasuk Super Admin.
+     * Mengambil daftar user dengan pagination, search, dan filter.
+     *
+     * Query params:
+     *   page, per_page (max 100, default 25)
+     *   role, status, study_program_id, department_id
+     *   search  — matches name, email, nip, or mahasiswaProfile.nim
      */
     public function index(Request $request)
     {
-        $users = User::with(['mahasiswaProfile:id,user_id,nim,tanggal_lahir', 'studyProgram:id,code,name,department_id', 'studyProgram.department:id,code,name,faculty_id', 'studyProgram.department.faculty:id,code,name', 'department:id,code,name', 'laboratory:id,code,name'])
-            ->select('id', 'name', 'email', 'role', 'sub_role', 'tendik_role', 'laboratory_id', 'study_program_id', 'department_id', 'role_level', 'status', 'assigned_tasks', 'created_at')
-            ->orderBy('created_at', 'desc')
-            ->get();
+        $perPage    = min((int) $request->get('per_page', 25), 100);
+        $search     = $request->get('search');
+        $role       = $request->get('role');
+        $status     = $request->get('status');
+        $studyProgramId = $request->get('study_program_id');
+        $departmentId   = $request->get('department_id');
+
+        $query = User::with([
+            'mahasiswaProfile:id,user_id,nim,tanggal_lahir',
+            'studyProgram:id,code,name,department_id',
+            'studyProgram.department:id,code,name,faculty_id',
+            'studyProgram.department.faculty:id,code,name',
+            'department:id,code,name',
+            'laboratory:id,code,name',
+        ])
+        ->select('id', 'name', 'email', 'nip', 'role', 'sub_role', 'tendik_role', 'laboratory_id', 'study_program_id', 'department_id', 'role_level', 'status', 'assigned_tasks', 'created_at')
+        ->orderBy('created_at', 'desc');
+
+        if ($role) {
+            $query->where('role', $role);
+        }
+
+        if ($status) {
+            $query->where('status', $status);
+        }
+
+        if ($search) {
+            $likeOp = \DB::connection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
+            $pattern = "%{$search}%";
+            $query->where(function ($q) use ($pattern, $likeOp) {
+                $q->where('name', $likeOp, $pattern)
+                  ->orWhere('email', $likeOp, $pattern)
+                  ->orWhere('nip', $likeOp, $pattern)
+                  ->orWhereHas('mahasiswaProfile', function ($pq) use ($pattern, $likeOp) {
+                      $pq->where('nim', $likeOp, $pattern);
+                  });
+            });
+        }
+
+        if ($studyProgramId) {
+            $query->where('study_program_id', (int) $studyProgramId);
+        }
+
+        if ($departmentId) {
+            $query->where('department_id', (int) $departmentId);
+        }
+
+        $paginated = $query->paginate($perPage);
 
         return response()->json([
             'message' => 'Seluruh daftar user berhasil diambil',
-            'count' => $users->count(),
-            'data' => $users,
-        ], 200);
+            'data'    => $paginated->items(),
+            'meta'    => [
+                'current_page' => $paginated->currentPage(),
+                'per_page'     => $paginated->perPage(),
+                'total'        => $paginated->total(),
+                'last_page'    => $paginated->lastPage(),
+            ],
+        ]);
     }
 
     /**
@@ -58,6 +112,7 @@ class UserController extends Controller
         $rules = [
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email',
+            'nip' => ['nullable', 'string', 'max:50', Rule::unique('users', 'nip')],
             'password' => 'required|string|min:8',
             'role' => 'required|in:mahasiswa,tendik,akademik,super_admin',
             'sub_role' => 'nullable|in:kadep,kaprodi,sekprodi,sekdep',
@@ -73,6 +128,7 @@ class UserController extends Controller
         ];
 
         $validated = $request->validate($rules);
+        $validated['nip'] = $this->normalizeNip($validated['nip'] ?? null);
 
         // Enforce akademik-specific validation
         if ($validated['role'] === 'akademik') {
@@ -133,6 +189,7 @@ class UserController extends Controller
         $user = User::create([
             'name' => $validated['name'],
             'email' => $validated['email'],
+            'nip' => $validated['nip'],
             'password' => Hash::make($validated['password']),
             'role' => $validated['role'],
             'sub_role' => $validated['role'] === 'akademik' ? ($validated['sub_role'] ?? null) : null,
@@ -168,6 +225,7 @@ class UserController extends Controller
                 'id' => $user->id,
                 'name' => $user->name,
                 'email' => $user->email,
+                'nip' => $user->nip,
                 'role' => $user->role,
                 'role_level' => $user->role_level,
                 'status' => $user->status,
@@ -220,6 +278,7 @@ class UserController extends Controller
         $validated = $request->validate([
             'name' => 'nullable|string|max:255',
             'email' => 'nullable|email|max:255|unique:users,email,' . $user->id,
+            'nip' => ['nullable', 'string', 'max:50', Rule::unique('users', 'nip')->ignore($user->id)],
             'password' => 'nullable|string|min:8',
             'role' => 'nullable|in:mahasiswa,tendik,akademik,super_admin',
             'sub_role' => 'nullable|in:kadep,kaprodi,sekprodi,sekdep',
@@ -235,6 +294,9 @@ class UserController extends Controller
             'nim' => 'sometimes|nullable|string|unique:mahasiswa_profiles,nim,' . ($user->mahasiswaProfile->id ?? 'NULL'),
             'tanggal_lahir' => 'sometimes|nullable|date',
         ]);
+        if (array_key_exists('nip', $validated)) {
+            $validated['nip'] = $this->normalizeNip($validated['nip']);
+        }
 
         // Super Admin role changes require Primary level
         $targetRole = $validated['role'] ?? $user->role;
@@ -936,5 +998,12 @@ class UserController extends Controller
         }
 
         return array_values(array_unique($assignedTasks ?? []));
+    }
+
+    private function normalizeNip(?string $nip): ?string
+    {
+        $nip = trim((string) $nip);
+
+        return $nip !== '' ? $nip : null;
     }
 }

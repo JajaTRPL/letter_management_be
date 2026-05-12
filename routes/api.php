@@ -3,7 +3,6 @@
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
-use App\Http\Controllers\UserController;
 use App\Http\Controllers\SuperAdmin\UserController as SuperAdminUserController;
 use App\Http\Controllers\FacultyController;
 use App\Http\Controllers\DepartmentController;
@@ -130,9 +129,6 @@ Route::middleware('throttle:api')->group(function () {
         Route::get('/profile', [ProfileController::class, 'getProfile']);
         Route::put('/profile', [ProfileController::class, 'updateProfile']);
         Route::post('/profile', [ProfileController::class, 'updateProfile']); // For FormData method spoofing
-
-        // Get all users (umum)
-        Route::get('/users', [UserController::class, 'index']);
 
         // Academic hierarchy (accessible to all authenticated users)
         Route::get('/faculties', [FacultyController::class, 'index']);
