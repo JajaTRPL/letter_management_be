@@ -347,6 +347,30 @@ class ScholarshipController extends Controller
         ]);
     }
 
+    /**
+     * Read-only view of a single application owned by the authenticated Mahasiswa.
+     * Lets the FE render the existing-submission detail instead of opening a new
+     * draft when a Submitted+ application already exists. Status is never mutated.
+     */
+    public function showForMahasiswa(ScholarshipApplication $application)
+    {
+        $this->documentAccessService->ensureOwner($application, Auth::user());
+
+        $application = $this->redactGeneratedDocumentPath(
+            $application->load([
+                'mahasiswaProfile.keluarga',
+                'mahasiswaProfile.scholarshipHistories',
+                'user.studyProgram.department.faculty',
+                'user.department.faculty',
+            ])
+        );
+        $application->setAttribute('letter_type', ScholarshipApplication::LETTER_TYPE);
+
+        return response()->json([
+            'application' => $this->applicationPayload($application),
+        ]);
+    }
+
     public function preview(ScholarshipApplication $application)
     {
         $this->documentAccessService->ensureOwner($application, Auth::user());

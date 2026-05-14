@@ -304,6 +304,9 @@ Route::middleware('throttle:api')->group(function () {
                     Route::post('/step-2', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'saveStep2']);
                     Route::post('/step-3', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'saveStep3']);
                     Route::post('/submit', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'submitApplication']);
+                    // Read-only detail. Declared last so static segments above take precedence
+                    // over the dynamic {application} pattern (Laravel matches by registration order).
+                    Route::get('/{application}', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'showForMahasiswa']);
                 });
             }
 

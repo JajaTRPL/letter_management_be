@@ -11,6 +11,7 @@ use App\Models\User;
 use App\Notifications\ScholarshipStatusNotification;
 use App\Enums\UserStatus;
 use App\Services\AcademicRoutingService;
+use App\Services\AcademicSignatoryService;
 use App\Services\LetterTaskCursorFeedService;
 use App\Services\LetterTaskFeedService;
 use App\Services\ScholarshipAutomationService;
@@ -200,7 +201,11 @@ class AkademikDashboardController extends Controller
     /**
      * Approve scholarship application
      */
-    public function approve(ScholarshipApplication $application, ScholarshipAutomationService $automationService)
+    public function approve(
+        ScholarshipApplication $application,
+        ScholarshipAutomationService $automationService,
+        AcademicSignatoryService $signatoryService
+    )
     {
         $user = auth()->user();
         $subRole = $user->sub_role;
@@ -228,6 +233,17 @@ class AkademikDashboardController extends Controller
             }
 
             return response()->json(['message' => 'Pendaftaran disetujui dan diteruskan ke Kadep/Sekdep']);
+        }
+
+        // Pre-flight signatory check: if the official Kadep for the student's department
+        // is missing/inactive, the document cannot be generated. Surface this as an
+        // actionable 422 instead of letting the transaction fail with a generic 500.
+        // Governance preserved: we never fall back to Sekdep as the visible signer.
+        if (!$signatoryService->officialKadepForApplication($application)) {
+            return response()->json([
+                'message' => 'Konfigurasi Ketua Departemen aktif belum tersedia untuk departemen mahasiswa. Mohon hubungi administrator untuk menetapkan Ketua Departemen aktif sebelum dokumen final dapat dibuat.',
+                'reason' => 'missing_official_kadep',
+            ], 422);
         }
 
         $newDocumentPath = null;
