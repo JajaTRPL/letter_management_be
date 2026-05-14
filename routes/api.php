@@ -337,12 +337,6 @@ Route::middleware('throttle:api')->group(function () {
                 Route::get('/{application}', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'showForMahasiswa']);
             });
 
-            // Aktif Letter Routes
-            Route::prefix('aktif')->group(function () {
-                Route::get('/step-1', [\App\Http\Controllers\Mahasiswa\AktifLetterController::class, 'getStep1']);
-                Route::post('/step-1', [\App\Http\Controllers\Mahasiswa\AktifLetterController::class, 'saveStep1']);
-                Route::post('/submit', [\App\Http\Controllers\Mahasiswa\AktifLetterController::class, 'submitApplication']);
-            });
         });
 
 
