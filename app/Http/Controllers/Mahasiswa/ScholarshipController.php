@@ -301,8 +301,25 @@ class ScholarshipController extends Controller
     /**
      * Process 4: Preview and Submit
      */
-    public function submitApplication(ScholarshipAutomationService $automationService)
+    public function submitApplication(Request $request, ScholarshipAutomationService $automationService)
     {
+        // Defense-in-depth: the FE renders an explicit declaration checkbox and gates the
+        // submit button on it, but the API must also refuse submission when the declaration
+        // is not accepted so direct/console submissions cannot bypass it.
+        $validator = Validator::make($request->all(), [
+            'declaration_accepted' => 'required|accepted',
+        ], [
+            'declaration_accepted.required' => 'Anda harus menyetujui pernyataan kebenaran data sebelum mengirim.',
+            'declaration_accepted.accepted' => 'Anda harus menyetujui pernyataan kebenaran data sebelum mengirim.',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => $validator->errors()->first('declaration_accepted'),
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
         $application = $this->editableApplicationQuery(Auth::id())->firstOrFail();
 
         // 1. Mark as submitted

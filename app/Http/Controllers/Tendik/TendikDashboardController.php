@@ -13,6 +13,7 @@ use App\Enums\UserStatus;
 use App\Services\LetterAssignmentService;
 use App\Services\LetterTaskCursorFeedService;
 use App\Services\LetterTaskFeedService;
+use App\Services\MahasiswaProfileDataService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Notification;
@@ -172,21 +173,32 @@ class TendikDashboardController extends Controller
     /**
      * Get detailed application data
      */
-    public function show(ScholarshipApplication $application)
+    public function show(ScholarshipApplication $application, MahasiswaProfileDataService $profileDataService)
     {
-        $application->load(['mahasiswaProfile.user', 'mahasiswaProfile.keluarga', 'user']);
-        
+        $application->load([
+            'mahasiswaProfile.user',
+            'mahasiswaProfile.keluarga',
+            'user.studyProgram.department.faculty',
+            'user.department.faculty',
+        ]);
+
+        $normalized = $profileDataService->forApplication($application);
+
         return response()->json([
             'application' => $application,
             'student' => [
-                'name' => $application->mahasiswaProfile?->nama_lengkap ?? $application->user->name,
-                'nim' => $application->mahasiswaProfile?->nim,
+                'name' => $normalized['name'],
+                'nim' => $normalized['nim'],
                 'photo' => $application->mahasiswaProfile?->pas_foto_path ? '/api/storage/' . ltrim(str_replace('/storage/', '', $application->mahasiswaProfile->pas_foto_path), '/') : null,
-                'prodi' => $application->mahasiswaProfile?->program_studi,
-                'email' => $application->user->email,
+                'prodi' => $normalized['program_studi_display'],
+                'fakultas' => $normalized['fakultas_display'],
+                'departemen' => $normalized['department_display'],
+                'email' => $normalized['email'],
                 'ipk' => $application->ipk,
                 'phone' => $application->mahasiswaProfile?->no_hp ?? '-',
-                'term' => 'Angkatan ' . ($application->mahasiswaProfile?->tahun_masuk ?? '2023') . ' Semester ' . ($application->current_semester ?? '6'),
+                'angkatan' => $normalized['angkatan'],
+                'current_semester' => $normalized['current_semester'],
+                'term' => 'Angkatan ' . ($normalized['angkatan'] ?? '-') . ' Semester ' . ($normalized['current_semester'] ?? '-'),
                 'target' => $application->scholarship_name ?? 'Beasiswa',
                 'submitted_at' => $application->submitted_at ? $application->submitted_at->format('d F Y, H.i') : $application->created_at->format('d F Y, H.i'),
             ],
