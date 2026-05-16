@@ -131,8 +131,16 @@ class SuratPengantarMagangController extends Controller
 
     public function showForReviewer(SuratPengantarMagangApplication $application)
     {
+        // Load the canonical academic chain so the FE can render Prodi / Fakultas / Departemen
+        // from the relation tree instead of the legacy mahasiswa_profiles.{program_studi,fakultas}
+        // text columns (which may be null for admin-created accounts and are being deprecated).
         return response()->json([
-            'application' => $application->load(['user', 'mahasiswaProfile', 'assignedTendik']),
+            'application' => $application->load([
+                'user.studyProgram.department.faculty',
+                'user.department.faculty',
+                'mahasiswaProfile',
+                'assignedTendik',
+            ]),
         ]);
     }
 
