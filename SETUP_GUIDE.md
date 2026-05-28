@@ -1,6 +1,6 @@
 # 🚀 Developer Setup Guide — UGM Letter Management
 
-> **Last Updated:** 2026-04-27
+> **Last Updated:** 2026-05-28
 > This guide is for the initial team onboarding. Follow each section carefully.
 
 ---
@@ -25,8 +25,10 @@ cd ../Letter_Management_fe && git checkout develop
 
 ```bash
 cd letter_management_be
-copy .env.shared .env
+copy .env.example .env
 ```
+
+> ⚠️ **Never commit `.env` (or any `.env.*` variant except `.env.example`).** The repo's `.gitignore` blocks them; do not bypass it. If you need to share a new env key with the team, add it to `.env.example` with a blank/placeholder value and document it here.
 
 ### 2. Replace Google OAuth Credentials
 
@@ -47,7 +49,7 @@ DB_HOST=127.0.0.1
 DB_PORT=5432
 DB_DATABASE=letter-message
 DB_USERNAME=postgres
-DB_PASSWORD=123          # ← Change this to YOUR PostgreSQL password
+DB_PASSWORD=your-local-db-password    # Fill with your local PostgreSQL password
 ```
 
 | Variable      | Shared or Personal? | Notes                                |
@@ -60,13 +62,15 @@ DB_PASSWORD=123          # ← Change this to YOUR PostgreSQL password
 
 ```bash
 composer install
-php artisan key:generate    # Only if APP_KEY is missing
+php artisan key:generate    # Required — generates a unique APP_KEY for your environment
 php artisan migrate
 php artisan db:seed --class=SuperAdminSeeder
 php artisan db:seed --class=AcademicStructureSeeder
 php artisan db:seed --class=FacultySeeder
 php artisan serve
 ```
+
+> 🔑 **APP_KEY must be unique per environment.** `.env.example` ships with `APP_KEY=` empty on purpose. Do not paste an APP_KEY from another machine, an old `.env`, or any historical commit — generate a fresh one with `php artisan key:generate`. If an environment ever ran with a shared/committed APP_KEY, treat it as compromised and rotate (see [APP_KEY Rotation](#-app_key-rotation-procedure) below).
 
 ---
 
@@ -81,13 +85,20 @@ npm install
 
 ### 2. Environment File
 
-The `.env` file is already committed. It contains:
+```bash
+cd Letter_Management_fe
+copy .env.example .env
+```
+
+Then edit `.env`:
 
 ```env
 VITE_GOOGLE_CLIENT_ID=<same Client ID as backend>
 ```
 
 > ⚠️ The `VITE_GOOGLE_CLIENT_ID` must match the `GOOGLE_CLIENT_ID` in the backend `.env`. They are the SAME value.
+>
+> ℹ️ `VITE_GOOGLE_CLIENT_ID` is a public OAuth Client ID — Vite inlines it into the public client bundle at build time, so it is visible to anyone in the browser. That is intended by Google's OAuth design. It is **not** a secret. We still keep it out of the repo so each environment can point at its own Cloud project.
 
 ### 3. Run Development Server
 
@@ -210,27 +221,63 @@ private const ALLOWED_DOMAINS = ['mail.ugm.ac.id', 'ugm.ac.id'];
 |----------|---------|----------------|
 | `DB_USERNAME` | `postgres` | Your PostgreSQL username |
 | `DB_PASSWORD` | `123` | Your PostgreSQL password |
-| `APP_KEY` | _pre-set_ | Run `php artisan key:generate` if empty |
+| `APP_KEY` | _empty in `.env.example`_ | Run `php artisan key:generate` (required) — must be unique per developer/environment, never reused |
 
 ---
 
 ## ⚠️ Security Notes
 
-> These are **temporary decisions** for team onboarding. Cleanup will be done later.
+> Onboarding-era shortcuts have been cleaned up (2026-05-28). The notes below reflect the current state, not historical risks.
 
-### Current Risks
-- `.env.shared` contains database credentials (local dev only — acceptable)
-- Google OAuth Client ID is shared openly (low risk — it's a public identifier)
-- Google OAuth Client Secret is shared via private message (moderate risk)
-- `APP_KEY` is committed (acceptable for dev — must regenerate per developer)
+### Current Posture
+- No `.env`, `.env.*` (other than `.env.example`), private keys, or DB dumps are tracked.
+- Backend `.env.example` ships with empty `APP_KEY=` and empty `DB_PASSWORD=` — both must be filled locally.
+- Frontend `.env.example` ships only with a placeholder `VITE_GOOGLE_CLIENT_ID` (public OAuth Client ID; not a secret by Google's design).
+- No real Google OAuth **Client Secret** was found in any tracked file — only the literal placeholder string `YOUR_GOOGLE_CLIENT_SECRET_HERE`. If the team's Google Client Secret was shared outside Git (e.g., private message) and is considered compromised, rotate it in Google Cloud Console independently — that rotation is not required by anything in git tracked content.
 
-### Future Cleanup Checklist
-- [ ] Remove `.env.shared` from repo after all developers are set up
-- [ ] Add `.env.shared` to `.gitignore`
-- [ ] Rotate Google OAuth credentials
-- [ ] Generate unique `APP_KEY` per developer
-- [ ] Set up proper secret management (e.g., environment-specific configs)
-- [ ] Revoke and recreate `GOOGLE_CLIENT_SECRET` after cleanup
+### Historical Cleanup Completed (2026-05-28)
+- [x] Removed `.env.shared` from tracked tree (commit `90875b0`); replaced with safe `.env.example`.
+- [x] Broadened backend `.gitignore` to `.env`, `.env.*`, `!.env.example` so future variants stay out.
+- [x] Removed frontend `.env` from tracked tree; added safe `.env.example`.
+- [x] Purged `.env.shared` from backend git history (force-with-lease, see [APP_KEY Rotation](#-app_key-rotation-procedure)).
+- [x] Generated unique `APP_KEY` per developer is now standard (no committed shared key).
+
+### Outstanding (Operational, Not in Git)
+- [ ] If the team's Google OAuth Client Secret was distributed via private channels and is considered exposed, revoke and recreate it in Google Cloud Console.
+- [ ] Set up proper secret management for future production deployment (e.g., a vault or environment-specific config service) — out of scope for current local-dev workflow.
+
+---
+
+## 🔑 APP_KEY Rotation Procedure
+
+`APP_KEY` is the symmetric key Laravel uses to encrypt session cookies, signed URLs, and any data passed through the `Crypt` / `encrypted` cast. If a key was ever reused across environments — or was committed to the repo and then pulled into a non-throwaway environment — treat it as compromised and rotate.
+
+### Per-environment rotation steps
+
+For each environment (local, staging, production) that previously used a leaked APP_KEY:
+
+```bash
+# 1. Generate a fresh key (does NOT touch .env if you pass --show)
+php artisan key:generate --show
+
+# 2. Set APP_KEY in that environment's .env to the printed value
+#    (or omit --show to write directly to the local .env)
+
+# 3. Drop any cached config that captured the old key
+php artisan config:clear
+php artisan optimize:clear
+
+# 4. Restart the PHP process (php-fpm / Laravel Octane / artisan serve)
+```
+
+### Expected impact after rotation
+- All existing **session cookies** become invalid → every user must sign in again.
+- All previously issued **signed URLs** (password-reset links, signed download URLs) stop verifying → reissue if needed.
+- Any column written with the `encrypted` cast under the old key cannot be decrypted with the new key. Audit your migrations and casts before rotating in an environment with persisted encrypted data.
+- Queue payloads that were encrypted under the old key (e.g. `ShouldBeEncrypted` jobs) cannot be decoded; drain or replay-from-source.
+
+### DB password
+The old `.env.shared` carried `DB_PASSWORD=123`, a local-only dev default. Rotate the password on any shared dev/staging database that ever accepted `123`. A throwaway local DB can be left alone but should not be reused with that password in a shared context.
 
 ---
 
