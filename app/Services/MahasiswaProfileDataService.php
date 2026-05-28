@@ -6,6 +6,7 @@ use App\Helpers\NimHelper;
 use App\Models\MahasiswaProfile;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Carbon;
 
 class MahasiswaProfileDataService
 {
@@ -29,11 +30,13 @@ class MahasiswaProfileDataService
         $application->loadMissing([
             'user.studyProgram.department.faculty',
             'user.department.faculty',
+            'user.mahasiswaProfile',
             'mahasiswaProfile',
         ]);
 
         $user = $application->getRelationValue('user');
-        $profile = $application->getRelationValue('mahasiswaProfile');
+        $profile = $application->getRelationValue('mahasiswaProfile')
+            ?: $user?->getRelationValue('mahasiswaProfile');
 
         if (!$user && $profile instanceof MahasiswaProfile) {
             $profile->loadMissing('user.studyProgram.department.faculty', 'user.department.faculty');
@@ -51,6 +54,38 @@ class MahasiswaProfileDataService
     public function studentForApplication(Model $application): array
     {
         return $this->studentFromNormalized($this->forApplication($application));
+    }
+
+    /**
+     * Stable additive profile projection for letter form and detail endpoints.
+     *
+     * @return array<string, mixed>
+     */
+    public function profileSummaryForUser(User $user): array
+    {
+        $normalized = $this->forUser($user);
+
+        return $this->profileSummaryFromNormalized(
+            $normalized,
+            $user->getRelationValue('mahasiswaProfile')
+        );
+    }
+
+    /**
+     * Stable additive profile projection for an existing letter application.
+     *
+     * @return array<string, mixed>
+     */
+    public function profileSummaryForApplication(Model $application): array
+    {
+        $normalized = $this->forApplication($application);
+        $profile = $application->getRelationValue('mahasiswaProfile')
+            ?: $application->getRelationValue('user')?->getRelationValue('mahasiswaProfile');
+
+        return $this->profileSummaryFromNormalized(
+            $normalized,
+            $profile
+        );
     }
 
     public function applicationPayload(Model $application): array
@@ -218,6 +253,33 @@ class MahasiswaProfileDataService
         ];
     }
 
+    /**
+     * @param array<string, mixed> $normalized
+     * @return array<string, mixed>
+     */
+    private function profileSummaryFromNormalized(array $normalized, ?MahasiswaProfile $profile): array
+    {
+        return [
+            'full_name' => $this->displayValueToNull($normalized['name'] ?? null),
+            'nim' => $this->displayValueToNull($normalized['nim'] ?? null),
+            'email' => $this->displayValueToNull($normalized['email'] ?? null),
+            'faculty' => $this->firstFilled(
+                $this->displayValueToNull($normalized['faculty_name'] ?? null),
+                $profile?->fakultas
+            ),
+            'study_program' => $this->firstFilled(
+                $this->displayValueToNull($normalized['study_program_name'] ?? null),
+                $profile?->program_studi
+            ),
+            'study_program_code' => $this->displayValueToNull($normalized['study_program_code'] ?? null),
+            'department' => $this->displayValueToNull($normalized['department_name'] ?? null),
+            'tempat_lahir' => $this->blankToNull($profile?->tempat_lahir),
+            'tanggal_lahir' => $this->dateOnly($profile?->tanggal_lahir),
+            'jenis_kelamin' => $this->blankToNull($profile?->jenis_kelamin),
+            'current_semester' => $normalized['current_semester'] ?? null,
+        ];
+    }
+
     private function profileCompatibilityPayload(mixed $profilePayload, array $normalized): array
     {
         $profilePayload = is_array($profilePayload) ? $profilePayload : [];
@@ -270,6 +332,27 @@ class MahasiswaProfileDataService
         $value = trim((string) $value);
 
         return $value === '' ? null : $value;
+    }
+
+    private function displayValueToNull(mixed $value): ?string
+    {
+        $value = $this->blankToNull($value);
+
+        return $value === '-' ? null : $value;
+    }
+
+    private function dateOnly(mixed $value): ?string
+    {
+        $value = $this->blankToNull($value);
+        if ($value === null) {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value)->toDateString();
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     private function hasValue(mixed $value): bool

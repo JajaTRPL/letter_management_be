@@ -73,6 +73,45 @@ class AcademicSignatoryService
         return $path !== '' ? $path : null;
     }
 
+    public function formatAcademicOfficeTitle(string $roleKey, ?string $unitName): string
+    {
+        $rolePosition = $this->academicOfficeRolePosition($roleKey);
+        $unitType = $this->academicOfficeUnitType($roleKey);
+        $normalizedUnitName = $this->academicOfficeUnitName($roleKey, $unitName);
+
+        return $this->squish(implode(' ', array_filter([
+            $rolePosition,
+            $unitType,
+            $normalizedUnitName !== '-' ? $normalizedUnitName : null,
+        ])));
+    }
+
+    public function academicOfficeRoleTitle(string $roleKey): string
+    {
+        return $this->squish($this->academicOfficeRolePosition($roleKey) . ' ' . $this->academicOfficeUnitType($roleKey));
+    }
+
+    public function academicOfficeUnitName(string $roleKey, ?string $unitName): string
+    {
+        $unitName = $this->squish((string) $unitName);
+        if ($unitName === '' || $unitName === '-') {
+            return '-';
+        }
+
+        $unitType = $this->academicOfficeUnitType($roleKey);
+        $unitName = $this->stripLeadingPattern($unitName, '/^(Ketua|Sekretaris)(?:\s+|$)/iu');
+
+        if ($unitType === 'Departemen') {
+            $unitName = $this->stripLeadingPattern($unitName, '/^Departemen(?:\s+|$)/iu');
+        } elseif ($unitType === 'Program Studi') {
+            $unitName = $this->stripLeadingPattern($unitName, '/^Program\s+Studi(?:\s+|$)/iu');
+        }
+
+        $unitName = $this->squish($unitName);
+
+        return $unitName !== '' ? $unitName : '-';
+    }
+
     public function globalParafPath(): ?string
     {
         $path = config('surat.global_paraf_path', resource_path('system/paraf.png'));
@@ -159,5 +198,39 @@ class AcademicSignatoryService
         }
 
         return $path;
+    }
+
+    private function academicOfficeRolePosition(string $roleKey): string
+    {
+        return match (strtolower($roleKey)) {
+            'kadep', 'kaprodi' => 'Ketua',
+            'sekdep', 'sekprodi' => 'Sekretaris',
+            default => $this->squish($roleKey),
+        };
+    }
+
+    private function academicOfficeUnitType(string $roleKey): string
+    {
+        return match (strtolower($roleKey)) {
+            'kadep', 'sekdep' => 'Departemen',
+            'kaprodi', 'sekprodi' => 'Program Studi',
+            default => '',
+        };
+    }
+
+    private function stripLeadingPattern(string $value, string $pattern): string
+    {
+        do {
+            $previous = $value;
+            $value = preg_replace($pattern, '', $value) ?? $value;
+            $value = $this->squish($value);
+        } while ($value !== $previous);
+
+        return $value;
+    }
+
+    private function squish(string $value): string
+    {
+        return trim(preg_replace('/\s+/u', ' ', $value) ?? $value);
     }
 }

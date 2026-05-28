@@ -177,6 +177,7 @@ class AssignmentAndTaskFeedTest extends TestCase
                 && $row['id'] === $application->id
                 && $row['letter_label'] === 'Proses Luar Negeri'
                 && $row['category'] === 'administrasi'
+                && $row['docx_url'] === null
         ));
     }
 
@@ -234,6 +235,7 @@ class AssignmentAndTaskFeedTest extends TestCase
         $this->assertTrue(collect($response->json('tasks'))->contains(
             fn (array $row): bool => $row['letter_type'] === SuratPengantarMagangApplication::LETTER_TYPE
                 && $row['id'] === $application->id
+                && $row['docx_url'] === null
         ));
     }
 
@@ -392,20 +394,119 @@ class AssignmentAndTaskFeedTest extends TestCase
         $this->assertFalse(collect($tasks)->contains('id', $app->id));
     }
 
-    public function test_tendik_active_dashboard_includes_approved_tendik_beasiswa(): void
+    public function test_tendik_active_dashboard_excludes_approved_tendik_rows_and_riwayat_keeps_them(): void
     {
-        $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
-        $app = $this->scholarshipApplication(null, [
-            'assigned_to' => $tendik->id,
-            'status' => ScholarshipApplication::STATUS_APPROVED_TENDIK,
+        $tendik = $this->tendikPersuratan([
+            ProsesLuarNegeriApplication::LETTER_TYPE,
+            ScholarshipApplication::LETTER_TYPE,
+            SuratKeteranganAktifApplication::LETTER_TYPE,
+            SuratPengantarMagangApplication::LETTER_TYPE,
         ]);
+
+        $applications = [
+            [ScholarshipApplication::LETTER_TYPE, $this->scholarshipApplication(null, [
+                'assigned_to' => $tendik->id,
+                'status' => ScholarshipApplication::STATUS_APPROVED_TENDIK,
+            ])],
+            [SuratPengantarMagangApplication::LETTER_TYPE, $this->magangApplication(null, [
+                'assigned_to' => $tendik->id,
+                'status' => SuratPengantarMagangApplication::STATUS_APPROVED_TENDIK,
+            ])],
+            [SuratKeteranganAktifApplication::LETTER_TYPE, $this->aktifApplication(null, [
+                'assigned_to' => $tendik->id,
+                'status' => SuratKeteranganAktifApplication::STATUS_APPROVED_TENDIK,
+            ])],
+            [ProsesLuarNegeriApplication::LETTER_TYPE, $this->prosesLuarNegeriApplication(null, [
+                'assigned_to' => $tendik->id,
+                'status' => ProsesLuarNegeriApplication::STATUS_APPROVED_TENDIK,
+            ])],
+        ];
 
         $tasks = $this->actingAs($tendik, 'sanctum')
             ->getJson('/api/tendik/dashboard/tasks')
             ->assertOk()
             ->json('tasks');
 
-        $this->assertTrue(collect($tasks)->contains('id', $app->id));
+        foreach ($applications as [$letterType, $application]) {
+            $this->assertFalse(
+                collect($tasks)->contains(fn (array $row): bool => $row['letter_type'] === $letterType && $row['id'] === $application->id),
+                "Expected {$letterType} {$application->id} to be absent from Tendik active dashboard."
+            );
+        }
+
+        $teamTasks = $this->actingAs($tendik, 'sanctum')
+            ->getJson('/api/tendik/dashboard/tasks?scope=team')
+            ->assertOk()
+            ->json('tasks');
+
+        foreach ($applications as [$letterType, $application]) {
+            $this->assertFalse(
+                collect($teamTasks)->contains(fn (array $row): bool => $row['letter_type'] === $letterType && $row['id'] === $application->id),
+                "Expected {$letterType} {$application->id} to be absent from Tendik team dashboard."
+            );
+        }
+
+        $riwayatTasks = $this->actingAs($tendik, 'sanctum')
+            ->getJson('/api/tendik/riwayat')
+            ->assertOk()
+            ->json('tasks');
+
+        foreach ($applications as [$letterType, $application]) {
+            $this->assertTrue(
+                collect($riwayatTasks)->contains(fn (array $row): bool => $row['letter_type'] === $letterType && $row['id'] === $application->id),
+                "Expected {$letterType} {$application->id} to remain visible in Tendik riwayat."
+            );
+        }
+    }
+
+    public function test_tendik_approval_moves_beasiswa_out_of_tendik_tasks_and_into_prodi_queue(): void
+    {
+        $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
+        $kaprodi = $this->akademik('kaprodi');
+        $application = $this->scholarshipApplication(null, [
+            'assigned_to' => $tendik->id,
+        ]);
+
+        $this->mockBeasiswaPreviewGenerationForApprove();
+
+        $this->actingAs($tendik, 'sanctum')
+            ->patchJson("/api/tendik/scholarship/{$application->id}/approve", [
+                'nomor_surat' => '009/SPB/2026',
+            ])
+            ->assertOk();
+
+        $application->refresh();
+        $this->assertSame(ScholarshipApplication::STATUS_APPROVED_TENDIK, $application->status);
+
+        $tendikTasks = $this->actingAs($tendik, 'sanctum')
+            ->getJson('/api/tendik/dashboard/tasks')
+            ->assertOk()
+            ->json('tasks');
+
+        $this->assertFalse(collect($tendikTasks)->contains(
+            fn (array $row): bool => $row['letter_type'] === ScholarshipApplication::LETTER_TYPE
+                && $row['id'] === $application->id
+        ));
+
+        $riwayatTasks = $this->actingAs($tendik, 'sanctum')
+            ->getJson('/api/tendik/riwayat')
+            ->assertOk()
+            ->json('tasks');
+
+        $this->assertTrue(collect($riwayatTasks)->contains(
+            fn (array $row): bool => $row['letter_type'] === ScholarshipApplication::LETTER_TYPE
+                && $row['id'] === $application->id
+        ));
+
+        $akademikTasks = $this->actingAs($kaprodi, 'sanctum')
+            ->getJson('/api/akademik/dashboard/tasks')
+            ->assertOk()
+            ->json('tasks');
+
+        $this->assertTrue(collect($akademikTasks)->contains(
+            fn (array $row): bool => $row['letter_type'] === ScholarshipApplication::LETTER_TYPE
+                && $row['id'] === $application->id
+        ));
     }
 
     public function test_legacy_short_assignment_keys_are_rejected_on_write(): void

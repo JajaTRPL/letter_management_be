@@ -12,10 +12,40 @@ class TemplateManagementController extends Controller
 {
     private const MANAGED_TEMPLATES = [
         'surat-permohonan-beasiswa' => [
-            'key'         => 'surat-permohonan-beasiswa',
-            'name'        => 'Surat Permohonan Beasiswa',
-            'source_type' => 'google_docs',
-            'can_refresh' => true,
+            'key'                      => 'surat-permohonan-beasiswa',
+            'name'                     => 'Surat Permohonan Beasiswa',
+            'category'                 => 'Surat Beasiswa',
+            'source_type'              => 'google_docs',
+            'can_refresh'              => true,
+            'template_id_config_key'   => 'template_beasiswa_id',
+            'cache_path_config_key'    => 'template_beasiswa_cache_path',
+        ],
+        'surat-keterangan-aktif' => [
+            'key'                      => 'surat-keterangan-aktif',
+            'name'                     => 'Surat Keterangan Aktif',
+            'category'                 => 'Surat Keaktifan',
+            'source_type'              => 'google_docs',
+            'can_refresh'              => true,
+            'template_id_config_key'   => 'template_surat_keterangan_aktif_id',
+            'cache_path_config_key'    => 'template_surat_keterangan_aktif_cache_path',
+        ],
+        'proses-luar-negeri' => [
+            'key'                      => 'proses-luar-negeri',
+            'name'                     => 'Proses Luar Negeri',
+            'category'                 => 'Surat Luar Negeri',
+            'source_type'              => 'google_docs',
+            'can_refresh'              => true,
+            'template_id_config_key'   => 'template_proses_luar_negeri_id',
+            'cache_path_config_key'    => 'template_proses_luar_negeri_cache_path',
+        ],
+        'surat-pengantar-magang' => [
+            'key'                      => 'surat-pengantar-magang',
+            'name'                     => 'Surat Pengantar Magang',
+            'category'                 => 'Surat Magang',
+            'source_type'              => 'google_docs',
+            'can_refresh'              => true,
+            'template_id_config_key'   => 'template_surat_pengantar_magang_id',
+            'cache_path_config_key'    => 'template_surat_pengantar_magang_cache_path',
         ],
     ];
 
@@ -39,20 +69,16 @@ class TemplateManagementController extends Controller
             return response()->json(['message' => 'Template tidak ditemukan'], 404);
         }
 
-        if ($key === 'surat-permohonan-beasiswa') {
-            return $this->refreshBeasiswaTemplate();
-        }
-
-        return response()->json(['message' => 'Template ini tidak dapat di-refresh melalui sistem'], 422);
+        return $this->refreshTemplate($key);
     }
 
     private function buildTemplateInfo(string $key, array $meta): array
     {
-        $cachePath   = config('surat.template_beasiswa_cache_path');
+        $cachePath   = config('surat.' . $meta['cache_path_config_key']);
         $cacheExists = $cachePath && is_file($cachePath) && is_readable($cachePath);
         $cachedAt    = $cacheExists ? date('Y-m-d H:i:s', filemtime($cachePath)) : null;
         $sizeBytes   = $cacheExists ? filesize($cachePath) : null;
-        $templateId  = config('surat.template_beasiswa_id', '');
+        $templateId  = config('surat.' . $meta['template_id_config_key'], '');
 
         $maskedId = $templateId ? ('...' . substr($templateId, -8)) : null;
 
@@ -65,10 +91,11 @@ class TemplateManagementController extends Controller
         ]);
     }
 
-    private function refreshBeasiswaTemplate(): JsonResponse
+    private function refreshTemplate(string $key): JsonResponse
     {
-        $templateId = config('surat.template_beasiswa_id');
-        $cachePath  = config('surat.template_beasiswa_cache_path');
+        $meta = self::MANAGED_TEMPLATES[$key];
+        $templateId = config('surat.' . $meta['template_id_config_key']);
+        $cachePath  = config('surat.' . $meta['cache_path_config_key']);
 
         if (!$templateId) {
             return response()->json(['message' => 'Template ID belum dikonfigurasi'], 422);
@@ -78,7 +105,7 @@ class TemplateManagementController extends Controller
             return response()->json(['message' => 'Cache path belum dikonfigurasi'], 422);
         }
 
-        $content = $this->fetchFromGoogleDocx();
+        $content = $this->fetchFromGoogleDocx((string) $templateId);
 
         if ($content === false || strlen($content) === 0) {
             return response()->json([
@@ -92,7 +119,7 @@ class TemplateManagementController extends Controller
             ], 422);
         }
 
-        $tempFile = tempnam(sys_get_temp_dir(), 'beasiswa_refresh_') . '.docx';
+        $tempFile = tempnam(sys_get_temp_dir(), str_replace('-', '_', $key) . '_refresh_') . '.docx';
         file_put_contents($tempFile, $content);
 
         $zip = new ZipArchive();
@@ -118,7 +145,8 @@ class TemplateManagementController extends Controller
             @unlink($tempFile);
         }
 
-        Log::info('Beasiswa template cache refreshed', [
+        Log::info('Template cache refreshed', [
+            'key'  => $key,
             'size' => strlen($content),
             'by'   => auth()->id(),
         ]);
@@ -130,13 +158,8 @@ class TemplateManagementController extends Controller
         ]);
     }
 
-    protected function fetchFromGoogleDocx(): string|false
+    protected function fetchFromGoogleDocx(string $templateId): string|false
     {
-        $templateId = config('surat.template_beasiswa_id');
-        if (!$templateId) {
-            return false;
-        }
-
         $url     = "https://docs.google.com/document/d/{$templateId}/export?format=docx";
         $options = [
             'http' => [

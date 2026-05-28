@@ -41,7 +41,6 @@ class BeasiswaMissingKadepResponseTest extends TestCase
             'status' => ScholarshipApplication::STATUS_APPROVED_KAPRODI,
             'kadep_approved_by' => null,
             'kadep_approved_at' => null,
-            'generated_docx_path' => null,
         ]);
     }
 
@@ -59,6 +58,8 @@ class BeasiswaMissingKadepResponseTest extends TestCase
         $sekprodi = $this->akademik('sekprodi', ['study_program_id' => $program->id]);
 
         // No Kadep configured anywhere — Kaprodi-stage approval should still succeed.
+        $this->mockBeasiswaPreviewGenerationForProdiApprove();
+
         $this->actingAs($sekprodi, 'sanctum')
             ->patchJson("/api/akademik/surat-permohonan-beasiswa/{$application->id}/approve")
             ->assertOk();

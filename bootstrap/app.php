@@ -3,6 +3,7 @@
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
 use App\Http\Middleware\CheckRole;
 
 return Application::configure(basePath: dirname(__DIR__))
@@ -19,8 +20,13 @@ return Application::configure(basePath: dirname(__DIR__))
             'check_status' => \App\Http\Middleware\CheckUserStatus::class,
             'profile_complete' => \App\Http\Middleware\EnsureProfileComplete::class,
         ]);
+
+        $middleware->redirectGuestsTo(
+            fn (Request $request): ?string => $request->is('api/*') ? null : '/login',
+        );
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        //
+        $exceptions->shouldRenderJsonWhen(
+            fn (Request $request, \Throwable $e): bool => $request->is('api/*') || $request->expectsJson(),
+        );
     })->create();
-

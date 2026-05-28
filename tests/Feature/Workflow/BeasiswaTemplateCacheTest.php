@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Workflow;
 
+use App\Models\LetterDocumentArtifact;
 use App\Models\ScholarshipApplication;
 use App\Services\AcademicSignatoryService;
 use App\Services\LetterAssignmentService;
@@ -110,6 +111,7 @@ class BeasiswaTemplateCacheTest extends TestCase
     public function test_generation_succeeds_from_cache_even_when_google_is_down(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
 
         $department = $this->department(['name' => 'Test Department']);
         $program = $this->studyProgram($department);
@@ -118,7 +120,7 @@ class BeasiswaTemplateCacheTest extends TestCase
             'status'      => ScholarshipApplication::STATUS_APPROVED_KAPRODI,
             'nomor_surat' => 'BEA-CACHE-001',
         ]);
-        $officialKadep = $this->akademik('kadep', ['department_id' => $department->id]);
+        $this->akademik('kadep', ['department_id' => $department->id]);
 
         // Place minimal template at cache path
         $fakeDocx = $this->minimalScholarshipTemplate();
@@ -126,18 +128,23 @@ class BeasiswaTemplateCacheTest extends TestCase
         config(['surat.template_beasiswa_cache_path' => $this->tempCachePath]);
 
         $service = $this->makeGoogleBlockedService();
-        $result = $service->generateDocument($application, $officialKadep);
-
-        $this->assertNotFalse($result, 'generateDocument should succeed using cached template');
-        $this->assertTrue(
-            Storage::disk('public')->exists($result),
-            'Generated DOCX should be saved to public storage'
+        $result = $service->generateDocumentForPhase(
+            $application,
+            LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW,
         );
+
+        $this->assertNotFalse($result, 'Private phase generation should succeed using cached template');
+        $this->assertTrue(
+            Storage::disk('local')->exists($result),
+            'Generated DOCX should be saved to private local storage'
+        );
+        $this->assertSame([], Storage::disk('public')->allFiles('scholarships'));
     }
 
     public function test_generation_fails_gracefully_when_cache_absent_and_google_down(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
 
         [$student] = $this->completeMahasiswa();
         $application = $this->scholarshipApplication($student);
@@ -146,9 +153,12 @@ class BeasiswaTemplateCacheTest extends TestCase
         config(['surat.template_beasiswa_cache_path' => $this->tempCachePath]);
 
         $service = $this->makeGoogleBlockedService();
-        $result = $service->generateDocument($application);
+        $result = $service->generateDocumentForPhase(
+            $application,
+            LetterDocumentArtifact::PHASE_TENDIK_REVIEW,
+        );
 
-        $this->assertFalse($result, 'generateDocument should return false when cache absent and Google down');
+        $this->assertFalse($result, 'Private phase generation should return false when cache absent and Google down');
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -195,7 +205,7 @@ class BeasiswaTemplateCacheTest extends TestCase
     {
         $phpWord = new PhpWord();
         $section = $phpWord->addSection();
-        $section->addText('Nomor: ${nomor_surat}');
+        $section->addText('Nomor rekomendasi: ${nomor_surat_rekomendasi}');
         $section->addText('Nama: ${nama}');
         $section->addText('Kadep: ${nama_kadep}');
         $section->addText('NIP: ${nip_kadep}');

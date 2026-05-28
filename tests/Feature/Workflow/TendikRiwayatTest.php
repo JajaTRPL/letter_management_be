@@ -70,6 +70,22 @@ class TendikRiwayatTest extends TestCase
         $this->assertTrue(collect($tasks)->contains('id', $app->id));
     }
 
+    public function test_riwayat_includes_approved_tendik_beasiswa(): void
+    {
+        $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
+        $app = $this->scholarshipApplication(null, [
+            'assigned_to' => $tendik->id,
+            'status'      => ScholarshipApplication::STATUS_APPROVED_TENDIK,
+        ]);
+
+        $tasks = $this->actingAs($tendik, 'sanctum')
+            ->getJson('/api/tendik/riwayat')
+            ->assertOk()
+            ->json('tasks');
+
+        $this->assertTrue(collect($tasks)->contains('id', $app->id));
+    }
+
     public function test_riwayat_includes_revision_beasiswa(): void
     {
         $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
@@ -142,22 +158,6 @@ class TendikRiwayatTest extends TestCase
         $app = $this->scholarshipApplication(null, [
             'assigned_to' => $tendik->id,
             'status'      => ScholarshipApplication::STATUS_SUBMITTED,
-        ]);
-
-        $tasks = $this->actingAs($tendik, 'sanctum')
-            ->getJson('/api/tendik/riwayat')
-            ->assertOk()
-            ->json('tasks');
-
-        $this->assertFalse(collect($tasks)->contains('id', $app->id));
-    }
-
-    public function test_riwayat_excludes_approved_tendik_beasiswa(): void
-    {
-        $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
-        $app = $this->scholarshipApplication(null, [
-            'assigned_to' => $tendik->id,
-            'status'      => ScholarshipApplication::STATUS_APPROVED_TENDIK,
         ]);
 
         $tasks = $this->actingAs($tendik, 'sanctum')

@@ -3,14 +3,21 @@
 namespace App\Http\Controllers\Mahasiswa;
 
 use App\Http\Controllers\Controller;
+use App\Models\LetterDocumentArtifact;
 use App\Models\ScholarshipApplication;
+use App\Services\BeasiswaPreviewGenerationException;
+use App\Services\BeasiswaPreviewGenerationService;
+use App\Services\LetterDocumentArtifactService;
 use App\Services\LetterDocumentAccessService;
 use App\Services\MahasiswaProfileDataService;
 use App\Services\ScholarshipAutomationService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
+use RuntimeException;
 
 class ScholarshipController extends Controller
 {
@@ -38,6 +45,7 @@ class ScholarshipController extends Controller
                 'email' => $user->email,
             ],
             'student' => $this->profileDataService->studentForUser($user),
+            'profile_summary' => $this->profileDataService->profileSummaryForUser($user),
             'application' => $application ? $this->applicationPayload($this->redactGeneratedDocumentPath($application)) : null
         ]);
     }
@@ -237,8 +245,8 @@ class ScholarshipController extends Controller
             'scholarship_histories.*.jumlah' => 'required_with:scholarship_histories|string',
             'scholarship_histories.*.status' => 'required_with:scholarship_histories|in:Aktif,Selesai',
             'transkrip_nilai' => 'nullable|file|mimes:pdf|max:2048',
-            'slip_gaji_ayah' => 'nullable|file|mimes:png,jpg,pdf|max:2048',
-            'slip_gaji_ibu' => 'nullable|file|mimes:png,jpg,pdf|max:2048',
+            'slip_gaji_ayah' => 'nullable|file|mimes:pdf|max:2048',
+            'slip_gaji_ibu' => 'nullable|file|mimes:pdf|max:2048',
         ]);
 
         if ($validator->fails()) {
@@ -301,7 +309,11 @@ class ScholarshipController extends Controller
     /**
      * Process 4: Preview and Submit
      */
-    public function submitApplication(Request $request, ScholarshipAutomationService $automationService)
+    public function submitApplication(
+        Request $request,
+        ScholarshipAutomationService $automationService,
+        BeasiswaPreviewGenerationService $previewGenerationService,
+    )
     {
         // Defense-in-depth: the FE renders an explicit declaration checkbox and gates the
         // submit button on it, but the API must also refuse submission when the declaration
@@ -321,16 +333,58 @@ class ScholarshipController extends Controller
         }
 
         $application = $this->editableApplicationQuery(Auth::id())->firstOrFail();
+        $submittedAt = now();
 
-        // 1. Mark as submitted
-        $application->status = ScholarshipApplication::STATUS_SUBMITTED;
-        $application->submitted_at = now();
-        $application->save();
+        try {
+            $previewGenerationService->generateForPhase(
+                $application,
+                LetterDocumentArtifact::PHASE_TENDIK_REVIEW,
+                [
+                    'status' => ScholarshipApplication::STATUS_SUBMITTED,
+                    'submitted_at' => $submittedAt,
+                    'tanggal_surat' => $submittedAt,
+                ],
+                Auth::id(),
+            );
+        } catch (BeasiswaPreviewGenerationException $exception) {
+            report($exception);
 
-        // 2. Automate: Assign to Tendik
-        $assignedTendik = $automationService->assignApplication($application);
+            return response()->json([
+                'message' => 'Dokumen pratinjau pengajuan belum dapat dibuat. Silakan coba lagi.',
+            ], 503);
+        }
 
-        // 3. Notify Tendik (Email & Dashboard)
+        try {
+            [$application, $assignedTendik] = DB::transaction(function () use ($application, $automationService, $submittedAt) {
+                $lockedApplication = ScholarshipApplication::query()
+                    ->whereKey($application->getKey())
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                if (
+                    (int) $lockedApplication->user_id !== (int) Auth::id()
+                    || !in_array($lockedApplication->status, [
+                        ScholarshipApplication::STATUS_DRAFT,
+                        ScholarshipApplication::STATUS_REVISION,
+                    ], true)
+                ) {
+                    throw new RuntimeException('Scholarship application is no longer submittable.');
+                }
+
+                $lockedApplication->status = ScholarshipApplication::STATUS_SUBMITTED;
+                $lockedApplication->submitted_at = $submittedAt;
+                $lockedApplication->save();
+
+                $assignedTendik = $automationService->assignApplication($lockedApplication);
+
+                return [$lockedApplication->fresh(), $assignedTendik];
+            });
+        } catch (RuntimeException $exception) {
+            return response()->json([
+                'message' => 'Pengajuan sudah berubah dan tidak dapat dikirim ulang.',
+            ], 409);
+        }
+
         if ($assignedTendik) {
             $application->load('mahasiswaProfile');
             $assignedTendik->notify(new \App\Notifications\ScholarshipSubmittedNotification($application));
@@ -385,34 +439,14 @@ class ScholarshipController extends Controller
 
         return response()->json([
             'application' => $this->applicationPayload($application),
+            'profile_summary' => $this->profileDataService->profileSummaryForApplication($application),
         ]);
     }
 
-    public function preview(ScholarshipApplication $application)
-    {
-        $this->documentAccessService->ensureOwner($application, Auth::user());
-
-        if (!$this->documentAccessService->canPreview($application)) {
-            return response()->json([
-                'message' => 'Dokumen belum tersedia untuk direview.'
-            ], 403);
-        }
-
-        $path = $this->documentAccessService->resolveGeneratedDocumentPath($application, 'generated_docx_path');
-        if (!$path) {
-            return response()->json([
-                'message' => 'Dokumen pengajuan belum tersedia.'
-            ], 404);
-        }
-
-        return response()->file($path, [
-            'Content-Type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            'Content-Disposition' => 'inline; filename="' . $this->generatedDocumentFilename($application) . '"',
-            'Cache-Control' => 'private, no-store',
-        ]);
-    }
-
-    public function complete(ScholarshipApplication $application)
+    public function complete(
+        ScholarshipApplication $application,
+        LetterDocumentArtifactService $artifactService,
+    )
     {
         $this->documentAccessService->ensureOwner($application, Auth::user());
 
@@ -422,22 +456,160 @@ class ScholarshipController extends Controller
             ], 403);
         }
 
-        if (!$this->documentAccessService->resolveGeneratedDocumentPath($application, 'generated_docx_path')) {
-            return response()->json([
-                'message' => 'Dokumen pengajuan belum tersedia.'
-            ], 404);
+        $artifactError = $this->completionArtifactError($application, $artifactService);
+        if ($artifactError) {
+            return $artifactError;
         }
 
-        $application->update([
-            'status' => ScholarshipApplication::STATUS_COMPLETED,
-            'student_reviewed_at' => $application->student_reviewed_at ?? now(),
-            'completed_at' => now(),
-        ]);
+        $completedAt = now();
+
+        try {
+            $application = DB::transaction(function () use ($application, $completedAt) {
+                $lockedApplication = ScholarshipApplication::query()
+                    ->whereKey($application->getKey())
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                if (
+                    (int) $lockedApplication->user_id !== (int) Auth::id()
+                    || $lockedApplication->status !== ScholarshipApplication::STATUS_READY_FOR_STUDENT_REVIEW
+                ) {
+                    throw new RuntimeException('Scholarship application is no longer completable.');
+                }
+
+                $lockedApplication->update([
+                    'status' => ScholarshipApplication::STATUS_COMPLETED,
+                    'student_reviewed_at' => $lockedApplication->student_reviewed_at ?? $completedAt,
+                    'completed_at' => $completedAt,
+                ]);
+
+                return $lockedApplication->fresh();
+            });
+        } catch (RuntimeException $exception) {
+            return response()->json([
+                'message' => 'Pengajuan sudah berubah dan tidak dapat diselesaikan ulang.',
+            ], 409);
+        }
 
         return response()->json([
             'message' => 'Pengajuan berhasil diselesaikan.',
-            'application' => $this->applicationPayload($application->fresh()),
+            'application' => $this->applicationPayload($application),
         ]);
+    }
+
+    private function completionArtifactError(
+        ScholarshipApplication $application,
+        LetterDocumentArtifactService $artifactService,
+    ): ?JsonResponse {
+        $artifact = $artifactService->latestArtifact(
+            ScholarshipApplication::LETTER_TYPE,
+            (int) $application->getKey(),
+            LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW,
+        );
+
+        if (!$artifact) {
+            return $this->completionArtifactUnavailable();
+        }
+
+        if ($artifact->status === LetterDocumentArtifact::STATUS_GENERATING) {
+            return $this->completionArtifactErrorResponse(
+                'Dokumen final masih sedang dibuat. Silakan coba lagi beberapa saat.',
+                'artifact_generating',
+                409,
+            );
+        }
+
+        if ($artifact->status === LetterDocumentArtifact::STATUS_FAILED) {
+            return $this->completionArtifactErrorResponse(
+                'Dokumen final belum dapat tersedia karena proses pembuatan terakhir gagal. Silakan coba lagi nanti.',
+                'artifact_failed',
+                503,
+            );
+        }
+
+        if (
+            $artifact->status !== LetterDocumentArtifact::STATUS_READY
+            || !$this->isExpectedPrivateArtifactPdfPath($artifact->pdf_path)
+            || !Storage::disk('local')->exists($artifact->pdf_path)
+        ) {
+            return $this->completionArtifactUnavailable();
+        }
+
+        return null;
+    }
+
+    private function completionArtifactUnavailable(): JsonResponse
+    {
+        return $this->completionArtifactErrorResponse(
+            'Dokumen final PDF belum tersedia.',
+            'artifact_unavailable',
+            404,
+        );
+    }
+
+    private function completionArtifactErrorResponse(string $message, string $reason, int $status): JsonResponse
+    {
+        return response()->json([
+            'message' => $message,
+            'reason' => $reason,
+        ], $status);
+    }
+
+    private function isExpectedPrivateArtifactPdfPath(?string $path): bool
+    {
+        if (!is_string($path) || trim($path) === '') {
+            return false;
+        }
+
+        $path = str_replace('\\', '/', trim($path));
+
+        return !str_contains($path, '..')
+            && str_starts_with(
+                $path,
+                'letter-document-artifacts/' . ScholarshipApplication::LETTER_TYPE . '/',
+            )
+            && str_ends_with(strtolower($path), '.pdf');
+    }
+
+    public function finalDownload(
+        ScholarshipApplication $application,
+        LetterDocumentArtifactService $artifactService,
+    ) {
+        $this->documentAccessService->ensureOwner($application, Auth::user());
+
+        if ($application->status !== ScholarshipApplication::STATUS_COMPLETED) {
+            return response()->json([
+                'message' => 'Dokumen final hanya tersedia setelah pengajuan selesai.',
+            ], 403);
+        }
+
+        $artifact = $artifactService->latestReadyArtifact(
+            ScholarshipApplication::LETTER_TYPE,
+            $application->id,
+            LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW,
+        );
+
+        if (!$artifact || !$artifact->pdf_path || !Storage::disk('local')->exists($artifact->pdf_path)) {
+            return response()->json([
+                'message' => 'Dokumen final PDF belum tersedia.',
+                'reason' => 'artifact_unavailable',
+            ], 404);
+        }
+
+        $response = response()->download(
+            Storage::disk('local')->path($artifact->pdf_path),
+            $this->finalPdfFilename($application),
+            [
+                'Content-Type' => 'application/pdf',
+                'X-Content-Type-Options' => 'nosniff',
+            ]
+        );
+
+        $response->setPrivate();
+        $response->headers->set('Cache-Control', 'private, no-store');
+        $response->headers->set('X-Content-Type-Options', 'nosniff');
+
+        return $response;
     }
 
     private function editableApplicationQuery($userId)
@@ -453,7 +625,9 @@ class ScholarshipController extends Controller
 
     private function redactGeneratedDocumentPath(ScholarshipApplication $application): ScholarshipApplication
     {
-        return $this->documentAccessService->redactGeneratedPathIfNeeded($application, 'generated_docx_path');
+        $application->setAttribute('generated_docx_path', null);
+
+        return $application;
     }
 
     private function forMahasiswaApplicationListResponse(ScholarshipApplication $application): array
@@ -466,6 +640,7 @@ class ScholarshipController extends Controller
 
     private function applicationPayload(ScholarshipApplication $application): array
     {
+        $application = $this->redactGeneratedDocumentPath($application);
         $application->loadMissing([
             'mahasiswaProfile.keluarga',
             'user.studyProgram.department.faculty',
@@ -475,11 +650,8 @@ class ScholarshipController extends Controller
         return $this->profileDataService->applicationPayload($application);
     }
 
-    private function generatedDocumentFilename(ScholarshipApplication $application): string
+    private function finalPdfFilename(ScholarshipApplication $application): string
     {
-        $nim = $application->mahasiswaProfile?->nim ?: $application->id;
-        $safeNim = preg_replace('/[^A-Za-z0-9_-]+/', '_', (string) $nim);
-
-        return 'Surat_Permohonan_Beasiswa_' . $safeNim . '.docx';
+        return 'surat-permohonan-beasiswa-' . $application->id . '.pdf';
     }
 }

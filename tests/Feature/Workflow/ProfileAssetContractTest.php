@@ -22,7 +22,7 @@ class ProfileAssetContractTest extends TestCase
 
         $response = $this->actingAs($student, 'sanctum')
             ->post('/api/profile', [
-                'pas_foto' => UploadedFile::fake()->image('pas-foto.png', 10, 10)->size(64),
+                'pas_foto' => UploadedFile::fake()->image('pas-foto.png', 600, 800)->size(64),
                 'tanda_tangan' => UploadedFile::fake()->image('tanda-tangan.png', 10, 10)->size(64),
             ])
             ->assertOk();
@@ -45,6 +45,139 @@ class ProfileAssetContractTest extends TestCase
             ->assertJsonPath('normalized.tanda_tangan_path', $signaturePath)
             ->assertJsonPath('student.profile.pas_foto_path', $photoPath)
             ->assertJsonPath('student.profile.tanda_tangan_path', $signaturePath);
+    }
+
+    public function test_replacing_mahasiswa_pas_foto_deletes_old_file_after_successful_save(): void
+    {
+        Storage::fake('public');
+
+        [$student, $profile] = $this->completeMahasiswa();
+        Storage::disk('public')->put('profiles/fotos/old-pas-foto.jpg', 'old-photo');
+        $profile->forceFill([
+            'pas_foto_path' => Storage::url('profiles/fotos/old-pas-foto.jpg'),
+        ])->save();
+
+        $response = $this->actingAs($student, 'sanctum')
+            ->post('/api/profile', [
+                'pas_foto' => UploadedFile::fake()->image('new-pas-foto.png', 600, 800)->size(64),
+            ])
+            ->assertOk();
+
+        $newPath = $response->json('profile.pas_foto_path');
+        $this->assertStringStartsWith('/storage/profiles/fotos/', $newPath);
+        $this->assertSame($newPath, $profile->fresh()->pas_foto_path);
+        Storage::disk('public')->assertMissing('profiles/fotos/old-pas-foto.jpg');
+        Storage::disk('public')->assertExists($this->publicDiskPath($newPath));
+    }
+
+    public function test_replacing_mahasiswa_tanda_tangan_deletes_old_file_after_successful_save(): void
+    {
+        Storage::fake('public');
+
+        [$student, $profile] = $this->completeMahasiswa();
+        Storage::disk('public')->put('profiles/signatures/old-ttd.png', 'old-signature');
+        $profile->forceFill([
+            'tanda_tangan_path' => Storage::url('profiles/signatures/old-ttd.png'),
+        ])->save();
+
+        $response = $this->actingAs($student, 'sanctum')
+            ->post('/api/profile', [
+                'tanda_tangan' => UploadedFile::fake()->image('new-ttd.png', 200, 100)->size(64),
+            ])
+            ->assertOk();
+
+        $newPath = $response->json('profile.tanda_tangan_path');
+        $this->assertStringStartsWith('/storage/profiles/signatures/', $newPath);
+        $this->assertSame($newPath, $profile->fresh()->tanda_tangan_path);
+        Storage::disk('public')->assertMissing('profiles/signatures/old-ttd.png');
+        Storage::disk('public')->assertExists($this->publicDiskPath($newPath));
+    }
+
+    public function test_old_mahasiswa_pas_foto_is_not_deleted_when_new_upload_validation_fails(): void
+    {
+        Storage::fake('public');
+
+        [$student, $profile] = $this->completeMahasiswa();
+        Storage::disk('public')->put('profiles/fotos/old-pas-foto.jpg', 'old-photo');
+        $oldPath = Storage::url('profiles/fotos/old-pas-foto.jpg');
+        $profile->forceFill(['pas_foto_path' => $oldPath])->save();
+
+        $this->actingAs($student, 'sanctum')
+            ->withHeaders(['Accept' => 'application/json'])
+            ->post('/api/profile', [
+                'pas_foto' => UploadedFile::fake()->image('too-large.jpg', 600, 800)->size(5121),
+            ])
+            ->assertUnprocessable();
+
+        $this->assertSame($oldPath, $profile->fresh()->pas_foto_path);
+        Storage::disk('public')->assertExists('profiles/fotos/old-pas-foto.jpg');
+    }
+
+    public function test_old_mahasiswa_tanda_tangan_is_not_deleted_when_new_upload_validation_fails(): void
+    {
+        Storage::fake('public');
+
+        [$student, $profile] = $this->completeMahasiswa();
+        Storage::disk('public')->put('profiles/signatures/old-ttd.png', 'old-signature');
+        $oldPath = Storage::url('profiles/signatures/old-ttd.png');
+        $profile->forceFill(['tanda_tangan_path' => $oldPath])->save();
+
+        $this->actingAs($student, 'sanctum')
+            ->withHeaders(['Accept' => 'application/json'])
+            ->post('/api/profile', [
+                'tanda_tangan' => UploadedFile::fake()->image('too-large.png', 200, 100)->size(2049),
+            ])
+            ->assertUnprocessable();
+
+        $this->assertSame($oldPath, $profile->fresh()->tanda_tangan_path);
+        Storage::disk('public')->assertExists('profiles/signatures/old-ttd.png');
+    }
+
+    public function test_replacement_cleanup_ignores_generated_document_and_global_paraf_paths(): void
+    {
+        config(['surat.global_paraf_path' => '/storage/profiles/signatures/global-paraf.png']);
+        Storage::fake('public');
+
+        [$student, $profile] = $this->completeMahasiswa();
+        Storage::disk('public')->put('surat-pengantar-magang/generated/final.pdf', '%PDF');
+        Storage::disk('public')->put('profiles/signatures/global-paraf.png', 'global-paraf');
+        $profile->forceFill([
+            'pas_foto_path' => Storage::url('surat-pengantar-magang/generated/final.pdf'),
+            'tanda_tangan_path' => Storage::url('profiles/signatures/global-paraf.png'),
+        ])->save();
+
+        $this->actingAs($student, 'sanctum')
+            ->post('/api/profile', [
+                'pas_foto' => UploadedFile::fake()->image('new-pas-foto.png', 600, 800)->size(64),
+                'tanda_tangan' => UploadedFile::fake()->image('new-ttd.png', 200, 100)->size(64),
+            ])
+            ->assertOk();
+
+        Storage::disk('public')->assertExists('surat-pengantar-magang/generated/final.pdf');
+        Storage::disk('public')->assertExists('profiles/signatures/global-paraf.png');
+    }
+
+    public function test_replacement_cleanup_ignores_external_url_and_traversal_old_paths(): void
+    {
+        Storage::fake('public');
+
+        [$student, $profile] = $this->completeMahasiswa();
+        Storage::disk('public')->put('profiles/fotos/external.jpg', 'external-local-copy');
+        Storage::disk('public')->put('profiles/shared-signature.png', 'shared-signature');
+        $profile->forceFill([
+            'pas_foto_path' => 'https://cdn.example.test/storage/profiles/fotos/external.jpg',
+            'tanda_tangan_path' => '/storage/profiles/signatures/%2e%2e/shared-signature.png',
+        ])->save();
+
+        $this->actingAs($student, 'sanctum')
+            ->post('/api/profile', [
+                'pas_foto' => UploadedFile::fake()->image('new-pas-foto.png', 600, 800)->size(64),
+                'tanda_tangan' => UploadedFile::fake()->image('new-ttd.png', 200, 100)->size(64),
+            ])
+            ->assertOk();
+
+        Storage::disk('public')->assertExists('profiles/fotos/external.jpg');
+        Storage::disk('public')->assertExists('profiles/shared-signature.png');
     }
 
     public function test_google_avatar_and_account_photo_do_not_become_official_pas_foto(): void
@@ -115,7 +248,7 @@ class ProfileAssetContractTest extends TestCase
 
         $this->actingAs($student, 'sanctum')
             ->post('/api/profile', [
-                'pas_foto' => UploadedFile::fake()->image('foto-large.jpg', 100, 100)->size(5120),
+                'pas_foto' => UploadedFile::fake()->image('foto-large.jpg', 600, 800)->size(5120),
             ])
             ->assertOk();
     }

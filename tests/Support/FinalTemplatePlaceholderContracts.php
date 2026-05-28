@@ -1,0 +1,176 @@
+<?php
+
+namespace Tests\Support;
+
+final class FinalTemplatePlaceholderContracts
+{
+    public const FORBIDDEN_FINAL_PLACEHOLDERS = [
+        'nomor_surat',
+        'paraf',
+        'stempel_kadep',
+        'ttd_kadep',
+    ];
+
+    public const BEASISWA = [
+        'nomor_surat_rekomendasi',
+        'beasiswa_nama',
+        'foto',
+        'nama',
+        'nim',
+        'tempat_lahir',
+        'tanggal_lahir',
+        'jenis_kelamin',
+        'fakultas',
+        'prodi',
+        'jenjang',
+        'alamat_asal',
+        'alamat_domisili',
+        'no_hp',
+        'email',
+        'ip_2',
+        'ipk',
+        'sks_2',
+        'sksk',
+        'sks_total',
+        'cuti_status',
+        'cuti',
+        'skripsi_status',
+        'rencana_ujian',
+        'ayah_nama',
+        'ayah_kerja',
+        'ayah_gaji',
+        'ayah_status',
+        'ayah_tgl',
+        'ibu_nama',
+        'ibu_kerja',
+        'ibu_gaji',
+        'ibu_status',
+        'ibu_tgl',
+        'wali_nama',
+        'wali_kerja',
+        'wali_gaji',
+        'wali_status',
+        'wali_tgl',
+        's_no',
+        's_nama',
+        's_kerja',
+        's_status',
+        's_ket',
+        'h_status_teks',
+        'h_no',
+        'h_sumber',
+        'h_periode',
+        'h_nominal',
+        'h_masih',
+        'jabatan_kadep',
+        'departemen',
+        'ttd_kadep_formulir',
+        'nama_kadep',
+        'nip_kadep',
+        'paraf_formulir',
+        'tanggal_surat',
+        'tanda_tangan',
+        'ttd_kadep_rekomendasi',
+        'paraf_rekomendasi',
+    ];
+
+    public const MAGANG = [
+        'tanggal_surat',
+        'nomor_surat_pengantar',
+        'nomor_surat_tugas',
+        'jabatan_penerima',
+        'nama_perusahaan',
+        'alamat_jalan',
+        'alamat_kelurahan',
+        'alamat_kecamatan',
+        'alamat_kota_kabupaten',
+        'alamat_provinsi',
+        'kode_pos',
+        'nama',
+        'nim',
+        'prodi',
+        'departemen',
+        'kode_prodi',
+        'tgl_mulai',
+        'tgl_selesai',
+        'fakultas',
+        'dpa',
+        'posisi',
+        'jabatan_kadep',
+        'ttd_kadep_pengantar',
+        'paraf_pengantar',
+        'ttd_kadep_tugas',
+        'paraf_tugas',
+        'nama_kadep',
+        'nip_kadep',
+    ];
+
+    public const SKA = [
+        'nomor_surat_aktif',
+        'nama_kadep',
+        'nip_kadep',
+        'jabatan_kadep',
+        'departemen',
+        'fakultas',
+        'nama',
+        'nim',
+        'prodi',
+        'ot_nama',
+        'ot_kerja',
+        'ot_identitas',
+        'ot_pangkat_jabatan',
+        'ot_instansi',
+        'periode_akademik',
+        'keperluan',
+        'tanggal_surat',
+        'ttd_kadep_aktif',
+        'paraf_aktif',
+    ];
+
+    public const PLN = [
+        'tanggal_surat',
+        'nomor_surat_luar_negeri',
+        'nama',
+        'jenis_kelamin',
+        'tempat_lahir',
+        'tanggal_lahir',
+        'nim',
+        'semester',
+        'prodi',
+        'departemen',
+        'fakultas',
+        'no_paspor',
+        'keperluan',
+        'jabatan_kadep',
+        'ttd_kadep_luar_negeri',
+        'paraf_luar_negeri',
+        'nama_kadep',
+        'nip_kadep',
+        'kode_prodi',
+    ];
+
+    /**
+     * @return array<string, array{name: string, placeholders: list<string>}>
+     */
+    public static function all(): array
+    {
+        return [
+            'surat-permohonan-beasiswa' => [
+                'name' => 'Surat Permohonan Beasiswa',
+                'placeholders' => self::BEASISWA,
+            ],
+            'surat-pengantar-magang' => [
+                'name' => 'Surat Pengantar Magang',
+                'placeholders' => self::MAGANG,
+            ],
+            'surat-keterangan-aktif' => [
+                'name' => 'Surat Keterangan Aktif',
+                'placeholders' => self::SKA,
+            ],
+            'proses-luar-negeri' => [
+                'name' => 'Proses Luar Negeri',
+                'placeholders' => self::PLN,
+            ],
+        ];
+    }
+}

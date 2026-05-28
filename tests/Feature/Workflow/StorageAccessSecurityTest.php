@@ -33,6 +33,7 @@ class StorageAccessSecurityTest extends TestCase
             '/api/storage/surat-keterangan-aktif/generated/final.pdf',
             '/api/storage/proses-luar-negeri/generated/final.pdf',
             '/api/storage/scholarships/final.docx',
+            '/api/storage/letter-document-artifacts/surat-permohonan-beasiswa/1/tendik_review/preview.pdf',
             '/api/storage/profiles/signatures/signature.png',
         ];
 
@@ -40,6 +41,7 @@ class StorageAccessSecurityTest extends TestCase
         Storage::disk('public')->put('surat-keterangan-aktif/generated/final.pdf', '%PDF');
         Storage::disk('public')->put('proses-luar-negeri/generated/final.pdf', '%PDF');
         Storage::disk('public')->put('scholarships/final.docx', 'docx');
+        Storage::disk('public')->put('letter-document-artifacts/surat-permohonan-beasiswa/1/tendik_review/preview.pdf', '%PDF');
         Storage::disk('public')->put('profiles/signatures/signature.png', 'png');
 
         foreach ($blockedUrls as $url) {
@@ -92,6 +94,52 @@ class StorageAccessSecurityTest extends TestCase
                 ->get('/api/storage/profiles/fotos/photo.jpg')
                 ->assertOk();
         }
+    }
+
+    public function test_owner_mahasiswa_can_access_own_signature(): void
+    {
+        Storage::fake('public');
+        Storage::disk('public')->put('profiles/signatures/sig.png', 'png');
+        [$student, $profile] = $this->completeMahasiswa();
+        MahasiswaProfile::whereKey($profile->id)->update([
+            'tanda_tangan_path' => Storage::url('profiles/signatures/sig.png'),
+        ]);
+
+        $this->actingAs($student, 'sanctum')
+            ->get('/api/storage/profiles/signatures/sig.png')
+            ->assertOk();
+    }
+
+    public function test_unrelated_student_cannot_access_another_students_signature(): void
+    {
+        Storage::fake('public');
+        Storage::disk('public')->put('profiles/signatures/sig.png', 'png');
+        [, $profile] = $this->completeMahasiswa();
+        MahasiswaProfile::whereKey($profile->id)->update([
+            'tanda_tangan_path' => Storage::url('profiles/signatures/sig.png'),
+        ]);
+        [$otherStudent] = $this->completeMahasiswa();
+
+        $this->actingAs($otherStudent, 'sanctum')
+            ->get('/api/storage/profiles/signatures/sig.png')
+            ->assertForbidden();
+    }
+
+    public function test_owner_staff_can_access_own_signature_and_others_cannot(): void
+    {
+        Storage::fake('public');
+        Storage::disk('public')->put('profiles/signatures/staff.png', 'png');
+        $tendik = $this->tendikPersuratan();
+        $tendik->forceFill(['signature_path' => Storage::url('profiles/signatures/staff.png')])->save();
+
+        $this->actingAs($tendik, 'sanctum')
+            ->get('/api/storage/profiles/signatures/staff.png')
+            ->assertOk();
+
+        $otherTendik = $this->tendikPersuratan();
+        $this->actingAs($otherTendik, 'sanctum')
+            ->get('/api/storage/profiles/signatures/staff.png')
+            ->assertForbidden();
     }
 
     public function test_owner_mahasiswa_can_access_own_magang_proposal(): void
@@ -298,6 +346,7 @@ class StorageAccessSecurityTest extends TestCase
         Storage::disk('public')->put('surat-pengantar-magang/proposals/proposal.pdf', '%PDF');
         Storage::disk('public')->put('scholarships/transcripts/file.pdf', '%PDF');
         Storage::disk('public')->put('surat-pengantar-magang/generated/final.pdf', '%PDF');
+        Storage::disk('public')->put('letter-document-artifacts/surat-permohonan-beasiswa/1/tendik_review/preview.pdf', '%PDF');
 
         foreach ([
             '/storage/profiles/fotos/photo.jpg',
@@ -305,6 +354,7 @@ class StorageAccessSecurityTest extends TestCase
             '/storage/surat-pengantar-magang/proposals/proposal.pdf',
             '/storage/scholarships/transcripts/file.pdf',
             '/storage/surat-pengantar-magang/generated/final.pdf',
+            '/storage/letter-document-artifacts/surat-permohonan-beasiswa/1/tendik_review/preview.pdf',
         ] as $url) {
             $this->get($url)->assertForbidden();
         }

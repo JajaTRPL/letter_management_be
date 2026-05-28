@@ -7,6 +7,18 @@ return [
 
     'template_beasiswa_cache_path' => env('TEMPLATE_BEASISWA_CACHE_PATH', storage_path('app/templates/beasiswa_template.docx')),
 
+    'template_surat_keterangan_aktif_id' => env('TEMPLATE_SURAT_KETERANGAN_AKTIF_ID', '1cmq201-FtDBBCtxNMiRqtxxs1IHhH7mP'),
+
+    'template_surat_keterangan_aktif_cache_path' => env('TEMPLATE_SURAT_KETERANGAN_AKTIF_CACHE_PATH', storage_path('app/templates/surat_keterangan_aktif_template.docx')),
+
+    'template_proses_luar_negeri_id' => env('TEMPLATE_PROSES_LUAR_NEGERI_ID', '1eLZ_W2GM-eCeOsNUzVpOUp8encHAQixC'),
+
+    'template_proses_luar_negeri_cache_path' => env('TEMPLATE_PROSES_LUAR_NEGERI_CACHE_PATH', storage_path('app/templates/proses_luar_negeri_template.docx')),
+
+    'template_surat_pengantar_magang_id' => env('TEMPLATE_SURAT_PENGANTAR_MAGANG_ID', '1WiUn6DhUzNx74vLE_vfc2BEMx42tWaCn'),
+
+    'template_surat_pengantar_magang_cache_path' => env('TEMPLATE_SURAT_PENGANTAR_MAGANG_CACHE_PATH', storage_path('app/templates/surat_pengantar_magang_template.docx')),
+
     'types' => [
         [
             'key' => 'surat-keterangan-aktif',

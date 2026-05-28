@@ -128,12 +128,23 @@ trait WorkflowTestHelpers
             'user_id' => $student->id,
             'mahasiswa_profile_id' => $profile?->id,
             'nama_penerima' => 'HR Department',
+            'jabatan_penerima' => 'Kepala Divisi Teknologi',
             'nama_perusahaan' => 'PT Test',
             'alamat_perusahaan' => 'Jl. Test',
+            'alamat_jalan' => 'Jl. Test No. 1',
+            'alamat_kelurahan' => 'Caturtunggal',
+            'alamat_kecamatan' => 'Depok',
+            'alamat_kota_kabupaten' => 'Sleman',
+            'alamat_provinsi' => 'Daerah Istimewa Yogyakarta',
+            'kode_pos' => '55281',
             'peran' => 'Software Engineer Intern',
             'rentang_tanggal' => '1 Juni 2026 - 31 Agustus 2026',
+            'tgl_mulai' => '2026-06-01',
+            'tgl_selesai' => '2026-08-31',
             'dosen_pembimbing_dpa' => 'Dr. Test',
             'proposal_kegiatan_magang_path' => '/storage/surat-pengantar-magang/proposals/test.pdf',
+            'nomor_surat_pengantar' => null,
+            'nomor_surat_tugas' => null,
             'status' => SuratPengantarMagangApplication::STATUS_SUBMITTED,
             'submitted_at' => now(),
         ], $attributes));
@@ -180,6 +191,124 @@ trait WorkflowTestHelpers
             'status' => ProsesLuarNegeriApplication::STATUS_SUBMITTED,
             'submitted_at' => now(),
         ], $attributes));
+    }
+
+    private function mockBeasiswaPreviewGenerationForApprove(): \Mockery\MockInterface
+    {
+        $mock = \Mockery::mock(\App\Services\BeasiswaPreviewGenerationService::class);
+        $mock->shouldReceive('generateForPhase')
+            ->once()
+            ->andReturn(\App\Models\LetterDocumentArtifact::make([
+                'phase' => \App\Models\LetterDocumentArtifact::PHASE_PRODI_REVIEW,
+                'status' => \App\Models\LetterDocumentArtifact::STATUS_READY,
+            ]));
+
+        $this->app->instance(\App\Services\BeasiswaPreviewGenerationService::class, $mock);
+
+        return $mock;
+    }
+
+    private function mockBeasiswaPreviewGenerationForProdiApprove(): \Mockery\MockInterface
+    {
+        $mock = \Mockery::mock(\App\Services\BeasiswaPreviewGenerationService::class);
+        $mock->shouldReceive('generateForPhase')
+            ->once()
+            ->andReturn(\App\Models\LetterDocumentArtifact::make([
+                'phase' => \App\Models\LetterDocumentArtifact::PHASE_DEPARTEMEN_REVIEW,
+                'status' => \App\Models\LetterDocumentArtifact::STATUS_READY,
+            ]));
+
+        $this->app->instance(\App\Services\BeasiswaPreviewGenerationService::class, $mock);
+
+        return $mock;
+    }
+
+    private function mockBeasiswaPreviewGenerationForDepartmentApprove(): \Mockery\MockInterface
+    {
+        $mock = \Mockery::mock(\App\Services\BeasiswaPreviewGenerationService::class);
+        $mock->shouldReceive('generateForPhase')
+            ->once()
+            ->andReturn(\App\Models\LetterDocumentArtifact::make([
+                'phase' => \App\Models\LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW,
+                'status' => \App\Models\LetterDocumentArtifact::STATUS_READY,
+            ]));
+
+        $this->app->instance(\App\Services\BeasiswaPreviewGenerationService::class, $mock);
+
+        return $mock;
+    }
+
+    /**
+     * Permissive mock for the SKA preview generation pipeline. Returns a fresh
+     * READY artifact for any (application, phase) pair. Use in tests that
+     * exercise the wired SKA workflow transitions but do not specifically
+     * assert artifact-pipeline behavior.
+     */
+    private function mockSkaPreviewGenerationAlwaysReady(): \Mockery\MockInterface
+    {
+        $mock = \Mockery::mock(\App\Services\SuratKeteranganAktifPreviewGenerationService::class);
+        $mock->shouldReceive('generateForPhase')
+            ->zeroOrMoreTimes()
+            ->andReturnUsing(function ($application, string $phase) {
+                return \App\Models\LetterDocumentArtifact::make([
+                    'letter_type' => \App\Models\SuratKeteranganAktifApplication::LETTER_TYPE,
+                    'application_id' => $application->getKey(),
+                    'phase' => $phase,
+                    'status' => \App\Models\LetterDocumentArtifact::STATUS_READY,
+                ]);
+            });
+
+        $this->app->instance(\App\Services\SuratKeteranganAktifPreviewGenerationService::class, $mock);
+
+        return $mock;
+    }
+
+    /**
+     * Permissive mock for the PLN preview generation pipeline. Use in tests
+     * that exercise PLN workflow transitions but do not assert artifact
+     * generation behavior directly.
+     */
+    private function mockPlnPreviewGenerationAlwaysReady(): \Mockery\MockInterface
+    {
+        $mock = \Mockery::mock(\App\Services\ProsesLuarNegeriPreviewGenerationService::class);
+        $mock->shouldReceive('generateForPhase')
+            ->zeroOrMoreTimes()
+            ->andReturnUsing(function ($application, string $phase) {
+                return \App\Models\LetterDocumentArtifact::make([
+                    'letter_type' => \App\Models\ProsesLuarNegeriApplication::LETTER_TYPE,
+                    'application_id' => $application->getKey(),
+                    'phase' => $phase,
+                    'status' => \App\Models\LetterDocumentArtifact::STATUS_READY,
+                ]);
+            });
+
+        $this->app->instance(\App\Services\ProsesLuarNegeriPreviewGenerationService::class, $mock);
+
+        return $mock;
+    }
+
+    /**
+     * Permissive mock for the Magang preview generation pipeline. Use in tests
+     * that exercise wired Magang workflow transitions without testing artifact
+     * orchestration behavior directly.
+     */
+    private function mockMagangPreviewGenerationAlwaysReady(): \Mockery\MockInterface
+    {
+        $mock = \Mockery::mock(\App\Services\SuratPengantarMagangPreviewGenerationService::class);
+        $mock->shouldReceive('generateForPhase')
+            ->zeroOrMoreTimes()
+            ->andReturnUsing(function ($application, string $phase) {
+                return \App\Models\LetterDocumentArtifact::make([
+                    'letter_type' => \App\Models\SuratPengantarMagangApplication::LETTER_TYPE,
+                    'application_id' => $application->getKey(),
+                    'phase' => $phase,
+                    'status' => \App\Models\LetterDocumentArtifact::STATUS_READY,
+                ]);
+            });
+
+        $this->app->instance(\App\Services\SuratPengantarMagangPreviewGenerationService::class, $mock);
+
+        return $mock;
     }
 
     private function defaultStudyProgram(): StudyProgram

@@ -93,7 +93,7 @@ class LetterTaskFeedService
     {
         $metadata = $this->metadataFor(ScholarshipApplication::LETTER_TYPE);
 
-        return [
+        return array_merge([
             'id' => $task->id,
             'submitted_at' => $this->formatDate($task->submitted_at ?? $task->created_at),
             'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? ($task->mahasiswaProfile?->user?->name ?? $task->user?->name ?? '-'),
@@ -105,16 +105,16 @@ class LetterTaskFeedService
             'scholarship_name' => $task->scholarship_name,
             'status' => $task->status === ScholarshipApplication::STATUS_SUBMITTED ? 'Menunggu Verifikasi' : $task->status,
             'is_overdue' => $task->submitted_at && $task->submitted_at->diffInHours(now()) > 24,
-            'docx_url' => $task->generated_docx_path ? '/api/storage/' . $task->generated_docx_path : null,
+            'docx_url' => null,
             '_sort_at' => $task->submitted_at ?? $task->created_at,
-        ];
+        ], $this->actorFields($task));
     }
 
     public function tendikMagangRow(SuratPengantarMagangApplication $task): array
     {
         $metadata = $this->metadataFor(SuratPengantarMagangApplication::LETTER_TYPE);
 
-        return [
+        return array_merge([
             'id' => $task->id,
             'submitted_at' => $this->formatDate($task->submitted_at ?? $task->created_at),
             'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? ($task->mahasiswaProfile?->user?->name ?? $task->user?->name ?? '-'),
@@ -127,14 +127,14 @@ class LetterTaskFeedService
             'is_overdue' => $task->submitted_at && $task->submitted_at->diffInHours(now()) > 24,
             'docx_url' => null,
             '_sort_at' => $task->submitted_at ?? $task->created_at,
-        ];
+        ], $this->actorFields($task));
     }
 
     public function tendikAktifRow(SuratKeteranganAktifApplication $task): array
     {
         $metadata = $this->metadataFor(SuratKeteranganAktifApplication::LETTER_TYPE);
 
-        return [
+        return array_merge([
             'id' => $task->id,
             'submitted_at' => $this->formatDate($task->submitted_at ?? $task->created_at),
             'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? ($task->mahasiswaProfile?->user?->name ?? $task->user?->name ?? '-'),
@@ -147,14 +147,14 @@ class LetterTaskFeedService
             'is_overdue' => $task->submitted_at && $task->submitted_at->diffInHours(now()) > 24,
             'docx_url' => null,
             '_sort_at' => $task->submitted_at ?? $task->created_at,
-        ];
+        ], $this->actorFields($task));
     }
 
     public function tendikProsesLuarNegeriRow(ProsesLuarNegeriApplication $task): array
     {
         $metadata = $this->metadataFor(ProsesLuarNegeriApplication::LETTER_TYPE);
 
-        return [
+        return array_merge([
             'id' => $task->id,
             'submitted_at' => $this->formatDate($task->submitted_at ?? $task->created_at),
             'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? ($task->mahasiswaProfile?->user?->name ?? $task->user?->name ?? '-'),
@@ -167,14 +167,45 @@ class LetterTaskFeedService
             'is_overdue' => $task->submitted_at && $task->submitted_at->diffInHours(now()) > 24,
             'docx_url' => null,
             '_sort_at' => $task->submitted_at ?? $task->created_at,
+        ], $this->actorFields($task));
+    }
+
+    /**
+     * Additive actor metadata for Tendik feed rows. All keys are nullable and
+     * back-fill with null on rows that pre-date the actor migration. The FE
+     * uses these to populate the "Riwayat Pengajuan" timeline with names
+     * (assigned tendik, verifier, reviser, rejector) and to surface nomor_surat
+     * in Riwayat tables.
+     */
+    private function actorFields(Model $task): array
+    {
+        return [
+            'assigned_to' => $task->getAttribute('assigned_to'),
+            'assigned_tendik_name' => $this->relationName($task, 'assignedTendik'),
+            'nomor_surat' => $task->getAttribute('nomor_surat'),
+            'tendik_approved_by' => $task->getAttribute('tendik_approved_by'),
+            'tendik_approved_by_name' => $this->relationName($task, 'tendikApprover'),
+            'revised_by' => $task->getAttribute('revised_by'),
+            'revised_by_name' => $this->relationName($task, 'reviser'),
+            'rejected_by' => $task->getAttribute('rejected_by'),
+            'rejected_by_name' => $this->relationName($task, 'rejector'),
         ];
+    }
+
+    private function relationName(Model $task, string $relation): ?string
+    {
+        if (!$task->relationLoaded($relation)) {
+            return null;
+        }
+        $related = $task->getRelation($relation);
+        return $related?->getAttribute('name');
     }
 
     public function akademikScholarshipRow(ScholarshipApplication $task): array
     {
         $metadata = $this->metadataFor(ScholarshipApplication::LETTER_TYPE);
 
-        return [
+        return array_merge([
             'id' => $task->id,
             'submitted_at' => $this->formatDate($task->created_at),
             'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? $task->user?->name,
@@ -184,17 +215,18 @@ class LetterTaskFeedService
             'letter_label' => $metadata['letter_label'],
             'category' => $metadata['category'],
             'status' => $task->status,
-            'docx_url' => $task->generated_docx_path ? '/api/storage/' . $task->generated_docx_path : null,
+            'docx_url' => null,
+            'action_at' => $this->formatNullableDate($this->actionTimestamp($task)),
             'is_overdue' => $task->created_at->diffInHours(now()) > 24,
             'sort_timestamp' => $task->created_at->timestamp,
-        ];
+        ], $this->actorFields($task), $this->academicActorFields($task));
     }
 
     public function akademikMagangRow(SuratPengantarMagangApplication $task): array
     {
         $metadata = $this->metadataFor(SuratPengantarMagangApplication::LETTER_TYPE);
 
-        return [
+        return array_merge([
             'id' => $task->id,
             'submitted_at' => $this->formatDate($task->created_at),
             'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? $task->user?->name,
@@ -204,17 +236,18 @@ class LetterTaskFeedService
             'letter_label' => $metadata['letter_label'],
             'category' => $metadata['category'],
             'status' => $task->status,
-            'docx_url' => $task->generated_pdf_path ? '/api/storage/' . ltrim(str_replace('/storage/', '', $task->generated_pdf_path), '/') : null,
+            'docx_url' => null,
+            'action_at' => $this->formatNullableDate($this->actionTimestamp($task)),
             'is_overdue' => $task->created_at->diffInHours(now()) > 24,
             'sort_timestamp' => $task->created_at->timestamp,
-        ];
+        ], $this->actorFields($task), $this->academicActorFields($task));
     }
 
     public function akademikAktifRow(SuratKeteranganAktifApplication $task): array
     {
         $metadata = $this->metadataFor(SuratKeteranganAktifApplication::LETTER_TYPE);
 
-        return [
+        return array_merge([
             'id' => $task->id,
             'submitted_at' => $this->formatDate($task->created_at),
             'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? $task->user?->name,
@@ -224,17 +257,18 @@ class LetterTaskFeedService
             'letter_label' => $metadata['letter_label'],
             'category' => $metadata['category'],
             'status' => $task->status,
-            'docx_url' => $task->generated_pdf_path ? '/api/storage/' . ltrim(str_replace('/storage/', '', $task->generated_pdf_path), '/') : null,
+            'docx_url' => null,
+            'action_at' => $this->formatNullableDate($this->actionTimestamp($task)),
             'is_overdue' => $task->created_at->diffInHours(now()) > 24,
             'sort_timestamp' => $task->created_at->timestamp,
-        ];
+        ], $this->actorFields($task), $this->academicActorFields($task));
     }
 
     public function akademikProsesLuarNegeriRow(ProsesLuarNegeriApplication $task): array
     {
         $metadata = $this->metadataFor(ProsesLuarNegeriApplication::LETTER_TYPE);
 
-        return [
+        return array_merge([
             'id' => $task->id,
             'submitted_at' => $this->formatDate($task->created_at),
             'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? $task->user?->name,
@@ -244,10 +278,11 @@ class LetterTaskFeedService
             'letter_label' => $metadata['letter_label'],
             'category' => $metadata['category'],
             'status' => $task->status,
-            'docx_url' => $task->generated_pdf_path ? '/api/storage/' . ltrim(str_replace('/storage/', '', $task->generated_pdf_path), '/') : null,
+            'docx_url' => null,
+            'action_at' => $this->formatNullableDate($this->actionTimestamp($task)),
             'is_overdue' => $task->created_at->diffInHours(now()) > 24,
             'sort_timestamp' => $task->created_at->timestamp,
-        ];
+        ], $this->actorFields($task), $this->academicActorFields($task));
     }
 
     private function metadataFor(string $letterType): array
@@ -270,6 +305,44 @@ class LetterTaskFeedService
     private function formatDate($value): string
     {
         return $value->format('d M Y, H.i');
+    }
+
+    private function formatNullableDate($value): ?string
+    {
+        return $value ? $this->formatDate($value) : null;
+    }
+
+    private function academicActorFields(Model $task): array
+    {
+        return [
+            'kaprodi_approved_by' => $task->getAttribute('kaprodi_approved_by'),
+            'kaprodi_approved_by_name' => $this->relationName($task, 'kaprodiApprover'),
+            'kadep_approved_by' => $task->getAttribute('kadep_approved_by'),
+            'kadep_approved_by_name' => $this->relationName($task, 'kadepApprover'),
+        ];
+    }
+
+    private function actionTimestamp(Model $task)
+    {
+        foreach ([
+            'completed_at',
+            'student_reviewed_at',
+            'rejected_at',
+            'revised_at',
+            'kadep_approved_at',
+            'kaprodi_approved_at',
+            'tendik_approved_at',
+            'submitted_at',
+            'updated_at',
+            'created_at',
+        ] as $attribute) {
+            $value = $task->getAttribute($attribute);
+            if ($value) {
+                return $value;
+            }
+        }
+
+        return null;
     }
 
     private function tendikRowForModel(Model $task): array

@@ -31,7 +31,6 @@ class LetterApplication extends Model
         'parent_business_name',
         'status',
         'assigned_to',
-        'generated_docx_path',
         'submitted_at',
         'processed_at',
         'finished_at',

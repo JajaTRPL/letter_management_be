@@ -2,10 +2,13 @@
 
 namespace Tests\Feature\Workflow;
 
+use App\Models\LetterDocumentArtifact;
 use App\Models\ScholarshipApplication;
+use App\Services\BeasiswaPreviewGenerationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
+use Mockery;
 use Tests\TestCase;
 
 class BeasiswaSubmitDeclarationTest extends TestCase
@@ -65,6 +68,13 @@ class BeasiswaSubmitDeclarationTest extends TestCase
     {
         Notification::fake();
         Storage::fake('public');
+        $previewService = Mockery::mock(BeasiswaPreviewGenerationService::class);
+        $previewService->shouldReceive('generateForPhase')
+            ->once()
+            ->andReturn(LetterDocumentArtifact::make([
+                'status' => LetterDocumentArtifact::STATUS_READY,
+            ]));
+        $this->app->instance(BeasiswaPreviewGenerationService::class, $previewService);
 
         [$student] = $this->completeMahasiswa();
         $application = $this->scholarshipApplication($student, [

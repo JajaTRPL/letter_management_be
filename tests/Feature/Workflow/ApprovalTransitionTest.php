@@ -2,18 +2,14 @@
 
 namespace Tests\Feature\Workflow;
 
+use App\Models\LetterDocumentArtifact;
 use App\Models\ScholarshipApplication;
 use App\Models\ProsesLuarNegeriApplication;
 use App\Models\SuratKeteranganAktifApplication;
 use App\Models\SuratPengantarMagangApplication;
-use App\Services\ProsesLuarNegeriService;
-use App\Services\ScholarshipAutomationService;
-use App\Services\SuratKeteranganAktifService;
-use App\Services\SuratPengantarMagangService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
-use Mockery;
 use Tests\TestCase;
 
 class ApprovalTransitionTest extends TestCase
@@ -24,7 +20,8 @@ class ApprovalTransitionTest extends TestCase
     public function test_aktif_uses_canonical_approval_flow_through_student_completion(): void
     {
         Notification::fake();
-        Storage::fake('public');
+        Storage::fake('local');
+        $this->mockSkaPreviewGenerationAlwaysReady();
 
         $tendik = $this->tendikPersuratan([SuratKeteranganAktifApplication::LETTER_TYPE]);
         $kaprodi = $this->akademik('kaprodi');
@@ -53,8 +50,6 @@ class ApprovalTransitionTest extends TestCase
             'status' => SuratKeteranganAktifApplication::STATUS_APPROVED_KAPRODI,
         ]);
 
-        $this->mockAktifDocumentGeneration();
-
         $this->actingAs($kadep, 'sanctum')
             ->patchJson("/api/akademik/surat-keterangan-aktif/{$application->id}/approve")
             ->assertOk();
@@ -62,11 +57,12 @@ class ApprovalTransitionTest extends TestCase
         $this->assertDatabaseHas('surat_keterangan_aktif_applications', [
             'id' => $application->id,
             'status' => SuratKeteranganAktifApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-            'generated_pdf_path' => '/storage/surat-keterangan-aktif/generated/final.pdf',
         ]);
 
+        $this->createReadyAktifMahasiswaArtifact($application->fresh());
+
         $this->actingAs($student, 'sanctum')
-            ->get("/api/mahasiswa/surat-keterangan-aktif/{$application->id}/preview")
+            ->get("/api/mahasiswa/surat-keterangan-aktif/{$application->id}/generated-preview")
             ->assertOk();
 
         $this->actingAs($student, 'sanctum')
@@ -99,7 +95,9 @@ class ApprovalTransitionTest extends TestCase
     public function test_proses_luar_negeri_uses_canonical_approval_flow_through_student_completion(): void
     {
         Notification::fake();
+        Storage::fake('local');
         Storage::fake('public');
+        $this->mockPlnPreviewGenerationAlwaysReady();
 
         $tendik = $this->tendikPersuratan([ProsesLuarNegeriApplication::LETTER_TYPE]);
         $kaprodi = $this->akademik('kaprodi');
@@ -128,8 +126,6 @@ class ApprovalTransitionTest extends TestCase
             'status' => ProsesLuarNegeriApplication::STATUS_APPROVED_KAPRODI,
         ]);
 
-        $this->mockProsesLuarNegeriDocumentGeneration();
-
         $this->actingAs($kadep, 'sanctum')
             ->patchJson("/api/akademik/proses-luar-negeri/{$application->id}/approve")
             ->assertOk();
@@ -137,11 +133,11 @@ class ApprovalTransitionTest extends TestCase
         $this->assertDatabaseHas('proses_luar_negeri_applications', [
             'id' => $application->id,
             'status' => ProsesLuarNegeriApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-            'generated_pdf_path' => '/storage/proses-luar-negeri/generated/final.pdf',
         ]);
 
+        $this->createReadyPlnMahasiswaArtifact($application->fresh());
         $this->actingAs($student, 'sanctum')
-            ->get("/api/mahasiswa/proses-luar-negeri/{$application->id}/preview")
+            ->get("/api/mahasiswa/proses-luar-negeri/{$application->id}/generated-preview")
             ->assertOk();
 
         $this->actingAs($student, 'sanctum')
@@ -174,6 +170,7 @@ class ApprovalTransitionTest extends TestCase
     public function test_magang_uses_canonical_approval_flow_through_student_completion(): void
     {
         Notification::fake();
+        Storage::fake('local');
         Storage::fake('public');
 
         $tendik = $this->tendikPersuratan([SuratPengantarMagangApplication::LETTER_TYPE]);
@@ -182,9 +179,12 @@ class ApprovalTransitionTest extends TestCase
         [$student] = $this->completeMahasiswa();
         $application = $this->magangApplication($student);
 
+        $this->mockMagangPreviewGenerationAlwaysReady();
+
         $this->actingAs($tendik, 'sanctum')
             ->patchJson("/api/tendik/surat-pengantar-magang/{$application->id}/approve", [
-                'nomor_surat' => 'MAG-001',
+                'nomor_surat_pengantar' => 'MAG-PENGANTAR-001',
+                'nomor_surat_tugas' => 'MAG-TUGAS-001',
             ])
             ->assertOk();
 
@@ -203,8 +203,6 @@ class ApprovalTransitionTest extends TestCase
             'status' => SuratPengantarMagangApplication::STATUS_APPROVED_KAPRODI,
         ]);
 
-        $this->mockMagangDocumentGeneration();
-
         $this->actingAs($kadep, 'sanctum')
             ->patchJson("/api/akademik/surat-pengantar-magang/{$application->id}/approve")
             ->assertOk();
@@ -212,11 +210,12 @@ class ApprovalTransitionTest extends TestCase
         $this->assertDatabaseHas('surat_pengantar_magang_applications', [
             'id' => $application->id,
             'status' => SuratPengantarMagangApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-            'generated_pdf_path' => '/storage/surat-pengantar-magang/generated/final.pdf',
         ]);
 
+        $this->createReadyMagangMahasiswaArtifact($application->fresh());
+
         $this->actingAs($student, 'sanctum')
-            ->get("/api/mahasiswa/surat-pengantar-magang/{$application->id}/preview")
+            ->get("/api/mahasiswa/surat-pengantar-magang/{$application->id}/generated-preview")
             ->assertOk();
 
         $this->actingAs($student, 'sanctum')
@@ -232,6 +231,7 @@ class ApprovalTransitionTest extends TestCase
     public function test_beasiswa_uses_canonical_approval_flow_through_student_completion(): void
     {
         Notification::fake();
+        Storage::fake('local');
         Storage::fake('public');
 
         $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
@@ -239,6 +239,8 @@ class ApprovalTransitionTest extends TestCase
         $kadep = $this->akademik('kadep');
         [$student] = $this->completeMahasiswa();
         $application = $this->scholarshipApplication($student);
+
+        $this->mockBeasiswaPreviewGenerationForApprove();
 
         $this->actingAs($tendik, 'sanctum')
             ->patchJson("/api/tendik/surat-permohonan-beasiswa/{$application->id}/approve", [
@@ -249,7 +251,12 @@ class ApprovalTransitionTest extends TestCase
         $this->assertDatabaseHas('scholarship_applications', [
             'id' => $application->id,
             'status' => ScholarshipApplication::STATUS_APPROVED_TENDIK,
+            'nomor_surat' => 'BEA-001',
+            'assigned_to' => $tendik->id,
+            'tendik_approved_by' => $tendik->id,
         ]);
+
+        $this->mockBeasiswaPreviewGenerationForProdiApprove();
 
         $this->actingAs($kaprodi, 'sanctum')
             ->patchJson("/api/akademik/surat-permohonan-beasiswa/{$application->id}/approve")
@@ -260,7 +267,7 @@ class ApprovalTransitionTest extends TestCase
             'status' => ScholarshipApplication::STATUS_APPROVED_KAPRODI,
         ]);
 
-        $this->mockScholarshipDocumentGeneration();
+        $this->mockBeasiswaPreviewGenerationForDepartmentApprove();
 
         $this->actingAs($kadep, 'sanctum')
             ->patchJson("/api/akademik/surat-permohonan-beasiswa/{$application->id}/approve")
@@ -269,8 +276,9 @@ class ApprovalTransitionTest extends TestCase
         $this->assertDatabaseHas('scholarship_applications', [
             'id' => $application->id,
             'status' => ScholarshipApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-            'generated_docx_path' => 'scholarships/final.docx',
         ]);
+
+        $this->createReadyBeasiswaMahasiswaArtifact($application->fresh());
 
         $this->actingAs($student, 'sanctum')
             ->postJson("/api/mahasiswa/surat-permohonan-beasiswa/{$application->id}/complete")
@@ -282,69 +290,149 @@ class ApprovalTransitionTest extends TestCase
         ]);
     }
 
-    private function mockMagangDocumentGeneration(): void
+    public function test_beasiswa_tendik_approval_requires_nomor_surat(): void
     {
-        $mock = Mockery::mock(SuratPengantarMagangService::class);
-        $mock->shouldReceive('generateDocument')
-            ->once()
-            ->andReturnUsing(function (SuratPengantarMagangApplication $application): string {
-                $path = 'surat-pengantar-magang/generated/final.pdf';
-                Storage::disk('public')->put($path, '%PDF-1.4 test');
-                $application->update(['generated_pdf_path' => Storage::url($path)]);
+        $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
+        $application = $this->scholarshipApplication();
 
-                return Storage::url($path);
-            });
-        $mock->shouldReceive('generatedPdfStoragePath')->andReturnUsing(
-            fn (SuratPengantarMagangApplication $application): ?string => 'surat-pengantar-magang/generated/final.pdf'
-        );
+        $this->actingAs($tendik, 'sanctum')
+            ->patchJson("/api/tendik/surat-permohonan-beasiswa/{$application->id}/approve")
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['nomor_surat']);
 
-        $this->app->instance(SuratPengantarMagangService::class, $mock);
+        $this->assertDatabaseHas('scholarship_applications', [
+            'id' => $application->id,
+            'status' => ScholarshipApplication::STATUS_SUBMITTED,
+            'nomor_surat' => null,
+            'tendik_approved_by' => null,
+        ]);
     }
 
-    private function mockAktifDocumentGeneration(): void
+    private function createReadyAktifMahasiswaArtifact(SuratKeteranganAktifApplication $application): LetterDocumentArtifact
     {
-        $mock = Mockery::mock(SuratKeteranganAktifService::class);
-        $mock->shouldReceive('generateDocument')
-            ->once()
-            ->andReturnUsing(function (SuratKeteranganAktifApplication $application): string {
-                $path = 'surat-keterangan-aktif/generated/final.pdf';
-                Storage::disk('public')->put($path, '%PDF-1.4 test');
-                $application->update(['generated_pdf_path' => Storage::url($path)]);
+        $phase = LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW;
+        $pdfPath = 'letter-document-artifacts/'
+            . SuratKeteranganAktifApplication::LETTER_TYPE
+            . '/'
+            . $application->id
+            . '/'
+            . $phase
+            . '/preview_1.pdf';
 
-                return Storage::url($path);
-            });
+        Storage::disk('local')->put($pdfPath, "%PDF-1.4\nmahasiswa_review");
 
-        $this->app->instance(SuratKeteranganAktifService::class, $mock);
+        return LetterDocumentArtifact::create([
+            'letter_type' => SuratKeteranganAktifApplication::LETTER_TYPE,
+            'application_id' => $application->id,
+            'phase' => $phase,
+            'version' => 1,
+            'docx_path' => 'letter-document-artifacts/'
+                . SuratKeteranganAktifApplication::LETTER_TYPE
+                . '/'
+                . $application->id
+                . '/'
+                . $phase
+                . '/source_1.docx',
+            'pdf_path' => $pdfPath,
+            'source_hash' => hash('sha256', $application->id . '|' . $phase . '|approval-transition'),
+            'status' => LetterDocumentArtifact::STATUS_READY,
+            'generated_at' => now(),
+        ]);
     }
 
-    private function mockProsesLuarNegeriDocumentGeneration(): void
+    private function createReadyBeasiswaMahasiswaArtifact(ScholarshipApplication $application): LetterDocumentArtifact
     {
-        $mock = Mockery::mock(ProsesLuarNegeriService::class);
-        $mock->shouldReceive('generateDocument')
-            ->once()
-            ->andReturnUsing(function (ProsesLuarNegeriApplication $application): string {
-                $path = 'proses-luar-negeri/generated/final.pdf';
-                Storage::disk('public')->put($path, '%PDF-1.4 test');
-                $application->update(['generated_pdf_path' => Storage::url($path)]);
+        $phase = LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW;
+        $pdfPath = 'letter-document-artifacts/'
+            . ScholarshipApplication::LETTER_TYPE
+            . '/'
+            . $application->id
+            . '/'
+            . $phase
+            . '/preview_1.pdf';
 
-                return Storage::url($path);
-            });
+        Storage::disk('local')->put($pdfPath, "%PDF-1.4\nmahasiswa_review");
 
-        $this->app->instance(ProsesLuarNegeriService::class, $mock);
+        return LetterDocumentArtifact::create([
+            'letter_type' => ScholarshipApplication::LETTER_TYPE,
+            'application_id' => $application->id,
+            'phase' => $phase,
+            'version' => 1,
+            'docx_path' => 'letter-document-artifacts/'
+                . ScholarshipApplication::LETTER_TYPE
+                . '/'
+                . $application->id
+                . '/'
+                . $phase
+                . '/source_1.docx',
+            'pdf_path' => $pdfPath,
+            'source_hash' => hash('sha256', $application->id . '|' . $phase . '|approval-transition'),
+            'status' => LetterDocumentArtifact::STATUS_READY,
+            'generated_at' => now(),
+        ]);
     }
 
-    private function mockScholarshipDocumentGeneration(): void
+    private function createReadyPlnMahasiswaArtifact(ProsesLuarNegeriApplication $application): LetterDocumentArtifact
     {
-        $mock = Mockery::mock(ScholarshipAutomationService::class);
-        $mock->shouldReceive('generateDocument')
-            ->once()
-            ->andReturnUsing(function (): string {
-                Storage::disk('public')->put('scholarships/final.docx', 'docx test');
+        $phase = LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW;
+        $pdfPath = 'letter-document-artifacts/'
+            . ProsesLuarNegeriApplication::LETTER_TYPE
+            . '/'
+            . $application->id
+            . '/'
+            . $phase
+            . '/preview_1.pdf';
 
-                return 'scholarships/final.docx';
-            });
-        $mock->shouldReceive('deleteGeneratedDocument')->never();
+        Storage::disk('local')->put($pdfPath, "%PDF-1.4\nmahasiswa_review");
 
-        $this->app->instance(ScholarshipAutomationService::class, $mock);
+        return LetterDocumentArtifact::create([
+            'letter_type' => ProsesLuarNegeriApplication::LETTER_TYPE,
+            'application_id' => $application->id,
+            'phase' => $phase,
+            'version' => 1,
+            'docx_path' => 'letter-document-artifacts/'
+                . ProsesLuarNegeriApplication::LETTER_TYPE
+                . '/'
+                . $application->id
+                . '/'
+                . $phase
+                . '/source_1.docx',
+            'pdf_path' => $pdfPath,
+            'source_hash' => hash('sha256', $application->id . '|' . $phase . '|approval-transition'),
+            'status' => LetterDocumentArtifact::STATUS_READY,
+            'generated_at' => now(),
+        ]);
+    }
+
+    private function createReadyMagangMahasiswaArtifact(SuratPengantarMagangApplication $application): LetterDocumentArtifact
+    {
+        $phase = LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW;
+        $pdfPath = 'letter-document-artifacts/'
+            . SuratPengantarMagangApplication::LETTER_TYPE
+            . '/'
+            . $application->id
+            . '/'
+            . $phase
+            . '/preview_1.pdf';
+
+        Storage::disk('local')->put($pdfPath, "%PDF-1.4\nmahasiswa_review");
+
+        return LetterDocumentArtifact::create([
+            'letter_type' => SuratPengantarMagangApplication::LETTER_TYPE,
+            'application_id' => $application->id,
+            'phase' => $phase,
+            'version' => 1,
+            'docx_path' => 'letter-document-artifacts/'
+                . SuratPengantarMagangApplication::LETTER_TYPE
+                . '/'
+                . $application->id
+                . '/'
+                . $phase
+                . '/source_1.docx',
+            'pdf_path' => $pdfPath,
+            'source_hash' => hash('sha256', $application->id . '|' . $phase . '|approval-transition'),
+            'status' => LetterDocumentArtifact::STATUS_READY,
+            'generated_at' => now(),
+        ]);
     }
 }

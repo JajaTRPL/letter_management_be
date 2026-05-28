@@ -55,10 +55,6 @@ Route::middleware('throttle:api')->group(function () {
                 abort(403);
             }
 
-            if (str_starts_with($relativePath, 'profiles/signatures/')) {
-                abort(403);
-            }
-
             $storedUrl = \Illuminate\Support\Facades\Storage::url($relativePath);
             $storageCandidates = [$storedUrl, $relativePath, '/api/storage/' . $relativePath];
 
@@ -66,6 +62,20 @@ Route::middleware('throttle:api')->group(function () {
                 if (!in_array($user->role, ['tendik', 'akademik', 'super_admin'], true)) {
                     $profile = \App\Models\MahasiswaProfile::whereIn('pas_foto_path', $storageCandidates)->first();
                     abort_unless($profile && (int) $profile->user_id === (int) $user->id, 403);
+                }
+            } elseif (str_starts_with($relativePath, 'profiles/signatures/')) {
+                // Signatures are owner-readable only — never cross-user, never public.
+                // Generated documents that embed a signature read it server-side and
+                // do not require this route, so blocking cross-user access here does
+                // not regress document generation.
+                if ($user->role === 'mahasiswa') {
+                    $profile = \App\Models\MahasiswaProfile::whereIn('tanda_tangan_path', $storageCandidates)->first();
+                    abort_unless($profile && (int) $profile->user_id === (int) $user->id, 403);
+                } elseif (in_array($user->role, ['tendik', 'akademik', 'super_admin'], true)) {
+                    $owner = \App\Models\User::whereIn('signature_path', $storageCandidates)->first();
+                    abort_unless($owner && (int) $owner->id === (int) $user->id, 403);
+                } else {
+                    abort(403);
                 }
             } elseif (str_starts_with($relativePath, 'surat-pengantar-magang/proposals/')) {
                 $application = \App\Models\SuratPengantarMagangApplication::whereIn('proposal_kegiatan_magang_path', $storageCandidates)->first();
@@ -135,6 +145,14 @@ Route::middleware('throttle:api')->group(function () {
         Route::get('/departments', [DepartmentController::class, 'index']);
         Route::get('/study-programs-grouped', [StudyProgramController::class, 'grouped']);
 
+        // Beasiswa supporting-document preview bytes (role-scoped inside controller).
+        // Separate from /api/storage which serves attachments; frontend fetches this
+        // endpoint and renders a PDF blob URL.
+        Route::get(
+            '/scholarship/{application}/supporting-documents/{field}/preview',
+            [\App\Http\Controllers\ScholarshipSupportingDocumentController::class, 'preview']
+        );
+
 
         /*
         |----------------------------------------------------------------------
@@ -196,6 +214,7 @@ Route::middleware('throttle:api')->group(function () {
             foreach (['scholarship', 'surat-permohonan-beasiswa'] as $scholarshipRoutePrefix) {
                 Route::prefix($scholarshipRoutePrefix)->group(function () {
                     Route::get('/{application}', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'show']);
+                    Route::get('/{application}/generated-preview', [\App\Http\Controllers\BeasiswaGeneratedPreviewController::class, 'tendik']);
                     Route::patch('/{application}/approve', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'approve']);
                     Route::patch('/{application}/reject', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'reject']);
                     Route::patch('/{application}/revise', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'revise']);
@@ -205,6 +224,7 @@ Route::middleware('throttle:api')->group(function () {
             // Surat Pengantar Magang Review Actions
             Route::prefix('surat-pengantar-magang')->group(function () {
                 Route::get('/{application}', [\App\Http\Controllers\SuratPengantarMagangController::class, 'showForReviewer']);
+                Route::get('/{application}/generated-preview', [\App\Http\Controllers\SuratPengantarMagangGeneratedPreviewController::class, 'tendik']);
                 Route::patch('/{application}/approve', [\App\Http\Controllers\SuratPengantarMagangController::class, 'approveByTendik']);
                 Route::patch('/{application}/reject', [\App\Http\Controllers\SuratPengantarMagangController::class, 'rejectByTendik']);
                 Route::patch('/{application}/revise', [\App\Http\Controllers\SuratPengantarMagangController::class, 'reviseByTendik']);
@@ -212,6 +232,7 @@ Route::middleware('throttle:api')->group(function () {
 
             Route::prefix('surat-keterangan-aktif')->group(function () {
                 Route::get('/{application}', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'showForReviewer']);
+                Route::get('/{application}/generated-preview', [\App\Http\Controllers\SuratKeteranganAktifGeneratedPreviewController::class, 'tendik']);
                 Route::patch('/{application}/approve', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'approveByTendik']);
                 Route::patch('/{application}/reject', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'rejectByTendik']);
                 Route::patch('/{application}/revise', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'reviseByTendik']);
@@ -219,6 +240,7 @@ Route::middleware('throttle:api')->group(function () {
 
             Route::prefix('proses-luar-negeri')->group(function () {
                 Route::get('/{application}', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'showForReviewer']);
+                Route::get('/{application}/generated-preview', [\App\Http\Controllers\ProsesLuarNegeriGeneratedPreviewController::class, 'tendik']);
                 Route::patch('/{application}/approve', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'approveByTendik']);
                 Route::patch('/{application}/reject', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'rejectByTendik']);
                 Route::patch('/{application}/revise', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'reviseByTendik']);
@@ -238,10 +260,12 @@ Route::middleware('throttle:api')->group(function () {
         // Akademik (Kaprodi/Sekprodi) Routes
         Route::middleware('role:akademik')->prefix('akademik')->group(function () {
             Route::get('/dashboard/tasks', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'getDashboardData']);
+            Route::get('/riwayat', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'getRiwayatData']);
 
             foreach (['scholarship', 'surat-permohonan-beasiswa'] as $scholarshipRoutePrefix) {
                 Route::prefix($scholarshipRoutePrefix)->group(function () {
                     Route::get('/{application}', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'show']);
+                    Route::get('/{application}/generated-preview', [\App\Http\Controllers\BeasiswaGeneratedPreviewController::class, 'akademik']);
                     Route::patch('/{application}/approve', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'approve']);
                     Route::patch('/{application}/reject', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'reject']);
                     Route::patch('/{application}/revise', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'revise']);
@@ -250,6 +274,7 @@ Route::middleware('throttle:api')->group(function () {
 
             Route::prefix('surat-pengantar-magang')->group(function () {
                 Route::get('/{application}', [\App\Http\Controllers\SuratPengantarMagangController::class, 'showForReviewer']);
+                Route::get('/{application}/generated-preview', [\App\Http\Controllers\SuratPengantarMagangGeneratedPreviewController::class, 'akademik']);
                 Route::patch('/{application}/approve', [\App\Http\Controllers\SuratPengantarMagangController::class, 'approveByAkademik']);
                 Route::patch('/{application}/reject', [\App\Http\Controllers\SuratPengantarMagangController::class, 'rejectByAkademik']);
                 Route::patch('/{application}/revise', [\App\Http\Controllers\SuratPengantarMagangController::class, 'reviseByAkademik']);
@@ -257,6 +282,7 @@ Route::middleware('throttle:api')->group(function () {
 
             Route::prefix('surat-keterangan-aktif')->group(function () {
                 Route::get('/{application}', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'showForReviewer']);
+                Route::get('/{application}/generated-preview', [\App\Http\Controllers\SuratKeteranganAktifGeneratedPreviewController::class, 'akademik']);
                 Route::patch('/{application}/approve', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'approveByAkademik']);
                 Route::patch('/{application}/reject', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'rejectByAkademik']);
                 Route::patch('/{application}/revise', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'reviseByAkademik']);
@@ -264,6 +290,7 @@ Route::middleware('throttle:api')->group(function () {
 
             Route::prefix('proses-luar-negeri')->group(function () {
                 Route::get('/{application}', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'showForReviewer']);
+                Route::get('/{application}/generated-preview', [\App\Http\Controllers\ProsesLuarNegeriGeneratedPreviewController::class, 'akademik']);
                 Route::patch('/{application}/approve', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'approveByAkademik']);
                 Route::patch('/{application}/reject', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'rejectByAkademik']);
                 Route::patch('/{application}/revise', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'reviseByAkademik']);
@@ -297,7 +324,8 @@ Route::middleware('throttle:api')->group(function () {
             foreach (['scholarship', 'surat-permohonan-beasiswa'] as $scholarshipRoutePrefix) {
                 Route::prefix($scholarshipRoutePrefix)->group(function () {
                     Route::get('/applications', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'getApplications']);
-                    Route::get('/{application}/preview', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'preview']);
+                    Route::get('/{application}/generated-preview', [\App\Http\Controllers\BeasiswaGeneratedPreviewController::class, 'mahasiswa']);
+                    Route::get('/{application}/final-download', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'finalDownload']);
                     Route::post('/{application}/complete', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'complete']);
                     Route::get('/step-1', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'getStep1']);
                     Route::post('/step-1', [\App\Http\Controllers\Mahasiswa\ScholarshipController::class, 'saveStep1']);
@@ -315,7 +343,8 @@ Route::middleware('throttle:api')->group(function () {
                 Route::get('/draft', [\App\Http\Controllers\SuratPengantarMagangController::class, 'getDraft']);
                 Route::post('/draft', [\App\Http\Controllers\SuratPengantarMagangController::class, 'saveDraft']);
                 Route::post('/submit', [\App\Http\Controllers\SuratPengantarMagangController::class, 'submitApplication']);
-                Route::get('/{application}/preview', [\App\Http\Controllers\SuratPengantarMagangController::class, 'preview']);
+                Route::get('/{application}/generated-preview', [\App\Http\Controllers\SuratPengantarMagangGeneratedPreviewController::class, 'mahasiswa']);
+                Route::get('/{application}/final-download', \App\Http\Controllers\SuratPengantarMagangFinalDownloadController::class);
                 Route::post('/{application}/complete', [\App\Http\Controllers\SuratPengantarMagangController::class, 'complete']);
                 Route::get('/{application}', [\App\Http\Controllers\SuratPengantarMagangController::class, 'showForMahasiswa']);
             });
@@ -325,7 +354,8 @@ Route::middleware('throttle:api')->group(function () {
                 Route::get('/draft', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'getDraft']);
                 Route::post('/draft', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'saveDraft']);
                 Route::post('/submit', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'submitApplication']);
-                Route::get('/{application}/preview', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'preview']);
+                Route::get('/{application}/generated-preview', [\App\Http\Controllers\SuratKeteranganAktifGeneratedPreviewController::class, 'mahasiswa']);
+                Route::get('/{application}/final-download', \App\Http\Controllers\SuratKeteranganAktifFinalDownloadController::class);
                 Route::post('/{application}/complete', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'complete']);
                 Route::get('/{application}', [\App\Http\Controllers\SuratKeteranganAktifController::class, 'showForMahasiswa']);
             });
@@ -335,7 +365,8 @@ Route::middleware('throttle:api')->group(function () {
                 Route::get('/draft', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'getDraft']);
                 Route::post('/draft', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'saveDraft']);
                 Route::post('/submit', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'submitApplication']);
-                Route::get('/{application}/preview', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'preview']);
+                Route::get('/{application}/generated-preview', [\App\Http\Controllers\ProsesLuarNegeriGeneratedPreviewController::class, 'mahasiswa']);
+                Route::get('/{application}/final-download', \App\Http\Controllers\ProsesLuarNegeriFinalDownloadController::class);
                 Route::post('/{application}/complete', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'complete']);
                 Route::get('/{application}', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'showForMahasiswa']);
             });

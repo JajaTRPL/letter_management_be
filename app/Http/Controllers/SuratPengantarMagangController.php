@@ -2,21 +2,36 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Concerns\AuthorizesAcademicApplications;
+use App\Models\LetterDocumentArtifact;
 use App\Models\SuratPengantarMagangApplication;
+use App\Services\AcademicRoutingService;
+use App\Services\AcademicSignatoryService;
+use App\Services\LetterAssignmentService;
 use App\Services\LetterDocumentAccessService;
+use App\Services\LetterDocumentArtifactService;
+use App\Services\MahasiswaProfileDataService;
+use App\Services\SuratPengantarMagangPreviewGenerationException;
+use App\Services\SuratPengantarMagangPreviewGenerationService;
 use App\Services\SuratPengantarMagangService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
+use RuntimeException;
 
 class SuratPengantarMagangController extends Controller
 {
-    private const GENERATED_PDF_PREFIX = 'surat-pengantar-magang/generated/';
+    use AuthorizesAcademicApplications;
 
-    public function __construct(private LetterDocumentAccessService $documentAccessService)
-    {
+    public function __construct(
+        private LetterDocumentAccessService $documentAccessService,
+        private LetterAssignmentService $assignmentService,
+        private AcademicRoutingService $academicRoutingService,
+        private MahasiswaProfileDataService $profileDataService
+    ) {
     }
 
     public function getApplications()
@@ -52,7 +67,8 @@ class SuratPengantarMagangController extends Controller
                 'study_program' => $user->studyProgram,
             ],
             'profile' => $user->mahasiswaProfile,
-            'application' => $application,
+            'profile_summary' => $this->profileDataService->profileSummaryForUser($user),
+            'application' => $application ? $this->forMahasiswaResponse($application) : null,
         ]);
     }
 
@@ -60,17 +76,26 @@ class SuratPengantarMagangController extends Controller
     {
         $application = $this->getOrCreateDraftApplication();
 
-        $validator = Validator::make($request->all(), $this->applicationRules($application));
+        $validator = Validator::make($request->all(), $this->applicationRules($application, $request->all()));
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
         $data = $request->only([
             'nama_penerima',
+            'jabatan_penerima',
             'nama_perusahaan',
             'alamat_perusahaan',
+            'alamat_jalan',
+            'alamat_kelurahan',
+            'alamat_kecamatan',
+            'alamat_kota_kabupaten',
+            'alamat_provinsi',
+            'kode_pos',
             'peran',
             'rentang_tanggal',
+            'tgl_mulai',
+            'tgl_selesai',
             'dosen_pembimbing_dpa',
         ]);
 
@@ -85,11 +110,14 @@ class SuratPengantarMagangController extends Controller
 
         return response()->json([
             'message' => 'Draft Surat Pengantar Magang berhasil disimpan',
-            'application' => $application->fresh('mahasiswaProfile'),
+            'application' => $this->forMahasiswaResponse($application->fresh('mahasiswaProfile')),
         ]);
     }
 
-    public function submitApplication(SuratPengantarMagangService $service)
+    public function submitApplication(
+        SuratPengantarMagangService $service,
+        SuratPengantarMagangPreviewGenerationService $previewGenerationService,
+    )
     {
         $application = SuratPengantarMagangApplication::where('user_id', Auth::id())
             ->whereIn('status', [
@@ -99,23 +127,71 @@ class SuratPengantarMagangController extends Controller
             ->latest()
             ->firstOrFail();
 
-        $validator = Validator::make($application->toArray(), $this->submissionRules());
+        $applicationData = $application->toArray();
+        $validator = Validator::make($applicationData, $this->submissionRules($applicationData));
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        $application->update([
-            'status' => SuratPengantarMagangApplication::STATUS_SUBMITTED,
-            'submitted_at' => now(),
-            'revision_note' => null,
-            'rejection_reason' => null,
-        ]);
+        $submittedAt = now();
+        $actorId = Auth::id();
 
-        $assignedTendik = $service->assignApplication($application);
+        try {
+            $previewGenerationService->generateForPhase(
+                $application,
+                LetterDocumentArtifact::PHASE_TENDIK_REVIEW,
+                [
+                    'status' => SuratPengantarMagangApplication::STATUS_SUBMITTED,
+                    'submitted_at' => $submittedAt,
+                    'tanggal_surat' => $submittedAt,
+                ],
+                $actorId,
+            );
+        } catch (SuratPengantarMagangPreviewGenerationException $exception) {
+            report($exception);
+
+            return response()->json([
+                'message' => 'Dokumen pratinjau pengajuan belum dapat dibuat. Silakan coba lagi.',
+            ], 503);
+        }
+
+        try {
+            [$application, $assignedTendik] = DB::transaction(function () use ($application, $service, $submittedAt) {
+                $lockedApplication = SuratPengantarMagangApplication::query()
+                    ->whereKey($application->getKey())
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                if (
+                    (int) $lockedApplication->user_id !== (int) Auth::id()
+                    || !in_array($lockedApplication->status, [
+                        SuratPengantarMagangApplication::STATUS_DRAFT,
+                        SuratPengantarMagangApplication::STATUS_REVISION,
+                    ], true)
+                ) {
+                    throw new RuntimeException('Magang application is no longer submittable.');
+                }
+
+                $lockedApplication->update([
+                    'status' => SuratPengantarMagangApplication::STATUS_SUBMITTED,
+                    'submitted_at' => $submittedAt,
+                    'revision_note' => null,
+                    'rejection_reason' => null,
+                ]);
+
+                $assignedTendik = $service->assignApplication($lockedApplication);
+
+                return [$lockedApplication->fresh(), $assignedTendik];
+            });
+        } catch (RuntimeException $exception) {
+            return response()->json([
+                'message' => 'Pengajuan sudah berubah dan tidak dapat dikirim ulang.',
+            ], 409);
+        }
 
         return response()->json([
             'message' => 'Pengajuan Surat Pengantar Magang berhasil dikirim',
-            'application' => $application->fresh('mahasiswaProfile'),
+            'application' => $this->forMahasiswaResponse($application->fresh('mahasiswaProfile')),
             'assigned_to' => $assignedTendik?->name,
         ]);
     }
@@ -123,31 +199,52 @@ class SuratPengantarMagangController extends Controller
     public function showForMahasiswa(SuratPengantarMagangApplication $application)
     {
         $this->documentAccessService->ensureOwner($application, Auth::user());
+        $application->load([
+            'user.studyProgram.department.faculty',
+            'user.department.faculty',
+            'mahasiswaProfile',
+            'assignedTendik',
+        ]);
 
         return response()->json([
-            'application' => $this->forMahasiswaResponse($application->load(['mahasiswaProfile', 'assignedTendik'])),
+            'application' => $this->forMahasiswaResponse($application),
+            'profile_summary' => $this->profileDataService->profileSummaryForApplication($application),
         ]);
     }
 
     public function showForReviewer(SuratPengantarMagangApplication $application)
     {
+        $this->authorizeTendikDetailIfApplicable(SuratPengantarMagangApplication::LETTER_TYPE);
+        $this->authorizeAcademicDetailIfApplicable($application);
+
         // Load the canonical academic chain so the FE can render Prodi / Fakultas / Departemen
         // from the relation tree instead of the legacy mahasiswa_profiles.{program_studi,fakultas}
         // text columns (which may be null for admin-created accounts and are being deprecated).
+        $application->load([
+            'user.studyProgram.department.faculty',
+            'user.department.faculty',
+            'mahasiswaProfile',
+            'assignedTendik',
+        ]);
+
         return response()->json([
-            'application' => $application->load([
-                'user.studyProgram.department.faculty',
-                'user.department.faculty',
-                'mahasiswaProfile',
-                'assignedTendik',
-            ]),
+            'application' => $application,
+            'profile_summary' => $this->profileDataService->profileSummaryForApplication($application),
         ]);
     }
 
-    public function approveByTendik(Request $request, SuratPengantarMagangApplication $application)
+    public function approveByTendik(
+        Request $request,
+        SuratPengantarMagangApplication $application,
+        SuratPengantarMagangPreviewGenerationService $previewGenerationService,
+    )
     {
+        $this->authorizeTendikAction(SuratPengantarMagangApplication::LETTER_TYPE);
+
         $validator = Validator::make($request->all(), [
-            'nomor_surat' => 'required|string|max:100',
+            'nomor_surat' => ['nullable', 'string', 'max:100'],
+            'nomor_surat_pengantar' => ['required', 'string', 'max:100'],
+            'nomor_surat_tugas' => ['required', 'string', 'max:100'],
         ]);
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
@@ -157,23 +254,80 @@ class SuratPengantarMagangController extends Controller
             return response()->json(['message' => 'Pengajuan tidak berada pada tahap verifikasi Tendik.'], 422);
         }
 
-        $application->update([
-            'status' => SuratPengantarMagangApplication::STATUS_APPROVED_TENDIK,
-            'nomor_surat' => $request->nomor_surat,
-            'assigned_to' => $application->assigned_to ?: Auth::id(),
-            'tendik_approved_at' => now(),
-            'revision_note' => null,
-            'rejection_reason' => null,
-        ]);
+        $approvedAt = now();
+        $actorId = Auth::id();
+        $nomorPengantar = $request->input('nomor_surat_pengantar');
+        $nomorTugas = $request->input('nomor_surat_tugas');
+
+        try {
+            $previewGenerationService->generateForPhase(
+                $application,
+                LetterDocumentArtifact::PHASE_PRODI_REVIEW,
+                [
+                    'status' => SuratPengantarMagangApplication::STATUS_APPROVED_TENDIK,
+                    'nomor_surat_pengantar' => $nomorPengantar,
+                    'nomor_surat_tugas' => $nomorTugas,
+                    'tendik_approved_at' => $approvedAt,
+                    'tendik_approved_by' => $actorId,
+                    'tanggal_surat' => $approvedAt,
+                ],
+                $actorId,
+            );
+        } catch (SuratPengantarMagangPreviewGenerationException $exception) {
+            report($exception);
+
+            return response()->json([
+                'message' => 'Dokumen pratinjau verifikasi belum dapat dibuat. Silakan coba lagi.',
+            ], 503);
+        }
+
+        try {
+            $application = DB::transaction(function () use ($application, $approvedAt, $actorId, $nomorPengantar, $nomorTugas) {
+                $lockedApplication = SuratPengantarMagangApplication::query()
+                    ->whereKey($application->getKey())
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                $actor = Auth::user()?->fresh();
+                if (
+                    !$actor
+                    || !$this->assignmentService->canHandleAny($actor, SuratPengantarMagangApplication::LETTER_TYPE)
+                    || $lockedApplication->status !== SuratPengantarMagangApplication::STATUS_SUBMITTED
+                ) {
+                    throw new RuntimeException('Magang application is no longer approvable by Tendik.');
+                }
+
+                $lockedApplication->update([
+                    'status' => SuratPengantarMagangApplication::STATUS_APPROVED_TENDIK,
+                    // Preserve the single-number compatibility field while the final contract uses both numbers.
+                    'nomor_surat' => $nomorPengantar,
+                    'nomor_surat_pengantar' => $nomorPengantar,
+                    'nomor_surat_tugas' => $nomorTugas,
+                    'assigned_to' => $lockedApplication->assigned_to ?: $actorId,
+                    'tendik_approved_at' => $approvedAt,
+                    'tendik_approved_by' => $actorId,
+                    'revision_note' => null,
+                    'rejection_reason' => null,
+                ]);
+
+                return $lockedApplication->fresh();
+            });
+        } catch (RuntimeException $exception) {
+            return response()->json([
+                'message' => 'Pengajuan sudah berubah dan tidak dapat diverifikasi ulang.',
+            ], 409);
+        }
 
         return response()->json([
             'message' => 'Pengajuan berhasil diverifikasi dan diteruskan ke Kaprodi/Sekprodi',
-            'application' => $application->fresh(),
+            'application' => $application,
         ]);
     }
 
     public function reviseByTendik(Request $request, SuratPengantarMagangApplication $application)
     {
+        $this->authorizeTendikAction(SuratPengantarMagangApplication::LETTER_TYPE);
+
         return $this->markRevision($request, $application, [
             SuratPengantarMagangApplication::STATUS_SUBMITTED,
         ]);
@@ -181,108 +335,216 @@ class SuratPengantarMagangController extends Controller
 
     public function rejectByTendik(Request $request, SuratPengantarMagangApplication $application)
     {
+        $this->authorizeTendikAction(SuratPengantarMagangApplication::LETTER_TYPE);
+
         return $this->markRejected($request, $application, [
             SuratPengantarMagangApplication::STATUS_SUBMITTED,
         ]);
     }
 
-    public function approveByAkademik(SuratPengantarMagangApplication $application, SuratPengantarMagangService $service)
+    /**
+     * Hard-gate Tendik action endpoints to Persuratan Tendik. Non-Persuratan
+     * Tendik (Sarpras/Kepala Lab/Laboran) and non-Tendik roles get 403.
+     */
+    private function authorizeTendikAction(string $letterType): void
     {
-        $subRole = Auth::user()->sub_role;
+        $user = Auth::user();
+        if (!$this->assignmentService->canHandleAny($user, $letterType)) {
+            abort(403, 'Tidak berwenang memproses pengajuan ini.');
+        }
+    }
+
+    private function authorizeTendikDetailIfApplicable(string $letterType): void
+    {
+        $user = Auth::user();
+        if ($user?->role !== 'tendik') {
+            return;
+        }
+
+        if (!$this->assignmentService->canHandleAny($user, $letterType)) {
+            abort(403, 'Tidak berwenang melihat detail pengajuan ini.');
+        }
+    }
+
+    private function authorizeAcademicDetailIfApplicable(SuratPengantarMagangApplication $application): void
+    {
+        if (Auth::user()?->role !== 'akademik') {
+            return;
+        }
+
+        $this->authorizeAcademicDetail($application, $this->academicRoutingService);
+    }
+
+    public function approveByAkademik(
+        SuratPengantarMagangApplication $application,
+        SuratPengantarMagangPreviewGenerationService $previewGenerationService,
+        AcademicSignatoryService $signatoryService,
+    )
+    {
+        $user = Auth::user();
+        $subRole = $user->sub_role;
+        $guardResponse = $this->guardAcademicAction(
+            $application,
+            $this->academicRoutingService,
+            SuratPengantarMagangApplication::STATUS_APPROVED_TENDIK,
+            SuratPengantarMagangApplication::STATUS_APPROVED_KAPRODI,
+            'Pengajuan tidak berada pada tahap persetujuan Kaprodi/Sekprodi.',
+            'Pengajuan tidak berada pada tahap persetujuan Kadep/Sekdep.'
+        );
+        if ($guardResponse) {
+            return $guardResponse;
+        }
 
         if (in_array($subRole, ['kaprodi', 'sekprodi'], true)) {
             if ($application->status !== SuratPengantarMagangApplication::STATUS_APPROVED_TENDIK) {
                 return response()->json(['message' => 'Pengajuan tidak berada pada tahap persetujuan Kaprodi/Sekprodi.'], 422);
             }
 
-            $application->update([
-                'status' => SuratPengantarMagangApplication::STATUS_APPROVED_KAPRODI,
-                'kaprodi_approved_at' => now(),
-                'kaprodi_approved_by' => Auth::id(),
-                'revision_note' => null,
-                'rejection_reason' => null,
-            ]);
+            $approvedAt = now();
+            $actorId = Auth::id();
+            $letterDate = $application->tendik_approved_at
+                ?? $application->submitted_at
+                ?? $application->created_at
+                ?? $approvedAt;
 
-            return response()->json([
-                'message' => 'Pengajuan disetujui dan diteruskan ke Kadep/Sekdep',
-                'application' => $application->fresh(),
-            ]);
-        }
-
-        if (in_array($subRole, ['kadep', 'sekdep'], true)) {
             try {
-                return DB::transaction(function () use ($application, $service) {
-                    $lockedApplication = SuratPengantarMagangApplication::whereKey($application->id)
+                $previewGenerationService->generateForPhase(
+                    $application,
+                    LetterDocumentArtifact::PHASE_DEPARTEMEN_REVIEW,
+                    [
+                        'status' => SuratPengantarMagangApplication::STATUS_APPROVED_KAPRODI,
+                        'kaprodi_approved_at' => $approvedAt,
+                        'kaprodi_approved_by' => $actorId,
+                        'tanggal_surat' => $letterDate,
+                    ],
+                    $actorId,
+                );
+            } catch (SuratPengantarMagangPreviewGenerationException $exception) {
+                report($exception);
+
+                return response()->json([
+                    'message' => 'Dokumen pratinjau persetujuan Prodi belum dapat dibuat. Silakan coba lagi.',
+                ], 503);
+            }
+
+            try {
+                $application = DB::transaction(function () use ($application, $approvedAt, $actorId) {
+                    $lockedApplication = SuratPengantarMagangApplication::query()
+                        ->whereKey($application->getKey())
                         ->lockForUpdate()
                         ->firstOrFail();
 
-                    if ($lockedApplication->status !== SuratPengantarMagangApplication::STATUS_APPROVED_KAPRODI) {
-                        return response()->json(['message' => 'Pengajuan tidak berada pada tahap persetujuan Kadep/Sekdep.'], 422);
+                    $actor = Auth::user()?->fresh();
+                    if (
+                        !$actor
+                        || !$this->academicRoutingService->isProdiApprover($actor)
+                        || $lockedApplication->status !== SuratPengantarMagangApplication::STATUS_APPROVED_TENDIK
+                        || !$this->academicRoutingService->canHandleProdiStage($actor, $lockedApplication)
+                    ) {
+                        throw new RuntimeException('Magang application is no longer approvable by Prodi.');
                     }
 
-                    $shouldGeneratePdf = empty($lockedApplication->generated_pdf_path);
-
                     $lockedApplication->update([
-                        'status' => SuratPengantarMagangApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-                        'kadep_approved_at' => now(),
-                        'kadep_approved_by' => Auth::id(),
+                        'status' => SuratPengantarMagangApplication::STATUS_APPROVED_KAPRODI,
+                        'kaprodi_approved_at' => $approvedAt,
+                        'kaprodi_approved_by' => $actorId,
                         'revision_note' => null,
                         'rejection_reason' => null,
                     ]);
 
-                    if ($shouldGeneratePdf) {
-                        $service->generateDocument($lockedApplication->fresh(), Auth::user());
-                    }
-
-                    return response()->json([
-                        'message' => 'Pengajuan disetujui dan menunggu review mahasiswa',
-                        'application' => $lockedApplication->fresh(),
-                    ]);
+                    return $lockedApplication->fresh();
                 });
-            } catch (\Throwable $exception) {
+            } catch (RuntimeException $exception) {
+                return response()->json([
+                    'message' => 'Pengajuan sudah berubah dan tidak dapat disetujui ulang oleh Prodi.',
+                ], 409);
+            }
+
+            return response()->json([
+                'message' => 'Pengajuan disetujui dan diteruskan ke Kadep/Sekdep',
+                'application' => $application,
+            ]);
+        }
+
+        if (in_array($subRole, ['kadep', 'sekdep'], true)) {
+            if ($application->status !== SuratPengantarMagangApplication::STATUS_APPROVED_KAPRODI) {
+                return response()->json(['message' => 'Pengajuan tidak berada pada tahap persetujuan Kadep/Sekdep.'], 422);
+            }
+
+            $approvedAt = now();
+            $actorId = Auth::id();
+            $letterDate = $application->tendik_approved_at
+                ?? $application->submitted_at
+                ?? $application->created_at
+                ?? $approvedAt;
+            $officialKadep = $signatoryService->officialKadepForApplication($application);
+
+            try {
+                $previewGenerationService->generateForPhase(
+                    $application,
+                    LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW,
+                    [
+                        'status' => SuratPengantarMagangApplication::STATUS_READY_FOR_STUDENT_REVIEW,
+                        'kadep_approved_at' => $approvedAt,
+                        'kadep_approved_by' => $actorId,
+                        'official_kadep' => $officialKadep,
+                        'tanggal_surat' => $letterDate,
+                    ],
+                    $actorId,
+                );
+            } catch (SuratPengantarMagangPreviewGenerationException $exception) {
                 report($exception);
 
                 return response()->json([
-                    'message' => 'Pengajuan disetujui, tetapi dokumen PDF gagal dibuat. Status tidak diubah.',
-                ], 500);
+                    'message' => 'Dokumen pratinjau review mahasiswa belum dapat dibuat. Silakan coba lagi.',
+                ], 503);
             }
 
+            try {
+                $application = DB::transaction(function () use ($application, $approvedAt, $actorId) {
+                    $lockedApplication = SuratPengantarMagangApplication::whereKey($application->id)
+                        ->lockForUpdate()
+                        ->firstOrFail();
+
+                    $actor = Auth::user()?->fresh();
+                    if (
+                        !$actor
+                        || !$this->academicRoutingService->isDepartmentApprover($actor)
+                        || $lockedApplication->status !== SuratPengantarMagangApplication::STATUS_APPROVED_KAPRODI
+                        || !$this->academicRoutingService->canHandleDepartmentStage($actor, $lockedApplication)
+                    ) {
+                        throw new RuntimeException('Magang application is no longer approvable by Kadep/Sekdep.');
+                    }
+
+                    $lockedApplication->update([
+                        'status' => SuratPengantarMagangApplication::STATUS_READY_FOR_STUDENT_REVIEW,
+                        'kadep_approved_at' => $approvedAt,
+                        'kadep_approved_by' => $actorId,
+                        'revision_note' => null,
+                        'rejection_reason' => null,
+                    ]);
+
+                    return $lockedApplication->fresh();
+                });
+            } catch (RuntimeException $exception) {
+                return response()->json([
+                    'message' => 'Pengajuan sudah berubah dan tidak dapat disetujui ulang oleh Kadep/Sekdep.',
+                ], 409);
+            }
+
+            return response()->json([
+                'message' => 'Pengajuan disetujui dan menunggu review mahasiswa',
+                'application' => $application,
+            ]);
         }
 
         return response()->json(['message' => 'Sub-role akademik tidak dikenali.'], 403);
     }
 
-    public function preview(SuratPengantarMagangService $service, SuratPengantarMagangApplication $application)
-    {
-        $this->documentAccessService->ensureOwner($application, Auth::user());
-
-        if (!$this->documentAccessService->canPreview($application)) {
-            return response()->json([
-                'message' => 'Dokumen belum tersedia untuk direview.',
-            ], 422);
-        }
-
-        $path = $this->documentAccessService->resolveGeneratedDocumentPath(
-            $application,
-            'generated_pdf_path',
-            self::GENERATED_PDF_PREFIX
-        );
-        if (!$path) {
-            return response()->json([
-                'message' => 'Dokumen PDF belum tersedia.',
-            ], 404);
-        }
-
-        $this->documentAccessService->markPreviewedIfNeeded($application);
-
-        return response()->file($path, [
-            'Content-Type' => 'application/pdf',
-            'Content-Disposition' => 'inline; filename="' . $this->documentFilename($application) . '"',
-            'Cache-Control' => 'private, no-store, max-age=0',
-        ]);
-    }
-
-    public function complete(SuratPengantarMagangService $service, SuratPengantarMagangApplication $application)
+    public function complete(
+        SuratPengantarMagangApplication $application,
+        LetterDocumentArtifactService $artifactService
+    )
     {
         $this->documentAccessService->ensureOwner($application, Auth::user());
 
@@ -299,48 +561,156 @@ class SuratPengantarMagangController extends Controller
             ], 422);
         }
 
-        if (!$this->documentAccessService->hasBeenPreviewed($application)) {
-            return response()->json([
-                'message' => 'Silakan review dokumen sebelum menyelesaikan pengajuan.',
-            ], 422);
+        $artifactError = $this->completionArtifactError($application, $artifactService);
+        if ($artifactError) {
+            return $artifactError;
         }
 
-        $path = $this->documentAccessService->resolveGeneratedDocumentPath(
-            $application,
-            'generated_pdf_path',
-            self::GENERATED_PDF_PREFIX
-        );
-        if (!$path) {
-            return response()->json([
-                'message' => 'Dokumen PDF belum tersedia.',
-            ], 404);
-        }
+        $completedAt = now();
 
-        $application->update([
-            'status' => SuratPengantarMagangApplication::STATUS_COMPLETED,
-            'student_reviewed_at' => now(),
-            'completed_at' => now(),
-        ]);
+        try {
+            $application = DB::transaction(function () use ($application, $completedAt) {
+                $lockedApplication = SuratPengantarMagangApplication::query()
+                    ->whereKey($application->getKey())
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                if (
+                    (int) $lockedApplication->user_id !== (int) Auth::id()
+                    || $lockedApplication->status !== SuratPengantarMagangApplication::STATUS_READY_FOR_STUDENT_REVIEW
+                ) {
+                    throw new RuntimeException('Magang application is no longer completable.');
+                }
+
+                $lockedApplication->update([
+                    'status' => SuratPengantarMagangApplication::STATUS_COMPLETED,
+                    'student_reviewed_at' => $completedAt,
+                    'completed_at' => $completedAt,
+                ]);
+
+                return $lockedApplication->fresh(['mahasiswaProfile', 'assignedTendik']);
+            });
+        } catch (RuntimeException $exception) {
+            return response()->json([
+                'message' => 'Pengajuan sudah berubah dan tidak dapat diselesaikan ulang.',
+            ], 409);
+        }
 
         return response()->json([
             'message' => 'Pengajuan Surat Pengantar Magang telah diselesaikan.',
-            'application' => $this->forMahasiswaResponse($application->fresh(['mahasiswaProfile', 'assignedTendik'])),
+            'application' => $this->forMahasiswaResponse($application),
         ]);
+    }
+
+    private function completionArtifactError(
+        SuratPengantarMagangApplication $application,
+        LetterDocumentArtifactService $artifactService
+    ): ?JsonResponse {
+        $artifact = $artifactService->latestArtifact(
+            SuratPengantarMagangApplication::LETTER_TYPE,
+            (int) $application->getKey(),
+            LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW,
+        );
+
+        if (!$artifact) {
+            return $this->completionArtifactUnavailable();
+        }
+
+        if ($artifact->status === LetterDocumentArtifact::STATUS_GENERATING) {
+            return $this->completionArtifactErrorResponse(
+                'Dokumen final masih sedang dibuat. Silakan coba lagi beberapa saat.',
+                'artifact_generating',
+                409,
+            );
+        }
+
+        if ($artifact->status === LetterDocumentArtifact::STATUS_FAILED) {
+            return $this->completionArtifactErrorResponse(
+                'Dokumen final belum dapat tersedia karena proses pembuatan terakhir gagal. Silakan coba lagi nanti.',
+                'artifact_failed',
+                503,
+            );
+        }
+
+        if (
+            $artifact->status !== LetterDocumentArtifact::STATUS_READY
+            || !$this->isExpectedPrivateArtifactPdfPath($artifact->pdf_path)
+            || !Storage::disk('local')->exists($artifact->pdf_path)
+        ) {
+            return $this->completionArtifactUnavailable();
+        }
+
+        return null;
+    }
+
+    private function completionArtifactUnavailable(): JsonResponse
+    {
+        return $this->completionArtifactErrorResponse(
+            'Dokumen final PDF belum tersedia.',
+            'artifact_unavailable',
+            404,
+        );
+    }
+
+    private function completionArtifactErrorResponse(string $message, string $reason, int $status): JsonResponse
+    {
+        return response()->json([
+            'message' => $message,
+            'reason' => $reason,
+        ], $status);
+    }
+
+    private function isExpectedPrivateArtifactPdfPath(?string $path): bool
+    {
+        if (!is_string($path) || trim($path) === '') {
+            return false;
+        }
+
+        $path = str_replace('\\', '/', trim($path));
+
+        return !str_contains($path, '..')
+            && str_starts_with(
+                $path,
+                'letter-document-artifacts/' . SuratPengantarMagangApplication::LETTER_TYPE . '/',
+            )
+            && str_ends_with(strtolower($path), '.pdf');
     }
 
     public function reviseByAkademik(Request $request, SuratPengantarMagangApplication $application)
     {
-        return $this->markRevision($request, $application, [
+        $guardResponse = $this->guardAcademicAction(
+            $application,
+            $this->academicRoutingService,
             SuratPengantarMagangApplication::STATUS_APPROVED_TENDIK,
             SuratPengantarMagangApplication::STATUS_APPROVED_KAPRODI,
+            'Pengajuan tidak dapat direvisi pada tahap ini.',
+            'Pengajuan tidak dapat direvisi pada tahap ini.'
+        );
+        if ($guardResponse) {
+            return $guardResponse;
+        }
+
+        return $this->markRevision($request, $application, [
+            $application->status,
         ]);
     }
 
     public function rejectByAkademik(Request $request, SuratPengantarMagangApplication $application)
     {
-        return $this->markRejected($request, $application, [
+        $guardResponse = $this->guardAcademicAction(
+            $application,
+            $this->academicRoutingService,
             SuratPengantarMagangApplication::STATUS_APPROVED_TENDIK,
             SuratPengantarMagangApplication::STATUS_APPROVED_KAPRODI,
+            'Pengajuan tidak dapat ditolak pada tahap ini.',
+            'Pengajuan tidak dapat ditolak pada tahap ini.'
+        );
+        if ($guardResponse) {
+            return $guardResponse;
+        }
+
+        return $this->markRejected($request, $application, [
+            $application->status,
         ]);
     }
 
@@ -372,9 +742,9 @@ class SuratPengantarMagangController extends Controller
         );
     }
 
-    private function applicationRules(?SuratPengantarMagangApplication $application = null): array
+    private function applicationRules(?SuratPengantarMagangApplication $application = null, array $data = []): array
     {
-        return [
+        return array_merge([
             'nama_penerima' => 'required|string|max:255',
             'nama_perusahaan' => 'required|string|max:255',
             'alamat_perusahaan' => 'required|string|max:2000',
@@ -384,14 +754,15 @@ class SuratPengantarMagangController extends Controller
             'proposal_kegiatan_magang' => [
                 $application?->proposal_kegiatan_magang_path ? 'nullable' : 'required',
                 'file',
+                'mimes:pdf',
                 'max:2048',
             ],
-        ];
+        ], $this->finalContractInputRules($data));
     }
 
-    private function submissionRules(): array
+    private function submissionRules(array $data = []): array
     {
-        return [
+        return array_merge([
             'nama_penerima' => 'required|string|max:255',
             'nama_perusahaan' => 'required|string|max:255',
             'alamat_perusahaan' => 'required|string|max:2000',
@@ -399,6 +770,33 @@ class SuratPengantarMagangController extends Controller
             'rentang_tanggal' => 'required|string|max:255',
             'dosen_pembimbing_dpa' => 'required|string|max:255',
             'proposal_kegiatan_magang_path' => 'required|string',
+        ], $this->finalContractInputRules($data));
+    }
+
+    /**
+     * Additive contract fields remain optional until the matching frontend
+     * cutover; once both dates are supplied they must form a valid range.
+     *
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    private function finalContractInputRules(array $data): array
+    {
+        $tglSelesaiRules = ['nullable', 'date'];
+        if (!empty($data['tgl_mulai']) && !empty($data['tgl_selesai'])) {
+            $tglSelesaiRules[] = 'after_or_equal:tgl_mulai';
+        }
+
+        return [
+            'jabatan_penerima' => 'nullable|string|max:255',
+            'alamat_jalan' => 'nullable|string|max:2000',
+            'alamat_kelurahan' => 'nullable|string|max:255',
+            'alamat_kecamatan' => 'nullable|string|max:255',
+            'alamat_kota_kabupaten' => 'nullable|string|max:255',
+            'alamat_provinsi' => 'nullable|string|max:255',
+            'kode_pos' => 'nullable|string|max:20',
+            'tgl_mulai' => 'nullable|date',
+            'tgl_selesai' => $tglSelesaiRules,
         ];
     }
 
@@ -419,6 +817,9 @@ class SuratPengantarMagangController extends Controller
             'status' => SuratPengantarMagangApplication::STATUS_REVISION,
             'revision_note' => $request->note,
             'rejection_reason' => null,
+            'revised_at' => now(),
+            'revised_by' => Auth::id(),
+            'assigned_to' => $application->assigned_to ?: Auth::id(),
         ]);
 
         return response()->json([
@@ -444,6 +845,9 @@ class SuratPengantarMagangController extends Controller
             'status' => SuratPengantarMagangApplication::STATUS_REJECTED,
             'rejection_reason' => $request->reason,
             'revision_note' => null,
+            'rejected_at' => now(),
+            'rejected_by' => Auth::id(),
+            'assigned_to' => $application->assigned_to ?: Auth::id(),
         ]);
 
         return response()->json([
@@ -454,22 +858,9 @@ class SuratPengantarMagangController extends Controller
 
     private function forMahasiswaResponse(SuratPengantarMagangApplication $application): SuratPengantarMagangApplication
     {
-        return $this->documentAccessService->redactGeneratedPathIfNeeded(
-            $application,
-            'generated_pdf_path',
-            self::GENERATED_PDF_PREFIX,
-            true
-        );
-    }
+        $application->setAttribute('generated_pdf_path', null);
 
-    private function documentFilename(SuratPengantarMagangApplication $application): string
-    {
-        $application->loadMissing('mahasiswaProfile');
-        $identifier = $application->mahasiswaProfile?->nim ?: (string) $application->id;
-        $identifier = preg_replace('/[^A-Za-z0-9_-]+/', '_', $identifier) ?: '';
-        $identifier = trim($identifier, '_') ?: (string) $application->id;
-
-        return 'Surat_Pengantar_Magang_' . $identifier . '.pdf';
+        return $application;
     }
 
     private function deletePublicFile(?string $filePath): void

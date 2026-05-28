@@ -4,10 +4,8 @@ namespace Tests\Feature\Workflow;
 
 use App\Models\ScholarshipApplication;
 use App\Services\AcademicSignatoryService;
-use App\Services\ScholarshipAutomationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Notification;
-use Illuminate\Support\Facades\Storage;
 use Mockery;
 use Tests\TestCase;
 
@@ -26,7 +24,6 @@ class BeasiswaApproverTrackingTest extends TestCase
     public function test_beasiswa_approval_stores_actual_prodi_and_department_actors(): void
     {
         Notification::fake();
-        Storage::fake('public');
 
         $program = $this->defaultStudyProgram();
         $department = $program->department;
@@ -39,11 +36,15 @@ class BeasiswaApproverTrackingTest extends TestCase
         $sekdepActor = $this->akademik('sekdep', ['department_id' => $department->id]);
         $this->akademik('kadep', ['department_id' => $department->id]);
 
+        $this->mockBeasiswaPreviewGenerationForApprove();
+
         $this->actingAs($tendik, 'sanctum')
             ->patchJson("/api/tendik/surat-permohonan-beasiswa/{$application->id}/approve", [
                 'nomor_surat' => 'BEA-TRACK-001',
             ])
             ->assertOk();
+
+        $this->mockBeasiswaPreviewGenerationForProdiApprove();
 
         $this->actingAs($sekprodiActor, 'sanctum')
             ->patchJson("/api/akademik/surat-permohonan-beasiswa/{$application->id}/approve")
@@ -55,7 +56,7 @@ class BeasiswaApproverTrackingTest extends TestCase
             'kaprodi_approved_by' => $sekprodiActor->id,
         ]);
 
-        $this->mockScholarshipDocumentGeneration();
+        $this->mockBeasiswaPreviewGenerationForDepartmentApprove();
 
         $this->actingAs($sekdepActor, 'sanctum')
             ->patchJson("/api/akademik/surat-permohonan-beasiswa/{$application->id}/approve")
@@ -95,18 +96,4 @@ class BeasiswaApproverTrackingTest extends TestCase
         $this->assertSame('/storage/signatures/kadep.png', $service->signaturePath($kadep));
     }
 
-    private function mockScholarshipDocumentGeneration(): void
-    {
-        $mock = Mockery::mock(ScholarshipAutomationService::class);
-        $mock->shouldReceive('generateDocument')
-            ->once()
-            ->andReturnUsing(function (): string {
-                Storage::disk('public')->put('scholarships/final.docx', 'docx test');
-
-                return 'scholarships/final.docx';
-            });
-        $mock->shouldReceive('deleteGeneratedDocument')->never();
-
-        $this->app->instance(ScholarshipAutomationService::class, $mock);
-    }
 }

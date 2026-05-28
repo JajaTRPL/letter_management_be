@@ -32,6 +32,53 @@ class LetterAssignmentService
         });
     }
 
+    /**
+     * Eligibility-by-letter-type check. Retained for backwards compatibility
+     * with any caller that wants the canonical "letter type is admin-letter"
+     * predicate without consulting assigned_tasks. New per-application access
+     * gates must use canHandle (strict assigned_tasks), not this helper.
+     *
+     * Returns false for non-Persuratan sub-roles (Sarpras / Kepala Lab /
+     * Laboran) — no admin-letter workflow exists for them.
+     */
+    public function canHandleAsTeam(User $user, string $letterType): bool
+    {
+        $canonicalKey = $this->canonicalKey($letterType);
+        if (!$canonicalKey || $user->role !== 'tendik' || $user->tendik_role !== 'persuratan') {
+            return false;
+        }
+
+        return in_array($canonicalKey, LetterTypeRegistry::canonicalKeys(), true);
+    }
+
+    /**
+     * Backwards-compatible alias that now requires strict assigned_tasks
+     * (canHandle). Previously this OR'd in canHandleAsTeam to grant any
+     * Persuratan Tendik view/act access to every admin-letter; that produced
+     * cross-assignment data exposure where a Tendik assigned only to Beasiswa
+     * could read/act on Magang/Aktif/PLN rows. Read and action access now
+     * follow assigned_tasks scope exclusively.
+     */
+    public function canHandleAny(User $user, string $letterType): bool
+    {
+        return $this->canHandle($user, $letterType);
+    }
+
+    /**
+     * Team-scope feed visibility: returns the bare query (no assigned_to
+     * filter) for any Persuratan Tendik whose assigned_tasks include this
+     * letter type. Other Persuratan and non-Persuratan get an empty result
+     * without leaking rows.
+     */
+    public function applyTeamFeedVisibility(Builder $query, User $user, string $letterType): Builder
+    {
+        if (!$this->canHandle($user, $letterType)) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query;
+    }
+
     public function eligiblePersuratanTendikQuery(string $letterType): Builder
     {
         $canonicalKey = $this->canonicalKey($letterType);

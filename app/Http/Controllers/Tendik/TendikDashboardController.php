@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Tendik;
 
 use App\Http\Controllers\Controller;
+use App\Models\LetterDocumentArtifact;
 use App\Models\ProsesLuarNegeriApplication;
 use App\Models\ScholarshipApplication;
 use App\Models\SuratKeteranganAktifApplication;
@@ -10,16 +11,32 @@ use App\Models\SuratPengantarMagangApplication;
 use App\Models\User;
 use App\Notifications\ScholarshipStatusNotification;
 use App\Enums\UserStatus;
+use App\Services\BeasiswaPreviewGenerationException;
+use App\Services\BeasiswaPreviewGenerationService;
 use App\Services\LetterAssignmentService;
 use App\Services\LetterTaskCursorFeedService;
 use App\Services\LetterTaskFeedService;
 use App\Services\MahasiswaProfileDataService;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Validator;
+use RuntimeException;
 
 class TendikDashboardController extends Controller
 {
+    // Eager-loads that the feed-row enrichment depends on.
+    private const TENDIK_ROW_RELATIONS = [
+        'mahasiswaProfile.user',
+        'user',
+        'assignedTendik',
+        'tendikApprover',
+        'reviser',
+        'rejector',
+    ];
+
     public function __construct(
         private LetterAssignmentService $assignmentService,
         private LetterTaskCursorFeedService $cursorFeedService,
@@ -29,11 +46,17 @@ class TendikDashboardController extends Controller
     }
 
     /**
-     * Get dashboard data for the authenticated Tendik
+     * Get dashboard data for the authenticated Tendik.
+     *
+     * scope=mine (default) preserves the per-assignment visibility model: rows
+     * are visible if assigned_to=me, plus unassigned-Submitted for Beasiswa.
+     * scope=team is reserved for Persuratan team helpers and returns ALL admin
+     * letters in the relevant status bucket regardless of assignment.
      */
     public function getDashboardData(Request $request)
     {
         $user = Auth::user();
+        $scope = $this->resolveScope($request);
 
         if ($this->cursorFeedService->cursorModeRequested($request)) {
             $feed = $this->cursorFeedService->tendikDashboard($user, $request);
@@ -45,120 +68,43 @@ class TendikDashboardController extends Controller
             ]);
         }
 
-        $canHandleMagang = $this->assignmentService->canHandle($user, SuratPengantarMagangApplication::LETTER_TYPE);
-        $canHandleAktif = $this->assignmentService->canHandle($user, SuratKeteranganAktifApplication::LETTER_TYPE);
-        $canHandleProsesLuarNegeri = $this->assignmentService->canHandle($user, ProsesLuarNegeriApplication::LETTER_TYPE);
+        $stats = ['total_incoming' => 0, 'needs_verification' => 0, 'finished_this_month' => 0];
+        $tasksByType = [];
 
-        $baseQuery = $this->assignmentService->applyFeedVisibility(
-            ScholarshipApplication::whereIn('status', [
-                ScholarshipApplication::STATUS_SUBMITTED,
-                ScholarshipApplication::STATUS_APPROVED_TENDIK,
-            ]),
-            $user,
-            ScholarshipApplication::LETTER_TYPE,
-            [ScholarshipApplication::STATUS_SUBMITTED]
-        );
+        foreach ($this->letterTypeModelMap() as $letterType => $modelClass) {
+            if (!$this->canSeeForScope($user, $letterType, $scope)) {
+                $tasksByType[$letterType] = collect();
+                continue;
+            }
 
-        $finishedScholarshipCount = $this->assignmentService->applyFeedVisibility(
-            ScholarshipApplication::whereIn('status', [
-                ScholarshipApplication::STATUS_APPROVED_TENDIK,
-                ScholarshipApplication::STATUS_APPROVED_KAPRODI,
-                ScholarshipApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-                ScholarshipApplication::STATUS_COMPLETED,
-            ])->where('updated_at', '>=', now()->startOfMonth()),
-            $user,
-            ScholarshipApplication::LETTER_TYPE
-        )->count();
+            $unassignedStatuses = ($scope === 'mine' && $letterType === ScholarshipApplication::LETTER_TYPE)
+                ? [$modelClass::STATUS_SUBMITTED]
+                : null;
 
-        // Calculate Stats
-        $stats = [
-            'total_incoming' => (clone $baseQuery)->count(),
-            'needs_verification' => (clone $baseQuery)->where('status', ScholarshipApplication::STATUS_SUBMITTED)->count(),
-            'finished_this_month' => $finishedScholarshipCount,
-        ];
-
-        $tasks = (clone $baseQuery)
-            ->with(['mahasiswaProfile.user', 'user'])
-            ->orderBy('submitted_at', 'desc')
-            ->limit(100)
-            ->get();
-
-        $magangTasks = collect();
-        if ($canHandleMagang) {
-            $magangBaseQuery = $this->assignmentService->applyFeedVisibility(
-                SuratPengantarMagangApplication::whereIn('status', [
-                    SuratPengantarMagangApplication::STATUS_SUBMITTED,
-                    SuratPengantarMagangApplication::STATUS_APPROVED_TENDIK,
-                ]),
+            $baseQuery = $this->applyScope(
+                $modelClass::whereIn('status', [$modelClass::STATUS_SUBMITTED]),
                 $user,
-                SuratPengantarMagangApplication::LETTER_TYPE
+                $letterType,
+                $scope,
+                $unassignedStatuses
             );
 
-            $stats['total_incoming'] += (clone $magangBaseQuery)->count();
-            $stats['needs_verification'] += (clone $magangBaseQuery)
-                ->where('status', SuratPengantarMagangApplication::STATUS_SUBMITTED)
-                ->count();
-            $stats['finished_this_month'] += (clone $magangBaseQuery)
-                ->where('status', SuratPengantarMagangApplication::STATUS_APPROVED_TENDIK)
-                ->where('updated_at', '>=', now()->startOfMonth())
+            $stats['total_incoming'] += (clone $baseQuery)->count();
+            $stats['needs_verification'] += (clone $baseQuery)
+                ->where('status', $modelClass::STATUS_SUBMITTED)
                 ->count();
 
-            $magangTasks = (clone $magangBaseQuery)
-                ->with(['mahasiswaProfile.user', 'user'])
-                ->orderBy('submitted_at', 'desc')
-                ->limit(100)
-                ->get();
-        }
-
-        $aktifTasks = collect();
-        if ($canHandleAktif) {
-            $aktifBaseQuery = $this->assignmentService->applyFeedVisibility(
-                SuratKeteranganAktifApplication::whereIn('status', [
-                    SuratKeteranganAktifApplication::STATUS_SUBMITTED,
-                    SuratKeteranganAktifApplication::STATUS_APPROVED_TENDIK,
-                ]),
+            $finishedQuery = $this->applyScope(
+                $modelClass::whereIn('status', $this->finishedStatusesFor($modelClass))
+                    ->where('updated_at', '>=', now()->startOfMonth()),
                 $user,
-                SuratKeteranganAktifApplication::LETTER_TYPE
+                $letterType,
+                $scope
             );
+            $stats['finished_this_month'] += $finishedQuery->count();
 
-            $stats['total_incoming'] += (clone $aktifBaseQuery)->count();
-            $stats['needs_verification'] += (clone $aktifBaseQuery)
-                ->where('status', SuratKeteranganAktifApplication::STATUS_SUBMITTED)
-                ->count();
-            $stats['finished_this_month'] += (clone $aktifBaseQuery)
-                ->where('status', SuratKeteranganAktifApplication::STATUS_APPROVED_TENDIK)
-                ->where('updated_at', '>=', now()->startOfMonth())
-                ->count();
-
-            $aktifTasks = (clone $aktifBaseQuery)
-                ->with(['mahasiswaProfile.user', 'user'])
-                ->orderBy('submitted_at', 'desc')
-                ->limit(100)
-                ->get();
-        }
-
-        $prosesLuarNegeriTasks = collect();
-        if ($canHandleProsesLuarNegeri) {
-            $prosesLuarNegeriBaseQuery = $this->assignmentService->applyFeedVisibility(
-                ProsesLuarNegeriApplication::whereIn('status', [
-                    ProsesLuarNegeriApplication::STATUS_SUBMITTED,
-                    ProsesLuarNegeriApplication::STATUS_APPROVED_TENDIK,
-                ]),
-                $user,
-                ProsesLuarNegeriApplication::LETTER_TYPE
-            );
-
-            $stats['total_incoming'] += (clone $prosesLuarNegeriBaseQuery)->count();
-            $stats['needs_verification'] += (clone $prosesLuarNegeriBaseQuery)
-                ->where('status', ProsesLuarNegeriApplication::STATUS_SUBMITTED)
-                ->count();
-            $stats['finished_this_month'] += (clone $prosesLuarNegeriBaseQuery)
-                ->where('status', ProsesLuarNegeriApplication::STATUS_APPROVED_TENDIK)
-                ->where('updated_at', '>=', now()->startOfMonth())
-                ->count();
-
-            $prosesLuarNegeriTasks = (clone $prosesLuarNegeriBaseQuery)
-                ->with(['mahasiswaProfile.user', 'user'])
+            $tasksByType[$letterType] = (clone $baseQuery)
+                ->with(self::TENDIK_ROW_RELATIONS)
                 ->orderBy('submitted_at', 'desc')
                 ->limit(100)
                 ->get();
@@ -166,7 +112,13 @@ class TendikDashboardController extends Controller
 
         return response()->json([
             'stats' => $stats,
-            'tasks' => $this->taskFeedService->combinedTendikRows($tasks, $magangTasks, $aktifTasks, $prosesLuarNegeriTasks),
+            'tasks' => $this->taskFeedService->combinedTendikRows(
+                $tasksByType[ScholarshipApplication::LETTER_TYPE] ?? collect(),
+                $tasksByType[SuratPengantarMagangApplication::LETTER_TYPE] ?? collect(),
+                $tasksByType[SuratKeteranganAktifApplication::LETTER_TYPE] ?? collect(),
+                $tasksByType[ProsesLuarNegeriApplication::LETTER_TYPE] ?? collect()
+            ),
+            'scope' => $scope,
         ]);
     }
 
@@ -175,6 +127,8 @@ class TendikDashboardController extends Controller
      */
     public function show(ScholarshipApplication $application, MahasiswaProfileDataService $profileDataService)
     {
+        $this->authorizeTendikDetail(ScholarshipApplication::LETTER_TYPE);
+
         $application->load([
             'mahasiswaProfile.user',
             'mahasiswaProfile.keluarga',
@@ -183,9 +137,11 @@ class TendikDashboardController extends Controller
         ]);
 
         $normalized = $profileDataService->forApplication($application);
+        $application->setAttribute('generated_docx_path', null);
 
         return response()->json([
             'application' => $application,
+            'profile_summary' => $profileDataService->profileSummaryForApplication($application),
             'student' => [
                 'name' => $normalized['name'],
                 'nim' => $normalized['nim'],
@@ -202,36 +158,99 @@ class TendikDashboardController extends Controller
                 'target' => $application->scholarship_name ?? 'Beasiswa',
                 'submitted_at' => $application->submitted_at ? $application->submitted_at->format('d F Y, H.i') : $application->created_at->format('d F Y, H.i'),
             ],
-            'docx_url' => $application->generated_docx_path ? '/api/storage/' . $application->generated_docx_path : null
+            'docx_url' => null
         ]);
     }
 
     /**
      * Approve scholarship application (Tendik → forward to Kaprodi)
      */
-    public function approve(ScholarshipApplication $application, Request $request)
+    public function approve(
+        ScholarshipApplication $application,
+        Request $request,
+        BeasiswaPreviewGenerationService $previewGenerationService
+    )
     {
-        $updateData = [
-            'status' => ScholarshipApplication::STATUS_APPROVED_TENDIK,
-            'tendik_approved_at' => now(),
-        ];
+        $this->authorizeTendikAction(ScholarshipApplication::LETTER_TYPE);
 
-        if ($request->filled('nomor_surat')) {
-            $updateData['nomor_surat'] = $request->input('nomor_surat');
+        $validator = Validator::make($request->all(), [
+            'nomor_surat' => 'required|string|max:100',
+        ]);
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        $application->update($updateData);
-        
+        if ($application->status !== ScholarshipApplication::STATUS_SUBMITTED) {
+            return response()->json(['message' => 'Pengajuan tidak berada pada tahap verifikasi Tendik.'], 422);
+        }
+
+        $approvedAt = now();
+        $actorId = Auth::id();
+        $nomorSurat = $request->input('nomor_surat');
+
+        try {
+            $previewGenerationService->generateForPhase(
+                $application,
+                LetterDocumentArtifact::PHASE_PRODI_REVIEW,
+                [
+                    'status' => ScholarshipApplication::STATUS_APPROVED_TENDIK,
+                    'nomor_surat' => $nomorSurat,
+                    'tendik_approved_at' => $approvedAt,
+                    'tendik_approved_by' => $actorId,
+                    'tanggal_surat' => $approvedAt,
+                ],
+                $actorId,
+            );
+        } catch (BeasiswaPreviewGenerationException $exception) {
+            report($exception);
+
+            return response()->json([
+                'message' => 'Dokumen pratinjau verifikasi belum dapat dibuat. Silakan coba lagi.',
+            ], 503);
+        }
+
+        try {
+            $application = DB::transaction(function () use ($application, $approvedAt, $actorId, $nomorSurat) {
+                $lockedApplication = ScholarshipApplication::query()
+                    ->whereKey($application->getKey())
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                $actor = Auth::user()?->fresh();
+                if (
+                    !$actor
+                    || !$this->assignmentService->canHandleAny($actor, ScholarshipApplication::LETTER_TYPE)
+                    || $lockedApplication->status !== ScholarshipApplication::STATUS_SUBMITTED
+                ) {
+                    throw new RuntimeException('Scholarship application is no longer approvable by Tendik.');
+                }
+
+                $lockedApplication->update([
+                    'status' => ScholarshipApplication::STATUS_APPROVED_TENDIK,
+                    'tendik_approved_at' => $approvedAt,
+                    'tendik_approved_by' => $actorId,
+                    'assigned_to' => $lockedApplication->assigned_to ?: $actorId,
+                    'nomor_surat' => $nomorSurat,
+                ]);
+
+                return $lockedApplication->fresh();
+            });
+        } catch (RuntimeException $exception) {
+            return response()->json([
+                'message' => 'Pengajuan sudah berubah dan tidak dapat diverifikasi ulang.',
+            ], 409);
+        }
+
         // Notify Kaprodi and Sekprodi
         $academics = User::where('role', 'akademik')
             ->whereIn('sub_role', ['kaprodi', 'sekprodi'])
             ->where('status', UserStatus::Active)
             ->get();
-            
+
         if ($academics->count() > 0) {
             $application->load('mahasiswaProfile');
             Notification::send($academics, new ScholarshipStatusNotification(
-                $application, 
+                $application,
                 "Pendaftaran beasiswa baru telah diverifikasi Tendik dan memerlukan persetujuan Anda."
             ));
         }
@@ -244,7 +263,14 @@ class TendikDashboardController extends Controller
      */
     public function reject(ScholarshipApplication $application, Request $request)
     {
-        $updateData = ['status' => ScholarshipApplication::STATUS_REJECTED];
+        $this->authorizeTendikAction(ScholarshipApplication::LETTER_TYPE);
+
+        $updateData = [
+            'status' => ScholarshipApplication::STATUS_REJECTED,
+            'rejected_at' => now(),
+            'rejected_by' => Auth::id(),
+            'assigned_to' => $application->assigned_to ?: Auth::id(),
+        ];
 
         if ($request->filled('reason')) {
             $updateData['rejection_reason'] = $request->input('reason');
@@ -264,7 +290,14 @@ class TendikDashboardController extends Controller
      */
     public function revise(ScholarshipApplication $application, Request $request)
     {
-        $updateData = ['status' => ScholarshipApplication::STATUS_REVISION];
+        $this->authorizeTendikAction(ScholarshipApplication::LETTER_TYPE);
+
+        $updateData = [
+            'status' => ScholarshipApplication::STATUS_REVISION,
+            'revised_at' => now(),
+            'revised_by' => Auth::id(),
+            'assigned_to' => $application->assigned_to ?: Auth::id(),
+        ];
 
         if ($request->filled('note')) {
             $updateData['revision_note'] = $request->input('note');
@@ -282,6 +315,7 @@ class TendikDashboardController extends Controller
     public function getRiwayatData(Request $request)
     {
         $user = Auth::user();
+        $scope = $this->resolveScope($request);
 
         if ($this->cursorFeedService->cursorModeRequested($request)) {
             $feed = $this->cursorFeedService->tendikRiwayat($user, $request);
@@ -292,11 +326,8 @@ class TendikDashboardController extends Controller
             ]);
         }
 
-        $canHandleMagang = $this->assignmentService->canHandle($user, SuratPengantarMagangApplication::LETTER_TYPE);
-        $canHandleAktif = $this->assignmentService->canHandle($user, SuratKeteranganAktifApplication::LETTER_TYPE);
-        $canHandleProsesLuarNegeri = $this->assignmentService->canHandle($user, ProsesLuarNegeriApplication::LETTER_TYPE);
-
         $historicalStatuses = [
+            ScholarshipApplication::STATUS_APPROVED_TENDIK,
             ScholarshipApplication::STATUS_REVISION,
             ScholarshipApplication::STATUS_REJECTED,
             ScholarshipApplication::STATUS_APPROVED_KAPRODI,
@@ -304,75 +335,33 @@ class TendikDashboardController extends Controller
             ScholarshipApplication::STATUS_COMPLETED,
         ];
 
-        $scholarshipTasks = $this->assignmentService->applyFeedVisibility(
-            ScholarshipApplication::whereIn('status', $historicalStatuses),
-            $user,
-            ScholarshipApplication::LETTER_TYPE
-        )
-            ->with(['mahasiswaProfile.user', 'user'])
-            ->orderBy('submitted_at', 'desc')
-            ->limit(100)
-            ->get();
+        $tasksByType = [];
+        foreach ($this->letterTypeModelMap() as $letterType => $modelClass) {
+            if (!$this->canSeeForScope($user, $letterType, $scope)) {
+                $tasksByType[$letterType] = collect();
+                continue;
+            }
 
-        $magangTasks = collect();
-        if ($canHandleMagang) {
-            $magangTasks = $this->assignmentService->applyFeedVisibility(
-                SuratPengantarMagangApplication::whereIn('status', [
-                    SuratPengantarMagangApplication::STATUS_REVISION,
-                    SuratPengantarMagangApplication::STATUS_REJECTED,
-                    SuratPengantarMagangApplication::STATUS_APPROVED_KAPRODI,
-                    SuratPengantarMagangApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-                    SuratPengantarMagangApplication::STATUS_COMPLETED,
-                ]),
+            $tasksByType[$letterType] = $this->applyScope(
+                $modelClass::whereIn('status', $historicalStatuses),
                 $user,
-                SuratPengantarMagangApplication::LETTER_TYPE
+                $letterType,
+                $scope
             )
-                ->with(['mahasiswaProfile.user', 'user'])
-                ->orderBy('submitted_at', 'desc')
-                ->limit(100)
-                ->get();
-        }
-
-        $aktifTasks = collect();
-        if ($canHandleAktif) {
-            $aktifTasks = $this->assignmentService->applyFeedVisibility(
-                SuratKeteranganAktifApplication::whereIn('status', [
-                    SuratKeteranganAktifApplication::STATUS_REVISION,
-                    SuratKeteranganAktifApplication::STATUS_REJECTED,
-                    SuratKeteranganAktifApplication::STATUS_APPROVED_KAPRODI,
-                    SuratKeteranganAktifApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-                    SuratKeteranganAktifApplication::STATUS_COMPLETED,
-                ]),
-                $user,
-                SuratKeteranganAktifApplication::LETTER_TYPE
-            )
-                ->with(['mahasiswaProfile.user', 'user'])
-                ->orderBy('submitted_at', 'desc')
-                ->limit(100)
-                ->get();
-        }
-
-        $prosesLuarNegeriTasks = collect();
-        if ($canHandleProsesLuarNegeri) {
-            $prosesLuarNegeriTasks = $this->assignmentService->applyFeedVisibility(
-                ProsesLuarNegeriApplication::whereIn('status', [
-                    ProsesLuarNegeriApplication::STATUS_REVISION,
-                    ProsesLuarNegeriApplication::STATUS_REJECTED,
-                    ProsesLuarNegeriApplication::STATUS_APPROVED_KAPRODI,
-                    ProsesLuarNegeriApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-                    ProsesLuarNegeriApplication::STATUS_COMPLETED,
-                ]),
-                $user,
-                ProsesLuarNegeriApplication::LETTER_TYPE
-            )
-                ->with(['mahasiswaProfile.user', 'user'])
+                ->with(self::TENDIK_ROW_RELATIONS)
                 ->orderBy('submitted_at', 'desc')
                 ->limit(100)
                 ->get();
         }
 
         return response()->json([
-            'tasks' => $this->taskFeedService->combinedTendikRows($scholarshipTasks, $magangTasks, $aktifTasks, $prosesLuarNegeriTasks),
+            'tasks' => $this->taskFeedService->combinedTendikRows(
+                $tasksByType[ScholarshipApplication::LETTER_TYPE] ?? collect(),
+                $tasksByType[SuratPengantarMagangApplication::LETTER_TYPE] ?? collect(),
+                $tasksByType[SuratKeteranganAktifApplication::LETTER_TYPE] ?? collect(),
+                $tasksByType[ProsesLuarNegeriApplication::LETTER_TYPE] ?? collect()
+            ),
+            'scope' => $scope,
         ]);
     }
 
@@ -381,7 +370,6 @@ class TendikDashboardController extends Controller
         $baseQuery = $this->assignmentService->applyFeedVisibility(
             ScholarshipApplication::whereIn('status', [
                 ScholarshipApplication::STATUS_SUBMITTED,
-                ScholarshipApplication::STATUS_APPROVED_TENDIK,
             ]),
             $user,
             ScholarshipApplication::LETTER_TYPE,
@@ -408,21 +396,26 @@ class TendikDashboardController extends Controller
             SuratKeteranganAktifApplication::LETTER_TYPE => SuratKeteranganAktifApplication::class,
             ProsesLuarNegeriApplication::LETTER_TYPE => ProsesLuarNegeriApplication::class,
         ] as $letterType => $modelClass) {
-            $query = $this->assignmentService->applyFeedVisibility(
+            $activeQuery = $this->assignmentService->applyFeedVisibility(
                 $modelClass::whereIn('status', [
                     $modelClass::STATUS_SUBMITTED,
-                    $modelClass::STATUS_APPROVED_TENDIK,
                 ]),
                 $user,
                 $letterType
             );
 
-            $stats['total_incoming'] += (clone $query)->count();
-            $stats['needs_verification'] += (clone $query)
+            $stats['total_incoming'] += (clone $activeQuery)->count();
+            $stats['needs_verification'] += (clone $activeQuery)
                 ->where('status', $modelClass::STATUS_SUBMITTED)
                 ->count();
-            $stats['finished_this_month'] += (clone $query)
-                ->where('status', $modelClass::STATUS_APPROVED_TENDIK)
+
+            $finishedQuery = $this->assignmentService->applyFeedVisibility(
+                $modelClass::where('status', $modelClass::STATUS_APPROVED_TENDIK),
+                $user,
+                $letterType
+            );
+
+            $stats['finished_this_month'] += $finishedQuery
                 ->where('updated_at', '>=', now()->startOfMonth())
                 ->count();
         }
@@ -430,4 +423,86 @@ class TendikDashboardController extends Controller
         return $stats;
     }
 
+    /**
+     * Resolve the requested scope; 422 if the param is present but invalid.
+     */
+    private function resolveScope(Request $request): string
+    {
+        $scope = $request->query('scope');
+        if ($scope === null) {
+            return 'mine';
+        }
+        $request->validate(['scope' => 'in:mine,team']);
+        return $scope;
+    }
+
+    /**
+     * @return array<string, class-string>
+     */
+    private function letterTypeModelMap(): array
+    {
+        return [
+            ScholarshipApplication::LETTER_TYPE => ScholarshipApplication::class,
+            SuratPengantarMagangApplication::LETTER_TYPE => SuratPengantarMagangApplication::class,
+            SuratKeteranganAktifApplication::LETTER_TYPE => SuratKeteranganAktifApplication::class,
+            ProsesLuarNegeriApplication::LETTER_TYPE => ProsesLuarNegeriApplication::class,
+        ];
+    }
+
+    private function canSeeForScope(User $user, string $letterType, string $scope): bool
+    {
+        // Both mine and team scopes are gated by assigned_tasks. Team scope
+        // differs from mine only in whether the assigned_to filter is applied
+        // (see applyScope below); a Tendik never sees letter types absent from
+        // their assigned_tasks, regardless of scope.
+        return $this->assignmentService->canHandle($user, $letterType);
+    }
+
+    private function applyScope(Builder $query, User $user, string $letterType, string $scope, ?array $unassignedStatuses = null): Builder
+    {
+        if ($scope === 'team') {
+            return $this->assignmentService->applyTeamFeedVisibility($query, $user, $letterType);
+        }
+        return $this->assignmentService->applyFeedVisibility($query, $user, $letterType, $unassignedStatuses);
+    }
+
+    /**
+     * @return string[]
+     */
+    private function finishedStatusesFor(string $modelClass): array
+    {
+        if ($modelClass === ScholarshipApplication::class) {
+            return [
+                ScholarshipApplication::STATUS_APPROVED_TENDIK,
+                ScholarshipApplication::STATUS_APPROVED_KAPRODI,
+                ScholarshipApplication::STATUS_READY_FOR_STUDENT_REVIEW,
+                ScholarshipApplication::STATUS_COMPLETED,
+            ];
+        }
+
+        // Magang/SKA/PLN: "finished this month" semantics preserved from prior
+        // controller (only APPROVED_TENDIK counted).
+        return [$modelClass::STATUS_APPROVED_TENDIK];
+    }
+
+    /**
+     * Hard-gate Tendik action endpoints. A Persuratan Tendik may act on any
+     * admin-letter type as part of the team; non-Persuratan Tendik (Sarpras /
+     * Kepala Lab / Laboran) and non-Tendik roles get 403.
+     */
+    private function authorizeTendikAction(string $letterType): void
+    {
+        $user = Auth::user();
+        if (!$this->assignmentService->canHandleAny($user, $letterType)) {
+            abort(403, 'Tidak berwenang memproses pengajuan ini.');
+        }
+    }
+
+    private function authorizeTendikDetail(string $letterType): void
+    {
+        $user = Auth::user();
+        if (!$this->assignmentService->canHandleAny($user, $letterType)) {
+            abort(403, 'Tidak berwenang melihat detail pengajuan ini.');
+        }
+    }
 }

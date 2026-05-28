@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Workflow;
 
+use App\Models\LetterDocumentArtifact;
 use App\Models\MahasiswaProfile;
 use App\Services\AcademicSignatoryService;
 use App\Services\LetterAssignmentService;
@@ -89,6 +90,7 @@ class MahasiswaProfileDataContractTest extends TestCase
     public function test_beasiswa_generator_uses_normalized_academic_data(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
 
         $program = $this->studyProgram(null, [
             'code' => 'TRPL',
@@ -111,10 +113,13 @@ class MahasiswaProfileDataContractTest extends TestCase
         );
         $service->templateContent = $this->docxTemplateContent('${fakultas} ${prodi} ${angkatan}');
 
-        $path = $service->generateDocument($application);
+        $path = $service->generateDocumentForPhase(
+            $application,
+            LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW,
+        );
 
         $this->assertNotFalse($path);
-        $xml = $this->docxDocumentXml(Storage::disk('public')->path($path));
+        $xml = $this->docxDocumentXml(Storage::disk('local')->path($path));
         $this->assertStringContainsString('Canonical Faculty', $xml);
         $this->assertStringContainsString('Canonical Prodi', $xml);
         $this->assertStringContainsString('2022', $xml);

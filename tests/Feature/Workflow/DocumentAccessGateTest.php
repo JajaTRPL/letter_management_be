@@ -17,111 +17,96 @@ class DocumentAccessGateTest extends TestCase
 
     public function test_preview_is_blocked_before_student_review_status(): void
     {
-        Storage::fake('public');
         [$student] = $this->completeMahasiswa();
 
         $scholarship = $this->scholarshipApplication($student, [
             'status' => ScholarshipApplication::STATUS_APPROVED_KAPRODI,
-            'generated_docx_path' => 'scholarships/final.docx',
         ]);
-        Storage::disk('public')->put('scholarships/final.docx', 'docx test');
 
         $magang = $this->magangApplication($student, [
             'status' => SuratPengantarMagangApplication::STATUS_APPROVED_KAPRODI,
-            'generated_pdf_path' => '/storage/surat-pengantar-magang/generated/final.pdf',
         ]);
-        Storage::disk('public')->put('surat-pengantar-magang/generated/final.pdf', '%PDF-1.4 test');
 
         $aktif = $this->aktifApplication($student, [
             'status' => SuratKeteranganAktifApplication::STATUS_APPROVED_KAPRODI,
-            'generated_pdf_path' => '/storage/surat-keterangan-aktif/generated/final.pdf',
         ]);
-        Storage::disk('public')->put('surat-keterangan-aktif/generated/final.pdf', '%PDF-1.4 test');
 
         $prosesLuarNegeri = $this->prosesLuarNegeriApplication($student, [
             'status' => ProsesLuarNegeriApplication::STATUS_APPROVED_KAPRODI,
-            'generated_pdf_path' => '/storage/proses-luar-negeri/generated/final.pdf',
         ]);
-        Storage::disk('public')->put('proses-luar-negeri/generated/final.pdf', '%PDF-1.4 test');
 
         $this->actingAs($student, 'sanctum')
             ->getJson("/api/mahasiswa/surat-permohonan-beasiswa/{$scholarship->id}/preview")
-            ->assertForbidden();
+            ->assertNotFound();
 
         $this->actingAs($student, 'sanctum')
             ->getJson("/api/mahasiswa/surat-pengantar-magang/{$magang->id}/preview")
-            ->assertUnprocessable();
+            ->assertNotFound();
 
         $this->actingAs($student, 'sanctum')
             ->getJson("/api/mahasiswa/surat-keterangan-aktif/{$aktif->id}/preview")
-            ->assertUnprocessable();
+            ->assertNotFound();
 
         $this->actingAs($student, 'sanctum')
             ->getJson("/api/mahasiswa/proses-luar-negeri/{$prosesLuarNegeri->id}/preview")
-            ->assertUnprocessable();
+            ->assertNotFound();
     }
 
-    public function test_preview_is_allowed_for_owner_at_student_review_status(): void
+    public function test_beasiswa_and_magang_legacy_preview_routes_are_retired_at_student_review_status(): void
     {
-        Storage::fake('public');
         [$student] = $this->completeMahasiswa();
 
         $scholarship = $this->scholarshipApplication($student, [
             'status' => ScholarshipApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-            'generated_docx_path' => 'scholarships/final.docx',
         ]);
-        Storage::disk('public')->put('scholarships/final.docx', 'docx test');
 
         $magang = $this->magangApplication($student, [
             'status' => SuratPengantarMagangApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-            'generated_pdf_path' => '/storage/surat-pengantar-magang/generated/final.pdf',
         ]);
-        Storage::disk('public')->put('surat-pengantar-magang/generated/final.pdf', '%PDF-1.4 test');
-
-        $aktif = $this->aktifApplication($student, [
-            'status' => SuratKeteranganAktifApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-            'generated_pdf_path' => '/storage/surat-keterangan-aktif/generated/final.pdf',
-        ]);
-        Storage::disk('public')->put('surat-keterangan-aktif/generated/final.pdf', '%PDF-1.4 test');
 
         $prosesLuarNegeri = $this->prosesLuarNegeriApplication($student, [
             'status' => ProsesLuarNegeriApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-            'generated_pdf_path' => '/storage/proses-luar-negeri/generated/final.pdf',
         ]);
-        Storage::disk('public')->put('proses-luar-negeri/generated/final.pdf', '%PDF-1.4 test');
 
         $this->actingAs($student, 'sanctum')
             ->get("/api/mahasiswa/surat-permohonan-beasiswa/{$scholarship->id}/preview")
-            ->assertOk();
+            ->assertNotFound();
 
         $this->actingAs($student, 'sanctum')
             ->get("/api/mahasiswa/surat-pengantar-magang/{$magang->id}/preview")
-            ->assertOk();
-
-        $this->actingAs($student, 'sanctum')
-            ->get("/api/mahasiswa/surat-keterangan-aktif/{$aktif->id}/preview")
-            ->assertOk();
+            ->assertNotFound();
 
         $this->actingAs($student, 'sanctum')
             ->get("/api/mahasiswa/proses-luar-negeri/{$prosesLuarNegeri->id}/preview")
-            ->assertOk();
+            ->assertNotFound();
     }
 
-    public function test_magang_complete_is_blocked_until_student_has_previewed_document(): void
+    public function test_aktif_legacy_preview_route_is_retired(): void
     {
-        Storage::fake('public');
+        [$student] = $this->completeMahasiswa();
+        $application = $this->aktifApplication($student, [
+            'status' => SuratKeteranganAktifApplication::STATUS_READY_FOR_STUDENT_REVIEW,
+        ]);
+
+        $this->actingAs($student, 'sanctum')
+            ->getJson("/api/mahasiswa/surat-keterangan-aktif/{$application->id}/preview")
+            ->assertNotFound();
+    }
+
+    public function test_magang_complete_is_blocked_until_private_mahasiswa_artifact_exists(): void
+    {
+        Storage::fake('local');
         [$student] = $this->completeMahasiswa();
 
         $application = $this->magangApplication($student, [
             'status' => SuratPengantarMagangApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-            'generated_pdf_path' => '/storage/surat-pengantar-magang/generated/final.pdf',
             'student_reviewed_at' => null,
         ]);
-        Storage::disk('public')->put('surat-pengantar-magang/generated/final.pdf', '%PDF-1.4 test');
 
         $this->actingAs($student, 'sanctum')
             ->postJson("/api/mahasiswa/surat-pengantar-magang/{$application->id}/complete")
-            ->assertUnprocessable();
+            ->assertNotFound()
+            ->assertJsonPath('reason', 'artifact_unavailable');
 
         $this->assertDatabaseHas('surat_pengantar_magang_applications', [
             'id' => $application->id,
@@ -130,21 +115,20 @@ class DocumentAccessGateTest extends TestCase
         ]);
     }
 
-    public function test_aktif_complete_is_blocked_until_student_has_previewed_document(): void
+    public function test_aktif_complete_is_blocked_until_private_mahasiswa_artifact_exists(): void
     {
-        Storage::fake('public');
+        Storage::fake('local');
         [$student] = $this->completeMahasiswa();
 
         $application = $this->aktifApplication($student, [
             'status' => SuratKeteranganAktifApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-            'generated_pdf_path' => '/storage/surat-keterangan-aktif/generated/final.pdf',
             'student_reviewed_at' => null,
         ]);
-        Storage::disk('public')->put('surat-keterangan-aktif/generated/final.pdf', '%PDF-1.4 test');
 
         $this->actingAs($student, 'sanctum')
             ->postJson("/api/mahasiswa/surat-keterangan-aktif/{$application->id}/complete")
-            ->assertUnprocessable();
+            ->assertNotFound()
+            ->assertJsonPath('reason', 'artifact_unavailable');
 
         $this->assertDatabaseHas('surat_keterangan_aktif_applications', [
             'id' => $application->id,
@@ -153,21 +137,20 @@ class DocumentAccessGateTest extends TestCase
         ]);
     }
 
-    public function test_proses_luar_negeri_complete_is_blocked_until_student_has_previewed_document(): void
+    public function test_proses_luar_negeri_complete_is_blocked_until_private_mahasiswa_artifact_exists(): void
     {
-        Storage::fake('public');
+        Storage::fake('local');
         [$student] = $this->completeMahasiswa();
 
         $application = $this->prosesLuarNegeriApplication($student, [
             'status' => ProsesLuarNegeriApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-            'generated_pdf_path' => '/storage/proses-luar-negeri/generated/final.pdf',
             'student_reviewed_at' => null,
         ]);
-        Storage::disk('public')->put('proses-luar-negeri/generated/final.pdf', '%PDF-1.4 test');
 
         $this->actingAs($student, 'sanctum')
             ->postJson("/api/mahasiswa/proses-luar-negeri/{$application->id}/complete")
-            ->assertUnprocessable();
+            ->assertNotFound()
+            ->assertJsonPath('reason', 'artifact_unavailable');
 
         $this->assertDatabaseHas('proses_luar_negeri_applications', [
             'id' => $application->id,
@@ -176,16 +159,13 @@ class DocumentAccessGateTest extends TestCase
         ]);
     }
 
-    public function test_aktif_generated_pdf_path_is_hidden_before_completed(): void
+    public function test_aktif_detail_returns_null_generated_pdf_compatibility_field(): void
     {
-        Storage::fake('public');
         [$student] = $this->completeMahasiswa();
 
         $application = $this->aktifApplication($student, [
             'status' => SuratKeteranganAktifApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-            'generated_pdf_path' => '/storage/surat-keterangan-aktif/generated/final.pdf',
         ]);
-        Storage::disk('public')->put('surat-keterangan-aktif/generated/final.pdf', '%PDF-1.4 test');
 
         $this->actingAs($student, 'sanctum')
             ->getJson("/api/mahasiswa/surat-keterangan-aktif/{$application->id}")
@@ -199,19 +179,29 @@ class DocumentAccessGateTest extends TestCase
         $this->actingAs($student, 'sanctum')
             ->getJson("/api/mahasiswa/surat-keterangan-aktif/{$application->id}")
             ->assertOk()
-            ->assertJsonPath('application.generated_pdf_path', '/storage/surat-keterangan-aktif/generated/final.pdf');
+            ->assertJsonPath('application.generated_pdf_path', null);
     }
 
-    public function test_proses_luar_negeri_generated_pdf_path_is_hidden_before_completed(): void
+    public function test_magang_detail_returns_null_generated_pdf_compatibility_field(): void
     {
-        Storage::fake('public');
+        [$student] = $this->completeMahasiswa();
+        $application = $this->magangApplication($student, [
+            'status' => SuratPengantarMagangApplication::STATUS_COMPLETED,
+        ]);
+
+        $this->actingAs($student, 'sanctum')
+            ->getJson("/api/mahasiswa/surat-pengantar-magang/{$application->id}")
+            ->assertOk()
+            ->assertJsonPath('application.generated_pdf_path', null);
+    }
+
+    public function test_proses_luar_negeri_detail_returns_null_generated_pdf_compatibility_field(): void
+    {
         [$student] = $this->completeMahasiswa();
 
         $application = $this->prosesLuarNegeriApplication($student, [
             'status' => ProsesLuarNegeriApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-            'generated_pdf_path' => '/storage/proses-luar-negeri/generated/final.pdf',
         ]);
-        Storage::disk('public')->put('proses-luar-negeri/generated/final.pdf', '%PDF-1.4 test');
 
         $this->actingAs($student, 'sanctum')
             ->getJson("/api/mahasiswa/proses-luar-negeri/{$application->id}")
@@ -225,7 +215,7 @@ class DocumentAccessGateTest extends TestCase
         $this->actingAs($student, 'sanctum')
             ->getJson("/api/mahasiswa/proses-luar-negeri/{$application->id}")
             ->assertOk()
-            ->assertJsonPath('application.generated_pdf_path', '/storage/proses-luar-negeri/generated/final.pdf');
+            ->assertJsonPath('application.generated_pdf_path', null);
     }
 
     public function test_raw_storage_routes_block_generated_document_folders(): void

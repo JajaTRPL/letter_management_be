@@ -58,7 +58,6 @@ class LetterTaskCursorFeedService
                     ScholarshipApplication::LETTER_TYPE,
                     [
                         ScholarshipApplication::STATUS_SUBMITTED,
-                        ScholarshipApplication::STATUS_APPROVED_TENDIK,
                     ],
                     true,
                     [ScholarshipApplication::STATUS_SUBMITTED]
@@ -68,7 +67,6 @@ class LetterTaskCursorFeedService
                     SuratPengantarMagangApplication::LETTER_TYPE,
                     [
                         SuratPengantarMagangApplication::STATUS_SUBMITTED,
-                        SuratPengantarMagangApplication::STATUS_APPROVED_TENDIK,
                     ],
                     true
                 ),
@@ -77,7 +75,6 @@ class LetterTaskCursorFeedService
                     SuratKeteranganAktifApplication::LETTER_TYPE,
                     [
                         SuratKeteranganAktifApplication::STATUS_SUBMITTED,
-                        SuratKeteranganAktifApplication::STATUS_APPROVED_TENDIK,
                     ],
                     true
                 ),
@@ -86,7 +83,6 @@ class LetterTaskCursorFeedService
                     ProsesLuarNegeriApplication::LETTER_TYPE,
                     [
                         ProsesLuarNegeriApplication::STATUS_SUBMITTED,
-                        ProsesLuarNegeriApplication::STATUS_APPROVED_TENDIK,
                     ],
                     true
                 ),
@@ -388,6 +384,7 @@ class LetterTaskCursorFeedService
     private function historicalStatuses(string $modelClass): array
     {
         return [
+            $modelClass::STATUS_APPROVED_TENDIK,
             $modelClass::STATUS_REVISION,
             $modelClass::STATUS_REJECTED,
             $modelClass::STATUS_APPROVED_KAPRODI,

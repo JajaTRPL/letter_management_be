@@ -8,14 +8,25 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\Rule;
 use App\Models\MahasiswaProfile;
 use App\Models\KeluargaMahasiswa;
+use App\Models\User;
 use App\Services\MahasiswaProfileDataService;
+use App\Services\PasFotoNormalizer;
 
 class ProfileController extends Controller
 {
-    public function __construct(private MahasiswaProfileDataService $profileDataService)
-    {
+    private const PROFILE_ASSET_PREFIXES = [
+        'profiles/fotos/',
+        'profiles/signatures/',
+        'signatures/',
+    ];
+
+    public function __construct(
+        private MahasiswaProfileDataService $profileDataService,
+        private PasFotoNormalizer $pasFotoNormalizer
+    ) {
     }
 
     /**
@@ -52,8 +63,28 @@ class ProfileController extends Controller
         }
 
         // For non-mahasiswa (staff, akademik, super_admin) — Bundle 6 baseline shape preserved.
+        // Additive fields (id, tendik_role, nip, assigned_tasks, created_at) let the Tendik
+        // profile bind to real data without breaking the existing key set consumers rely on.
+        $user->loadMissing([
+            'studyProgram:id,code,name,department_id',
+            'studyProgram.department:id,code,name,faculty_id',
+            'studyProgram.department.faculty:id,code,name',
+            'department:id,code,name,faculty_id',
+            'department.faculty:id,code,name',
+        ]);
+
         return response()->json([
-            'user' => $user->only(['name', 'email', 'role', 'sub_role', 'status']),
+            'user' => array_merge(
+                $user->only(['name', 'email', 'role', 'sub_role', 'status']),
+                [
+                    'id' => $user->id,
+                    'tendik_role' => $user->tendik_role,
+                    'nip' => $user->nip,
+                    'assigned_tasks' => $user->assigned_tasks ?? [],
+                    'created_at' => optional($user->created_at)->toIso8601String(),
+                ],
+                $this->nonMahasiswaScopeResponse($user)
+            ),
             'profile' => [
                 'pas_foto_path' => $user->photo_path,
                 'tanda_tangan_path' => $user->signature_path,
@@ -115,14 +146,87 @@ class ProfileController extends Controller
         ];
     }
 
+    private function nonMahasiswaScopeResponse(User $user): array
+    {
+        $studyProgram = $user->studyProgram;
+        $department = $user->department;
+        $faculty = $department?->faculty ?? $studyProgram?->department?->faculty;
+
+        return [
+            'study_program_id' => $user->study_program_id,
+            'study_program_code' => $studyProgram?->code,
+            'study_program_name' => $studyProgram?->name,
+            'study_program' => $studyProgram ? [
+                'id' => $studyProgram->id,
+                'code' => $studyProgram->code,
+                'name' => $studyProgram->name,
+                'department' => $studyProgram->department ? [
+                    'id' => $studyProgram->department->id,
+                    'code' => $studyProgram->department->code,
+                    'name' => $studyProgram->department->name,
+                    'faculty' => $studyProgram->department->faculty ? [
+                        'id' => $studyProgram->department->faculty->id,
+                        'code' => $studyProgram->department->faculty->code,
+                        'name' => $studyProgram->department->faculty->name,
+                    ] : null,
+                ] : null,
+            ] : null,
+            'department_id' => $user->department_id,
+            'department_code' => $department?->code,
+            'department_name' => $department?->name,
+            'department' => $department ? [
+                'id' => $department->id,
+                'code' => $department->code,
+                'name' => $department->name,
+                'faculty' => $department->faculty ? [
+                    'id' => $department->faculty->id,
+                    'code' => $department->faculty->code,
+                    'name' => $department->faculty->name,
+                ] : null,
+            ] : null,
+            'faculty_id' => $faculty?->id,
+            'faculty_code' => $faculty?->code,
+            'faculty_name' => $faculty?->name,
+            'faculty' => $faculty ? [
+                'id' => $faculty->id,
+                'code' => $faculty->code,
+                'name' => $faculty->name,
+            ] : null,
+        ];
+    }
+
     private function publicDiskPath(?string $filePath): ?string
     {
-        if (!$filePath) {
+        $filePath = trim((string) $filePath);
+        if ($filePath === '') {
             return null;
         }
 
-        $path = parse_url($filePath, PHP_URL_PATH) ?: $filePath;
+        $filePath = str_replace('\\', '/', $filePath);
+        $parts = parse_url($filePath);
+        if ($parts === false) {
+            return null;
+        }
+
+        if (isset($parts['scheme']) || isset($parts['host'])) {
+            if (!$this->isLocalAppUrl($parts)) {
+                return null;
+            }
+
+            $path = $parts['path'] ?? '';
+        } else {
+            $path = $filePath;
+        }
+
         $path = str_replace('\\', '/', $path);
+        for ($i = 0; $i < 3; $i++) {
+            $decoded = rawurldecode($path);
+            if ($decoded === $path) {
+                break;
+            }
+            $path = $decoded;
+        }
+
         $path = ltrim($path, '/');
 
         if (str_starts_with($path, 'storage/')) {
@@ -133,23 +237,153 @@ class ProfileController extends Controller
             $path = substr($path, strlen('api/storage/'));
         }
 
-        $allowedPrefixes = [
-            'profiles/fotos/',
-            'profiles/signatures/',
-            'signatures/',
-        ];
-
-        if ($path === '' || str_contains($path, '..')) {
+        $segments = array_values(array_filter(explode('/', $path), 'strlen'));
+        if (
+            $path === ''
+            || str_contains($path, "\0")
+            || in_array('.', $segments, true)
+            || in_array('..', $segments, true)
+            || $this->isConfiguredGlobalParafPath($path)
+        ) {
             return null;
         }
 
-        foreach ($allowedPrefixes as $prefix) {
+        foreach (self::PROFILE_ASSET_PREFIXES as $prefix) {
             if (str_starts_with($path, $prefix)) {
                 return $path;
             }
         }
 
         return null;
+    }
+
+    private function isLocalAppUrl(array $urlParts): bool
+    {
+        $host = $urlParts['host'] ?? null;
+        if (!$host) {
+            return false;
+        }
+
+        $scheme = strtolower((string) ($urlParts['scheme'] ?? ''));
+        if ($scheme !== '' && !in_array($scheme, ['http', 'https'], true)) {
+            return false;
+        }
+
+        $appHost = parse_url((string) config('app.url'), PHP_URL_HOST);
+        if (!$appHost) {
+            return false;
+        }
+
+        return strcasecmp($host, $appHost) === 0;
+    }
+
+    private function isConfiguredGlobalParafPath(string $diskPath): bool
+    {
+        $configured = config('surat.global_paraf_path');
+        if (!is_string($configured) || trim($configured) === '') {
+            return false;
+        }
+
+        $configuredPath = str_replace('\\', '/', trim($configured));
+        $parts = parse_url($configuredPath);
+        if ($parts === false) {
+            return false;
+        }
+
+        $configuredPath = $parts['path'] ?? $configuredPath;
+        $configuredPath = ltrim(str_replace('\\', '/', $configuredPath), '/');
+
+        if (str_starts_with($configuredPath, 'storage/')) {
+            $configuredPath = substr($configuredPath, strlen('storage/'));
+        }
+
+        if (str_starts_with($configuredPath, 'api/storage/')) {
+            $configuredPath = substr($configuredPath, strlen('api/storage/'));
+        }
+
+        return $configuredPath !== '' && $configuredPath === $diskPath;
+    }
+
+    private function deleteReplacedProfileFile(array $replacement, User $user): void
+    {
+        $oldPath = $this->publicDiskPath($replacement['old'] ?? null);
+        $newPath = $this->publicDiskPath($replacement['new'] ?? null);
+
+        if (!$oldPath || ($newPath && $oldPath === $newPath)) {
+            return;
+        }
+
+        if ($this->profileAssetPathIsStillReferenced($oldPath, $user)) {
+            Log::warning('Skipped deleting profile file still referenced by another profile asset.', [
+                'user_id' => $user->id,
+                'disk_path' => $oldPath,
+                'field' => $replacement['field'] ?? null,
+            ]);
+            return;
+        }
+
+        $this->deletePublicFile($oldPath, $user->id);
+    }
+
+    private function profileAssetPathIsStillReferenced(string $diskPath, User $user): bool
+    {
+        $candidates = $this->storageValueCandidates($diskPath);
+
+        $otherUserReference = User::where('id', '<>', $user->id)
+            ->where(function ($query) use ($candidates) {
+                $query->whereIn('photo_path', $candidates)
+                    ->orWhereIn('signature_path', $candidates);
+            })
+            ->exists();
+
+        if ($otherUserReference) {
+            return true;
+        }
+
+        $currentUserOtherFieldReference = User::whereKey($user->id)
+            ->where(function ($query) use ($candidates) {
+                $query->whereIn('photo_path', $candidates)
+                    ->orWhereIn('signature_path', $candidates);
+            })
+            ->exists();
+
+        if ($currentUserOtherFieldReference) {
+            return true;
+        }
+
+        return MahasiswaProfile::where('user_id', '<>', $user->id)
+            ->where(function ($query) use ($candidates) {
+                $query->whereIn('pas_foto_path', $candidates)
+                    ->orWhereIn('tanda_tangan_path', $candidates);
+            })
+            ->exists()
+            || MahasiswaProfile::where('user_id', $user->id)
+                ->where(function ($query) use ($candidates) {
+                    $query->whereIn('pas_foto_path', $candidates)
+                        ->orWhereIn('tanda_tangan_path', $candidates);
+                })
+                ->exists();
+    }
+
+    private function storageValueCandidates(string $diskPath): array
+    {
+        $storageUrl = Storage::url($diskPath);
+        $appUrl = rtrim((string) config('app.url'), '/');
+
+        $candidates = [
+            $diskPath,
+            $storageUrl,
+            ltrim($storageUrl, '/'),
+            '/api/storage/' . ltrim($diskPath, '/'),
+            'api/storage/' . ltrim($diskPath, '/'),
+        ];
+
+        if ($appUrl !== '') {
+            $candidates[] = $appUrl . $storageUrl;
+            $candidates[] = $appUrl . '/api/storage/' . ltrim($diskPath, '/');
+        }
+
+        return array_values(array_unique($candidates));
     }
 
     private function deletePublicFile(?string $filePath, ?int $userId = null): void
@@ -205,17 +439,24 @@ class ProfileController extends Controller
             unset($validatedProfile['pas_foto'], $validatedProfile['tanda_tangan']);
 
             $profile = $user->mahasiswaProfile()->firstOrCreate([]);
-            $oldFiles = [];
+            $replacedFiles = [];
             $newFiles = [];
 
             try {
                 if ($request->hasFile('pas_foto')) {
-                    $path = $request->file('pas_foto')->store('profiles/fotos', 'public');
-                    if (!$path) {
-                        throw new \RuntimeException('Failed to store profile photo.');
+                    try {
+                        $path = $this->pasFotoNormalizer->normalize($request->file('pas_foto'));
+                    } catch (\RuntimeException $e) {
+                        throw \Illuminate\Validation\ValidationException::withMessages([
+                            'pas_foto' => [$e->getMessage()],
+                        ]);
                     }
                     $newFiles[] = $path;
-                    $oldFiles[] = $profile->pas_foto_path;
+                    $replacedFiles[] = [
+                        'old' => $profile->pas_foto_path,
+                        'new' => $path,
+                        'field' => 'mahasiswa_profiles.pas_foto_path',
+                    ];
                     $validatedProfile['pas_foto_path'] = Storage::url($path);
                 }
 
@@ -225,7 +466,11 @@ class ProfileController extends Controller
                         throw new \RuntimeException('Failed to store profile signature.');
                     }
                     $newFiles[] = $path;
-                    $oldFiles[] = $profile->tanda_tangan_path;
+                    $replacedFiles[] = [
+                        'old' => $profile->tanda_tangan_path,
+                        'new' => $path,
+                        'field' => 'mahasiswa_profiles.tanda_tangan_path',
+                    ];
                     $validatedProfile['tanda_tangan_path'] = Storage::url($path);
                 }
 
@@ -281,8 +526,8 @@ class ProfileController extends Controller
                     return $profile;
                 });
 
-                foreach ($oldFiles as $oldFile) {
-                    $this->deletePublicFile($oldFile, $user->id);
+                foreach ($replacedFiles as $replacement) {
+                    $this->deleteReplacedProfileFile($replacement, $user);
                 }
 
                 foreach ($newFiles as $newFile) {
@@ -310,20 +555,25 @@ class ProfileController extends Controller
             ]);
         }
 
-        // For Staff / Akademik — Bundle 6 baseline shape preserved.
+        // For Staff / Akademik / Super Admin self-profile.
+        // Self-editable: name, nip, password, pas_foto, tanda_tangan.
+        // Email remains account identity and is managed exclusively through
+        // SuperAdmin\UserController::update by an authorized Super Admin.
+        // Role / status / tendik_role / sub_role / assigned_tasks / scope
+        // fields are admin-managed only and are never read off this request.
         $request->validate([
             'name' => 'nullable|string|max:255',
-            'email' => 'nullable|email|max:255|unique:users,email,' . $user->id,
+            'nip' => ['nullable', 'string', 'max:50', Rule::unique('users', 'nip')->ignore($user->id)],
             'password' => 'nullable|string|min:8|confirmed',
             'pas_foto' => 'nullable|image|mimes:jpeg,jpg,png,webp|max:2048',
             'tanda_tangan' => 'nullable|image|mimes:jpeg,jpg,png,webp|max:2048',
         ]);
 
-        if ($request->filled('name')) $user->name = $request->name;
-        if ($request->filled('email')) $user->email = $request->email;
+        if ($request->filled('name')) $user->name = trim((string) $request->input('name'));
+        if ($request->has('nip')) $user->nip = $this->normalizeNip($request->input('nip'));
         if ($request->filled('password')) $user->password = Hash::make($request->password);
 
-        $oldFiles = [];
+        $replacedFiles = [];
         $newFiles = [];
 
         try {
@@ -333,7 +583,11 @@ class ProfileController extends Controller
                     throw new \RuntimeException('Failed to store profile photo.');
                 }
                 $newFiles[] = $path;
-                $oldFiles[] = $user->photo_path;
+                $replacedFiles[] = [
+                    'old' => $user->photo_path,
+                    'new' => $path,
+                    'field' => 'users.photo_path',
+                ];
                 $user->photo_path = Storage::url($path);
             }
 
@@ -343,7 +597,11 @@ class ProfileController extends Controller
                     throw new \RuntimeException('Failed to store profile signature.');
                 }
                 $newFiles[] = $path;
-                $oldFiles[] = $user->signature_path;
+                $replacedFiles[] = [
+                    'old' => $user->signature_path,
+                    'new' => $path,
+                    'field' => 'users.signature_path',
+                ];
                 $user->signature_path = Storage::url($path);
             }
 
@@ -351,8 +609,8 @@ class ProfileController extends Controller
                 $user->save();
             });
 
-            foreach ($oldFiles as $oldFile) {
-                $this->deletePublicFile($oldFile, $user->id);
+            foreach ($replacedFiles as $replacement) {
+                $this->deleteReplacedProfileFile($replacement, $user);
             }
 
             foreach ($newFiles as $newFile) {
@@ -376,11 +634,24 @@ class ProfileController extends Controller
 
         return response()->json([
             'message' => 'Profil berhasil diperbarui',
-            'user' => $user->only(['name', 'email', 'role', 'sub_role']),
+            'user' => array_merge(
+                $user->only(['name', 'email', 'role', 'sub_role']),
+                ['nip' => $user->nip]
+            ),
             'profile' => [
                 'pas_foto_path' => $user->photo_path,
                 'tanda_tangan_path' => $user->signature_path,
             ]
         ]);
+    }
+
+    /**
+     * Trim NIP and convert blank to null, matching SuperAdmin\UserController.
+     */
+    private function normalizeNip(?string $nip): ?string
+    {
+        $nip = trim((string) $nip);
+
+        return $nip !== '' ? $nip : null;
     }
 }

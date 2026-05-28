@@ -2,8 +2,10 @@
 
 namespace App\Services;
 
+use App\Models\LetterDocumentArtifact;
 use App\Models\ScholarshipApplication;
 use App\Models\User;
+use InvalidArgumentException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Storage;
 use PhpOffice\PhpWord\TemplateProcessor;
@@ -12,12 +14,42 @@ use RuntimeException;
 
 class ScholarshipAutomationService
 {
+    private const KADEP_TTD_PLACEHOLDERS = [
+        'ttd_kadep_formulir',
+        'ttd_kadep_rekomendasi',
+        'ttd_kadep',
+        'ttd_kadep',
+    ];
+
+    private const KADEP_TTD_IMAGE_DIMENSIONS = [
+        'width' => 150,
+        'height' => 80,
+        'ratio' => true,
+    ];
+
+    private const PRODI_PARAF_PLACEHOLDERS = [
+        'paraf_formulir',
+        'paraf_rekomendasi',
+        'paraf',
+        'paraf',
+    ];
+
+    private const PRODI_PARAF_IMAGE_DIMENSIONS = [
+        'width' => 80,
+        'height' => 24,
+        'ratio' => true,
+    ];
+
     public function __construct(
         private LetterAssignmentService $assignmentService,
         private AcademicSignatoryService $signatoryService,
-        private MahasiswaProfileDataService $profileDataService
+        private MahasiswaProfileDataService $profileDataService,
+        private ?BeasiswaPhaseResolver $phaseResolver = null,
+        private ?PasFotoNormalizer $pasFotoNormalizer = null,
     )
     {
+        $this->phaseResolver ??= app(BeasiswaPhaseResolver::class);
+        $this->pasFotoNormalizer ??= app(PasFotoNormalizer::class);
     }
 
     /**
@@ -29,14 +61,22 @@ class ScholarshipAutomationService
     }
 
     /**
-     * Generate populated DOCX from Google Docs template.
-     * The optional user is the approval actor; visible signatories are resolved from current official role holders.
+     * Generate a filled DOCX for a preview phase without mutating workflow state
+     * or compatibility generated_* columns. The returned path is relative to the
+     * private local disk, not the public disk.
+     *
+     * @param array<string, mixed> $pendingOverrides In-memory render values such as nomor_surat or official_kadep.
      */
-    public function generateDocument(ScholarshipApplication $application, ?User $finalApprover = null): string|false
-    {
+    public function generateDocumentForPhase(
+        ScholarshipApplication $application,
+        string $phase,
+        array $pendingOverrides = [],
+    ): string|false {
+        $this->assertValidPhase($phase);
+
         $tempTemplatePath = null;
         $tempOutputPath = null;
-        $publicPath = null;
+        $localPath = null;
 
         try {
             $templateContent = $this->fetchTemplateContent();
@@ -51,168 +91,93 @@ class ScholarshipAutomationService
                 throw new RuntimeException("Unable to create temporary scholarship directory.");
             }
 
-            $tempTemplatePath = $tempDirectory . DIRECTORY_SEPARATOR . 'template_' . $application->id . '_' . uniqid('', true) . '.docx';
+            $tempTemplatePath = $tempDirectory . DIRECTORY_SEPARATOR . 'phase_template_' . $application->id . '_' . uniqid('', true) . '.docx';
             if (file_put_contents($tempTemplatePath, $templateContent) === false) {
                 throw new RuntimeException("Unable to write temporary scholarship template.");
             }
 
-            // Load relations
-            $application->load([
+            $renderApplication = $this->applicationSnapshot($application, $pendingOverrides);
+            $renderApplication->load([
                 'mahasiswaProfile.keluarga',
                 'mahasiswaProfile.scholarshipHistories',
                 'user.studyProgram.department.faculty',
                 'user.department.faculty',
             ]);
-            $studentData = $this->profileDataService->forApplication($application);
-            $profile = $application->mahasiswaProfile;
-            $family = $profile->keluarga;
-            $officialKadep = $this->signatoryService->officialKadepForApplication($application);
 
-            if (!$officialKadep) {
+            $phaseFlags = $this->phaseResolver->phaseFlagsFor($renderApplication, $phase);
+            $studentData = $this->profileDataService->forApplication($renderApplication);
+            $profile = $renderApplication->mahasiswaProfile;
+
+            if (!$profile) {
+                throw new RuntimeException('Dokumen Beasiswa tidak dapat dibuat: profil mahasiswa tidak ditemukan.');
+            }
+
+            $family = $profile->keluarga;
+            $officialKadep = $this->officialKadepForRender($renderApplication, $pendingOverrides);
+
+            if ($phaseFlags['include_kadep_signature'] && !$officialKadep) {
                 throw new RuntimeException('Dokumen Beasiswa tidak dapat dibuat: belum ada Ketua Departemen aktif untuk program studi mahasiswa.');
             }
 
             $templateProcessor = new TemplateProcessor($tempTemplatePath);
+            $this->mapPhaseTextValues(
+                $templateProcessor,
+                $renderApplication,
+                $studentData,
+                $profile,
+                $family,
+                $officialKadep,
+                $phaseFlags,
+                $pendingOverrides,
+            );
+            $tempPasFotoPath = $this->preparePasFotoDerivative($profile->pas_foto_path ?? null, $tempDirectory);
+            $this->mapPhaseImages($templateProcessor, $profile, $officialKadep, $phaseFlags, $tempPasFotoPath);
 
-            // Fetch all variables to fix potential split tags issue (common in Google Docs exports)
-            // TemplateProcessor handles this internally but sometimes needs explicit values.
-
-            // 1. Data Utama & Akademik
-            $templateProcessor->setValue('nama', $studentData['name']);
-            $templateProcessor->setValue('nim', $studentData['nim']);
-            $templateProcessor->setValue('fakultas', $studentData['fakultas_display']);
-            $templateProcessor->setValue('prodi', $studentData['program_studi_display']);
-            $templateProcessor->setValue('email', $studentData['email']);
-            
-            $templateProcessor->setValue('ipk', (string)($application->ipk ?? '-'));
-            $templateProcessor->setValue('ipk_total', (string)($application->ipk ?? '-'));
-            $templateProcessor->setValue('ip_2', (string)($application->gpa_last_2_semesters ?? '-'));
-            $templateProcessor->setValue('sks_2', (string)($application->sks_last_2_semesters ?? '-'));
-            $templateProcessor->setValue('sksk', (string)($application->total_sks_passed ?? '-'));
-            $templateProcessor->setValue('sks_total', (string)($application->total_sks_required ?? '-'));
-            
-            $templateProcessor->setValue('semester', (string)($application->current_semester ?? '-'));
-            $templateProcessor->setValue('jenjang', $application->study_level ?? 'D4');
-            $templateProcessor->setValue('angkatan', $studentData['angkatan']);
-            $templateProcessor->setValue('tanggungan', (string)($application->family_dependents ?? '-'));
-
-            $templateProcessor->setValue('cuti_status', $application->on_leave ?? 'Belum');
-            $templateProcessor->setValue('cuti', $application->on_leave ?? 'Belum');
-            $templateProcessor->setValue('skripsi_status', $application->thesis_status ?? 'Belum');
-            $templateProcessor->setValue('rencana_ujian', $application->exam_plan_date
-                ? $this->indonesianDate($application->exam_plan_date)
-                : '-');
-            $templateProcessor->setValue('beasiswa_nama', $application->scholarship_name ?? '-');
-            $templateProcessor->setValue('nomor_surat', $application->nomor_surat ?: '-');
-            $templateProcessor->setValue('nama_kadep', $officialKadep?->name ?? '-');
-            $templateProcessor->setValue('nip_kadep', $this->signatoryService->nipLikeValue($officialKadep));
-            $templateProcessor->setValue('jabatan_kadep', 'Ketua Departemen');
-            $templateProcessor->setValue('departemen', $studentData['department_display'] ?? '-');
-            $templateProcessor->setValue('tanggal_surat', $this->indonesianDate());
-
-            // 2. TTL & Alamat
-            $templateProcessor->setValue('tempat_lahir', $studentData['tempat_lahir'] ?? '-');
-            $templateProcessor->setValue('tanggal_lahir', $studentData['tanggal_lahir'] ? $this->indonesianDate($studentData['tanggal_lahir']) : '-');
-            $templateProcessor->setValue('jenis_kelamin', $studentData['jenis_kelamin'] === 'L' ? 'Laki-laki' : ($studentData['jenis_kelamin'] === 'P' ? 'Perempuan' : '-'));
-            $templateProcessor->setValue('no_hp', $studentData['no_hp'] ?? '-');
-            $templateProcessor->setValue('alamat_asal', $studentData['alamat_asal'] ?? '-');
-            $templateProcessor->setValue('alamat_domisili', $studentData['alamat_domisili'] ?? '-');
-
-            // 3. Riwayat Beasiswa
-            $histories = $profile->scholarshipHistories;
-            $hCount = $histories->count();
-            $templateProcessor->setValue('h_status_teks', $hCount > 0 ? 'Pernah' : 'Belum Pernah');
-            if ($hCount > 0) {
-                $templateProcessor->cloneRow('h_sumber', $hCount);
-                $i = 1;
-                foreach ($histories as $h) {
-                    $templateProcessor->setValue('h_no#' . $i, $i . '.');
-                    $templateProcessor->setValue('h_sumber#' . $i, $h->nama_beasiswa ?? '-');
-                    $templateProcessor->setValue('h_periode#' . $i, $h->periode ?? '-');
-                    $templateProcessor->setValue('h_nominal#' . $i, is_numeric($h->jumlah) ? number_format((float)$h->jumlah, 0, ',', '.') : ($h->jumlah ?? '-'));
-                    $templateProcessor->setValue('h_masih#' . $i, $h->status ?? '-');
-                    $i++;
-                }
-            } else {
-                $templateProcessor->setValue('h_no', '-');
-                foreach (['h_sumber', 'h_periode', 'h_nominal', 'h_masih'] as $key) {
-                    $templateProcessor->setValue($key, '-');
-                }
+            $directory = 'letter-document-artifacts/' . ScholarshipApplication::LETTER_TYPE . '/' . $application->getKey() . '/' . $phase;
+            if (!Storage::disk('local')->exists($directory)) {
+                Storage::disk('local')->makeDirectory($directory);
             }
 
-            // 4. Data Keluarga
-            $this->mapFamilyData($templateProcessor, $family);
-
-            // 5. Data Saudara
-            $siblings = $family->where('jenis_relasi', 'saudara');
-            if ($siblings->count() > 0) {
-                $templateProcessor->cloneRow('s_nama', $siblings->count());
-                $i = 1;
-                foreach ($siblings as $sib) {
-                    $templateProcessor->setValue('s_no#' . $i, (string)$i);
-                    $templateProcessor->setValue('s_nama#' . $i, $sib->nama_lengkap);
-                    $templateProcessor->setValue('s_kerja#' . $i, $sib->pekerjaan ?? '-');
-                    $templateProcessor->setValue('s_status#' . $i, $sib->status_kawin ?? '-');
-                    $templateProcessor->setValue('s_ket#' . $i, $sib->keterangan ?? '-');
-                    $i++;
-                }
-            } else {
-                foreach(['s_no', 's_nama', 's_kerja', 's_status', 's_ket'] as $key) $templateProcessor->setValue($key, '-');
+            $filename = 'source_' . time() . '_' . str_replace('.', '', uniqid('', true)) . '.docx';
+            $localPath = $directory . '/' . $filename;
+            $savePath = Storage::disk('local')->path($localPath);
+            $saveDirectory = dirname($savePath);
+            if (!is_dir($saveDirectory) && !mkdir($saveDirectory, 0775, true) && !is_dir($saveDirectory)) {
+                throw new RuntimeException("Unable to create phase document directory.");
             }
 
-            // 6. Gambar
-            $this->mapImages($templateProcessor, $profile, $officialKadep);
-
-            // 7. Save
-            $filename = 'scholarship_application_' . $application->id . '_' . time() . '_' . str_replace('.', '', uniqid('', true)) . '.docx';
-            $publicPath = 'scholarships/' . $filename;
-            
-            if (!Storage::disk('public')->exists('scholarships')) {
-                Storage::disk('public')->makeDirectory('scholarships');
-            }
-
-            $tempOutputPath = $tempDirectory . DIRECTORY_SEPARATOR . 'generated_' . $application->id . '_' . uniqid('', true) . '.docx';
+            $tempOutputPath = $tempDirectory . DIRECTORY_SEPARATOR . 'phase_generated_' . $application->id . '_' . uniqid('', true) . '.docx';
             $templateProcessor->saveAs($tempOutputPath);
 
             if (!file_exists($tempOutputPath) || filesize($tempOutputPath) <= 0) {
-                throw new RuntimeException("Generated scholarship document is empty or missing.");
+                throw new RuntimeException("Generated scholarship phase document is empty or missing.");
             }
 
-            $savePath = Storage::disk('public')->path($publicPath);
             if (!@rename($tempOutputPath, $savePath)) {
                 if (!@copy($tempOutputPath, $savePath)) {
-                    throw new RuntimeException("Unable to move generated scholarship document into public storage.");
+                    throw new RuntimeException("Unable to move generated scholarship phase document into local storage.");
                 }
                 @unlink($tempOutputPath);
             }
 
-            if (!Storage::disk('public')->exists($publicPath)) {
-                throw new RuntimeException("Generated scholarship document was not saved.");
+            if (!Storage::disk('local')->exists($localPath)) {
+                throw new RuntimeException("Generated scholarship phase document was not saved.");
             }
 
-            return $publicPath;
-
+            return $localPath;
         } catch (\Exception $e) {
-            if ($publicPath && Storage::disk('public')->exists($publicPath)) {
-                Storage::disk('public')->delete($publicPath);
+            if ($localPath && Storage::disk('local')->exists($localPath)) {
+                Storage::disk('local')->delete($localPath);
             }
 
-            Log::error("Error generating document: " . $e->getMessage());
+            Log::error("Error generating phase document: " . $e->getMessage());
             return false;
         } finally {
-            foreach ([$tempTemplatePath, $tempOutputPath] as $tempPath) {
+            foreach ([$tempTemplatePath, $tempOutputPath, $tempPasFotoPath ?? null] as $tempPath) {
                 if ($tempPath && file_exists($tempPath)) {
                     @unlink($tempPath);
                 }
             }
-        }
-    }
-
-    public function deleteGeneratedDocument(?string $path): void
-    {
-        $publicPath = $this->normalizeGeneratedDocumentPath($path);
-        if ($publicPath && Storage::disk('public')->exists($publicPath)) {
-            Storage::disk('public')->delete($publicPath);
         }
     }
 
@@ -303,36 +268,6 @@ class ScholarshipAutomationService
         return sprintf('%02d', $d) . ' ' . $months[$m] . ' ' . $y;
     }
 
-    private function normalizeGeneratedDocumentPath(?string $path): ?string
-    {
-        if (!$path) {
-            return null;
-        }
-
-        $path = parse_url($path, PHP_URL_PATH) ?: $path;
-        $path = str_replace('\\', '/', trim($path));
-        $path = ltrim($path, '/');
-
-        if (str_starts_with($path, 'storage/')) {
-            $path = substr($path, strlen('storage/'));
-        }
-
-        if (str_starts_with($path, 'api/storage/')) {
-            $path = substr($path, strlen('api/storage/'));
-        }
-
-        if (
-            $path === ''
-            || str_contains($path, '..')
-            || !str_starts_with($path, 'scholarships/')
-            || !str_ends_with(strtolower($path), '.docx')
-        ) {
-            return null;
-        }
-
-        return $path;
-    }
-
     private function mapFamilyData(TemplateProcessor $templateProcessor, $family)
     {
         $relations = ['ayah', 'ibu', 'wali'];
@@ -350,13 +285,144 @@ class ScholarshipAutomationService
         }
     }
 
-    private function mapImages(TemplateProcessor $templateProcessor, $profile, ?User $officialKadep = null)
+    private function mapNomorSuratRekomendasiPlaceholder(TemplateProcessor $templateProcessor, mixed $nomorSurat): void
     {
-        $this->setImageOrFallback($templateProcessor, 'foto', $profile->pas_foto_path, [
-            'width' => 110,
-            'height' => 150,
-            'ratio' => false,
-        ], '(Tidak Ada)');
+        $value = trim((string) ($nomorSurat ?? ''));
+        $value = $value !== '' ? $value : '-';
+
+        $templateProcessor->setValue('nomor_surat_rekomendasi', $value);
+    }
+
+    /**
+     * The template composes `${jabatan_kadep} ${departemen}`. Keep the role
+     * title semantic and strip any repeated unit prefix from the department.
+     *
+     * @param array<string, mixed> $studentData
+     */
+    private function mapKadepOfficeTitle(TemplateProcessor $templateProcessor, array $studentData): void
+    {
+        $departmentName = $studentData['department_display'] ?? '-';
+
+        $templateProcessor->setValue('jabatan_kadep', $this->signatoryService->academicOfficeRoleTitle('kadep'));
+        $templateProcessor->setValue('departemen', $this->signatoryService->academicOfficeUnitName('kadep', $departmentName));
+    }
+
+    /**
+     * @param array{include_nomor_surat: bool, include_prodi_paraf: bool, include_kadep_signature: bool} $phaseFlags
+     * @param array<string, mixed> $pendingOverrides
+     */
+    private function mapPhaseTextValues(
+        TemplateProcessor $templateProcessor,
+        ScholarshipApplication $application,
+        array $studentData,
+        $profile,
+        $family,
+        ?User $officialKadep,
+        array $phaseFlags,
+        array $pendingOverrides,
+    ): void {
+        $templateProcessor->setValue('nama', $studentData['name']);
+        $templateProcessor->setValue('nim', $studentData['nim']);
+        $templateProcessor->setValue('fakultas', $studentData['fakultas_display']);
+        $templateProcessor->setValue('prodi', $studentData['program_studi_display']);
+        $templateProcessor->setValue('email', $studentData['email']);
+
+        $templateProcessor->setValue('ipk', (string)($application->ipk ?? '-'));
+        $templateProcessor->setValue('ipk_total', (string)($application->ipk ?? '-'));
+        $templateProcessor->setValue('ip_2', (string)($application->gpa_last_2_semesters ?? '-'));
+        $templateProcessor->setValue('sks_2', (string)($application->sks_last_2_semesters ?? '-'));
+        $templateProcessor->setValue('sksk', (string)($application->total_sks_passed ?? '-'));
+        $templateProcessor->setValue('sks_total', (string)($application->total_sks_required ?? '-'));
+
+        $templateProcessor->setValue('semester', (string)($application->current_semester ?? '-'));
+        $templateProcessor->setValue('jenjang', $application->study_level ?? 'D4');
+        $templateProcessor->setValue('angkatan', $studentData['angkatan']);
+        $templateProcessor->setValue('tanggungan', (string)($application->family_dependents ?? '-'));
+
+        $templateProcessor->setValue('cuti_status', $application->on_leave ?? 'Belum');
+        $templateProcessor->setValue('cuti', $application->on_leave ?? 'Belum');
+        $templateProcessor->setValue('skripsi_status', $application->thesis_status ?? 'Belum');
+        $templateProcessor->setValue('rencana_ujian', $application->exam_plan_date
+            ? $this->indonesianDate($application->exam_plan_date)
+            : '-');
+        $templateProcessor->setValue('beasiswa_nama', $application->scholarship_name ?? '-');
+        $this->mapNomorSuratRekomendasiPlaceholder(
+            $templateProcessor,
+            $phaseFlags['include_nomor_surat'] ? $application->nomor_surat : null,
+        );
+        $templateProcessor->setValue('nama_kadep', $officialKadep?->name ?? '-');
+        $templateProcessor->setValue('nip_kadep', $this->signatoryService->nipLikeValue($officialKadep));
+        $this->mapKadepOfficeTitle($templateProcessor, $studentData);
+        $templateProcessor->setValue('tanggal_surat', $this->indonesianDate($pendingOverrides['tanggal_surat'] ?? null));
+
+        $templateProcessor->setValue('tempat_lahir', $studentData['tempat_lahir'] ?? '-');
+        $templateProcessor->setValue('tanggal_lahir', $studentData['tanggal_lahir'] ? $this->indonesianDate($studentData['tanggal_lahir']) : '-');
+        $templateProcessor->setValue('jenis_kelamin', $studentData['jenis_kelamin'] === 'L' ? 'Laki-laki' : ($studentData['jenis_kelamin'] === 'P' ? 'Perempuan' : '-'));
+        $templateProcessor->setValue('no_hp', $studentData['no_hp'] ?? '-');
+        $templateProcessor->setValue('alamat_asal', $studentData['alamat_asal'] ?? '-');
+        $templateProcessor->setValue('alamat_domisili', $studentData['alamat_domisili'] ?? '-');
+
+        $histories = $profile->scholarshipHistories;
+        $hCount = $histories->count();
+        $templateProcessor->setValue('h_status_teks', $hCount > 0 ? 'Pernah' : 'Belum Pernah');
+        if ($hCount > 0) {
+            $templateProcessor->cloneRow('h_sumber', $hCount);
+            $i = 1;
+            foreach ($histories as $h) {
+                $templateProcessor->setValue('h_no#' . $i, $i . '.');
+                $templateProcessor->setValue('h_sumber#' . $i, $h->nama_beasiswa ?? '-');
+                $templateProcessor->setValue('h_periode#' . $i, $h->periode ?? '-');
+                $templateProcessor->setValue('h_nominal#' . $i, is_numeric($h->jumlah) ? number_format((float)$h->jumlah, 0, ',', '.') : ($h->jumlah ?? '-'));
+                $templateProcessor->setValue('h_masih#' . $i, $h->status ?? '-');
+                $i++;
+            }
+        } else {
+            $templateProcessor->setValue('h_no', '-');
+            foreach (['h_sumber', 'h_periode', 'h_nominal', 'h_masih'] as $key) {
+                $templateProcessor->setValue($key, '-');
+            }
+        }
+
+        $this->mapFamilyData($templateProcessor, $family);
+
+        $siblings = $family->where('jenis_relasi', 'saudara');
+        if ($siblings->count() > 0) {
+            $templateProcessor->cloneRow('s_nama', $siblings->count());
+            $i = 1;
+            foreach ($siblings as $sib) {
+                $templateProcessor->setValue('s_no#' . $i, (string)$i);
+                $templateProcessor->setValue('s_nama#' . $i, $sib->nama_lengkap);
+                $templateProcessor->setValue('s_kerja#' . $i, $sib->pekerjaan ?? '-');
+                $templateProcessor->setValue('s_status#' . $i, $sib->status_kawin ?? '-');
+                $templateProcessor->setValue('s_ket#' . $i, $sib->keterangan ?? '-');
+                $i++;
+            }
+        } else {
+            foreach (['s_no', 's_nama', 's_kerja', 's_status', 's_ket'] as $key) {
+                $templateProcessor->setValue($key, '-');
+            }
+        }
+    }
+
+    /**
+     * @param array{include_nomor_surat: bool, include_prodi_paraf: bool, include_kadep_signature: bool} $phaseFlags
+     */
+    private function mapPhaseImages(
+        TemplateProcessor $templateProcessor,
+        $profile,
+        ?User $officialKadep,
+        array $phaseFlags,
+        ?string $normalizedPasFotoPath = null,
+    ): void
+    {
+        $this->setPasFotoOrFallback(
+            $templateProcessor,
+            'foto',
+            $normalizedPasFotoPath,
+            $profile->pas_foto_path,
+            ['width' => 110, 'height' => 150, 'ratio' => false],
+            '(Tidak Ada)',
+        );
 
         $this->setImageOrFallback($templateProcessor, 'tanda_tangan', $profile->tanda_tangan_path, [
             'width' => 150,
@@ -364,17 +430,123 @@ class ScholarshipAutomationService
             'ratio' => true,
         ], '(Tidak Ada)');
 
-        $this->setImageOrFallback($templateProcessor, 'ttd_kadep', $officialKadep?->signature_path, [
-            'width' => 150,
-            'height' => 80,
-            'ratio' => true,
-        ], '(Tanda tangan belum tersedia)');
+        if ($phaseFlags['include_kadep_signature']) {
+            $this->setImageOrFallbackForPlaceholders(
+                $templateProcessor,
+                self::KADEP_TTD_PLACEHOLDERS,
+                $officialKadep?->signature_path,
+                self::KADEP_TTD_IMAGE_DIMENSIONS,
+                '(Tanda tangan belum tersedia)',
+            );
+        } else {
+            $this->blankPlaceholders($templateProcessor, self::KADEP_TTD_PLACEHOLDERS);
+        }
 
-        $this->setLocalImageOrFallback($templateProcessor, 'paraf', $this->signatoryService->globalParafFilePath(), [
-            'width' => 80,
-            'height' => 45,
-            'ratio' => true,
-        ], '(Paraf belum tersedia)');
+        if ($phaseFlags['include_prodi_paraf']) {
+            $this->setLocalImageOrFallbackForPlaceholders(
+                $templateProcessor,
+                self::PRODI_PARAF_PLACEHOLDERS,
+                $this->signatoryService->globalParafFilePath(),
+                self::PRODI_PARAF_IMAGE_DIMENSIONS,
+                '(Paraf belum tersedia)',
+            );
+        } else {
+            $this->blankPlaceholders($templateProcessor, self::PRODI_PARAF_PLACEHOLDERS);
+        }
+    }
+
+    /**
+     * @param list<string> $placeholders
+     * @param array<string, mixed> $dimensions
+     */
+    private function setImageOrFallbackForPlaceholders(
+        TemplateProcessor $templateProcessor,
+        array $placeholders,
+        ?string $path,
+        array $dimensions,
+        string $fallback,
+    ): void {
+        foreach ($placeholders as $placeholder) {
+            $this->setImageOrFallback($templateProcessor, $placeholder, $path, $dimensions, $fallback);
+        }
+    }
+
+    /**
+     * @param list<string> $placeholders
+     * @param array<string, mixed> $dimensions
+     */
+    private function setLocalImageOrFallbackForPlaceholders(
+        TemplateProcessor $templateProcessor,
+        array $placeholders,
+        ?string $path,
+        array $dimensions,
+        string $fallback,
+    ): void {
+        foreach ($placeholders as $placeholder) {
+            $this->setLocalImageOrFallback($templateProcessor, $placeholder, $path, $dimensions, $fallback);
+        }
+    }
+
+    /**
+     * @param list<string> $placeholders
+     */
+    private function blankPlaceholders(TemplateProcessor $templateProcessor, array $placeholders): void
+    {
+        foreach ($placeholders as $placeholder) {
+            $templateProcessor->setValue($placeholder, '');
+        }
+    }
+
+    /**
+     * Build a temp 600x800 JPEG derivative from the stored pas foto. Returns the
+     * absolute temp path on success, or null if the source cannot be resolved or
+     * GD fails — in which case generation falls back to the original file. The
+     * original pas foto is never mutated.
+     */
+    private function preparePasFotoDerivative(?string $publicPath, string $tempDirectory): ?string
+    {
+        $resolved = $this->normalizePublicStoragePath($publicPath);
+        if (!$resolved || !Storage::disk('public')->exists($resolved)) {
+            return null;
+        }
+
+        try {
+            return $this->pasFotoNormalizer->normalizeFromPath(
+                Storage::disk('public')->path($resolved),
+                $tempDirectory,
+            );
+        } catch (\Throwable $exception) {
+            Log::warning('Pas foto normalization for document generation failed: ' . $exception->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Insert the pas foto placeholder. Prefer the normalized temp derivative
+     * when present; otherwise fall back to the original stored file so legacy
+     * data still renders. Display dimensions are fixed; only embedded pixel
+     * payload changes.
+     */
+    private function setPasFotoOrFallback(
+        TemplateProcessor $templateProcessor,
+        string $placeholder,
+        ?string $normalizedPath,
+        ?string $originalPublicPath,
+        array $dimensions,
+        string $fallback,
+    ): void {
+        if ($normalizedPath && is_file($normalizedPath)) {
+            try {
+                $templateProcessor->setImageValue($placeholder, array_merge([
+                    'path' => $normalizedPath,
+                ], $dimensions));
+                return;
+            } catch (\Throwable $exception) {
+                Log::warning("Unable to insert normalized pas foto for placeholder {$placeholder}: " . $exception->getMessage());
+            }
+        }
+
+        $this->setImageOrFallback($templateProcessor, $placeholder, $originalPublicPath, $dimensions, $fallback);
     }
 
     private function setImageOrFallback(
@@ -446,5 +618,45 @@ class ScholarshipAutomationService
         }
 
         return $path;
+    }
+
+    private function assertValidPhase(string $phase): void
+    {
+        if (!in_array($phase, LetterDocumentArtifact::PHASES, true)) {
+            throw new InvalidArgumentException("Unsupported Beasiswa document phase: {$phase}");
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $pendingOverrides
+     */
+    private function applicationSnapshot(ScholarshipApplication $application, array $pendingOverrides): ScholarshipApplication
+    {
+        $snapshot = $application->newInstance($application->getAttributes(), true);
+        $snapshot->setAttribute($application->getKeyName(), $application->getKey());
+        $snapshot->exists = $application->exists;
+        $snapshot->setRelations($application->getRelations());
+
+        foreach (['nomor_surat'] as $attribute) {
+            if (array_key_exists($attribute, $pendingOverrides)) {
+                $snapshot->setAttribute($attribute, $pendingOverrides[$attribute]);
+            }
+        }
+
+        return $snapshot;
+    }
+
+    /**
+     * @param array<string, mixed> $pendingOverrides
+     */
+    private function officialKadepForRender(ScholarshipApplication $application, array $pendingOverrides): ?User
+    {
+        foreach (['official_kadep', 'kadep_user'] as $key) {
+            if (($pendingOverrides[$key] ?? null) instanceof User) {
+                return $pendingOverrides[$key];
+            }
+        }
+
+        return $this->signatoryService->officialKadepForApplication($application);
     }
 }

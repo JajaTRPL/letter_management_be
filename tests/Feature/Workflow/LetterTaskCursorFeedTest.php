@@ -68,17 +68,13 @@ class LetterTaskCursorFeedTest extends TestCase
             $this->atSortTime($this->magangApplication(null, ['assigned_to' => $tendik->id]), '2026-05-12 09:00:00'),
             $this->atSortTime($this->aktifApplication(null, ['assigned_to' => $tendik->id]), '2026-05-12 08:00:00'),
             $this->atSortTime($this->prosesLuarNegeriApplication(null, ['assigned_to' => $tendik->id]), '2026-05-12 07:00:00'),
-            $this->atSortTime($this->scholarshipApplication(null, [
-                'assigned_to' => $tendik->id,
-                'status' => ScholarshipApplication::STATUS_APPROVED_TENDIK,
-            ]), '2026-05-12 06:00:00'),
         ])->map(fn (Model $task): string => $this->modelKey($task))->sort()->values()->all();
 
         $pages = $this->fetchCursorPages($tendik, '/api/tendik/dashboard/tasks', 2);
 
-        $this->assertSame([2, 2, 1], $pages->pluck('count')->all());
-        $this->assertSame([true, true, false], $pages->pluck('has_more')->all());
-        $this->assertSame([2, 2, 2], $pages->pluck('page_size')->all());
+        $this->assertSame([2, 2], $pages->pluck('count')->all());
+        $this->assertSame([true, false], $pages->pluck('has_more')->all());
+        $this->assertSame([2, 2], $pages->pluck('page_size')->all());
 
         $actual = $pages
             ->flatMap(fn (array $page): array => $page['tasks'])
@@ -128,7 +124,7 @@ class LetterTaskCursorFeedTest extends TestCase
         $this->assertSame([$newerScholarship->id, $olderScholarship->id], $scholarshipIds);
     }
 
-    public function test_tendik_cursor_preserves_assignment_rules_and_beasiswa_active_asymmetry(): void
+    public function test_tendik_cursor_preserves_assignment_rules_and_actionable_status_bucket(): void
     {
         $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
         $otherTendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
@@ -156,7 +152,7 @@ class LetterTaskCursorFeedTest extends TestCase
             ->json('tasks');
 
         $this->assertTaskPresent($tasks, ScholarshipApplication::LETTER_TYPE, $unassignedSubmitted->id);
-        $this->assertTaskPresent($tasks, ScholarshipApplication::LETTER_TYPE, $assignedApprovedTendik->id);
+        $this->assertTaskMissing($tasks, ScholarshipApplication::LETTER_TYPE, $assignedApprovedTendik->id);
         $this->assertTaskMissing($tasks, ScholarshipApplication::LETTER_TYPE, $unassignedApprovedTendik->id);
         $this->assertTaskMissing($tasks, ScholarshipApplication::LETTER_TYPE, $assignedRejected->id);
         $this->assertTaskMissing($tasks, ScholarshipApplication::LETTER_TYPE, $assignedToOther->id);
@@ -168,6 +164,7 @@ class LetterTaskCursorFeedTest extends TestCase
         $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
 
         $visible = collect([
+            $this->scholarshipApplication(null, ['assigned_to' => $tendik->id, 'status' => ScholarshipApplication::STATUS_APPROVED_TENDIK]),
             $this->scholarshipApplication(null, ['assigned_to' => $tendik->id, 'status' => ScholarshipApplication::STATUS_REVISION]),
             $this->scholarshipApplication(null, ['assigned_to' => $tendik->id, 'status' => ScholarshipApplication::STATUS_REJECTED]),
             $this->scholarshipApplication(null, ['assigned_to' => $tendik->id, 'status' => ScholarshipApplication::STATUS_APPROVED_KAPRODI]),
@@ -178,10 +175,6 @@ class LetterTaskCursorFeedTest extends TestCase
             'assigned_to' => $tendik->id,
             'status' => ScholarshipApplication::STATUS_SUBMITTED,
         ]);
-        $approvedTendik = $this->scholarshipApplication(null, [
-            'assigned_to' => $tendik->id,
-            'status' => ScholarshipApplication::STATUS_APPROVED_TENDIK,
-        ]);
 
         $tasks = $this->actingAs($tendik, 'sanctum')
             ->getJson('/api/tendik/riwayat?page_size=20')
@@ -190,7 +183,6 @@ class LetterTaskCursorFeedTest extends TestCase
 
         $visible->each(fn (ScholarshipApplication $task) => $this->assertTaskPresent($tasks, ScholarshipApplication::LETTER_TYPE, $task->id));
         $this->assertTaskMissing($tasks, ScholarshipApplication::LETTER_TYPE, $submitted->id);
-        $this->assertTaskMissing($tasks, ScholarshipApplication::LETTER_TYPE, $approvedTendik->id);
     }
 
     public function test_cursor_mode_tasks_preserve_existing_dto_fields(): void

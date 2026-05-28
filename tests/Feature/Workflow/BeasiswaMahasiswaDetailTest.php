@@ -72,7 +72,7 @@ class BeasiswaMahasiswaDetailTest extends TestCase
         ]);
     }
 
-    public function test_show_redacts_generated_docx_path_until_completed(): void
+    public function test_show_returns_null_legacy_document_compatibility_field_for_review_and_completed_statuses(): void
     {
         Storage::fake('public');
 
@@ -80,7 +80,6 @@ class BeasiswaMahasiswaDetailTest extends TestCase
 
         $readyApplication = $this->scholarshipApplication($student, [
             'status' => ScholarshipApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-            'generated_docx_path' => 'scholarships/sample.docx',
         ]);
 
         $readyResponse = $this->actingAs($student, 'sanctum')
@@ -90,14 +89,69 @@ class BeasiswaMahasiswaDetailTest extends TestCase
 
         $completedApplication = $this->scholarshipApplication($student, [
             'status' => ScholarshipApplication::STATUS_COMPLETED,
-            'generated_docx_path' => 'scholarships/final.docx',
             'completed_at' => now(),
         ]);
 
         $completedResponse = $this->actingAs($student, 'sanctum')
             ->getJson("/api/mahasiswa/surat-permohonan-beasiswa/{$completedApplication->id}");
         $completedResponse->assertOk();
-        $this->assertSame('scholarships/final.docx', $completedResponse->json('application.generated_docx_path'));
+        $this->assertNull($completedResponse->json('application.generated_docx_path'));
+    }
+
+    public function test_completed_application_does_not_block_step_one_and_remains_in_history(): void
+    {
+        Storage::fake('public');
+
+        [$student] = $this->completeMahasiswa();
+        $completed = $this->scholarshipApplication($student, [
+            'scholarship_name' => 'Beasiswa Semester 4',
+            'status' => ScholarshipApplication::STATUS_COMPLETED,
+            'completed_at' => now(),
+        ]);
+
+        // step-1 must report no in-flight application so the FE can open a fresh form.
+        $this->actingAs($student, 'sanctum')
+            ->getJson('/api/mahasiswa/surat-permohonan-beasiswa/step-1')
+            ->assertOk()
+            ->assertJsonPath('application', null);
+
+        // The completed row must still appear in history with its status intact.
+        $history = $this->actingAs($student, 'sanctum')
+            ->getJson('/api/mahasiswa/surat-permohonan-beasiswa/applications')
+            ->assertOk()
+            ->json('applications');
+
+        $this->assertIsArray($history);
+        $ids = array_column($history, 'id');
+        $this->assertContains($completed->id, $ids);
+        $statusById = array_column($history, 'status', 'id');
+        $this->assertSame(ScholarshipApplication::STATUS_COMPLETED, $statusById[$completed->id]);
+    }
+
+    public function test_submitted_application_is_returned_as_in_flight_by_step_one(): void
+    {
+        Storage::fake('public');
+
+        [$student] = $this->completeMahasiswa();
+        $submitted = $this->scholarshipApplication($student, [
+            'status' => ScholarshipApplication::STATUS_SUBMITTED,
+        ]);
+
+        // Existing Submitted application is not editable, so step-1 still returns null
+        // (the FE form-opener uses /applications to detect in-flight readonly states).
+        $this->actingAs($student, 'sanctum')
+            ->getJson('/api/mahasiswa/surat-permohonan-beasiswa/step-1')
+            ->assertOk()
+            ->assertJsonPath('application', null);
+
+        // /applications must surface the Submitted row so the FE routes to detail.
+        $history = $this->actingAs($student, 'sanctum')
+            ->getJson('/api/mahasiswa/surat-permohonan-beasiswa/applications')
+            ->assertOk()
+            ->json('applications');
+
+        $statusById = array_column($history, 'status', 'id');
+        $this->assertSame(ScholarshipApplication::STATUS_SUBMITTED, $statusById[$submitted->id]);
     }
 
     public function test_static_routes_take_precedence_over_dynamic_detail_route(): void

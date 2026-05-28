@@ -2,20 +2,35 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Concerns\AuthorizesAcademicApplications;
+use App\Models\LetterDocumentArtifact;
 use App\Models\SuratKeteranganAktifApplication;
+use App\Services\AcademicRoutingService;
+use App\Services\LetterAssignmentService;
 use App\Services\LetterDocumentAccessService;
+use App\Services\LetterDocumentArtifactService;
+use App\Services\MahasiswaProfileDataService;
+use App\Services\SuratKeteranganAktifPreviewGenerationException;
+use App\Services\SuratKeteranganAktifPreviewGenerationService;
 use App\Services\SuratKeteranganAktifService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
+use RuntimeException;
 
 class SuratKeteranganAktifController extends Controller
 {
-    private const GENERATED_PDF_PREFIX = 'surat-keterangan-aktif/generated/';
+    use AuthorizesAcademicApplications;
 
-    public function __construct(private LetterDocumentAccessService $documentAccessService)
-    {
+    public function __construct(
+        private LetterDocumentAccessService $documentAccessService,
+        private LetterAssignmentService $assignmentService,
+        private AcademicRoutingService $academicRoutingService,
+        private MahasiswaProfileDataService $profileDataService
+    ) {
     }
 
     public function getApplications()
@@ -51,6 +66,7 @@ class SuratKeteranganAktifController extends Controller
                 'study_program' => $user->studyProgram,
             ],
             'profile' => $user->mahasiswaProfile,
+            'profile_summary' => $this->profileDataService->profileSummaryForUser($user),
             'application' => $application,
         ]);
     }
@@ -82,7 +98,10 @@ class SuratKeteranganAktifController extends Controller
         ]);
     }
 
-    public function submitApplication(SuratKeteranganAktifService $service)
+    public function submitApplication(
+        SuratKeteranganAktifService $service,
+        SuratKeteranganAktifPreviewGenerationService $previewGenerationService,
+    )
     {
         $application = SuratKeteranganAktifApplication::where('user_id', Auth::id())
             ->whereIn('status', [
@@ -97,14 +116,61 @@ class SuratKeteranganAktifController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        $application->update([
-            'status' => SuratKeteranganAktifApplication::STATUS_SUBMITTED,
-            'submitted_at' => now(),
-            'revision_note' => null,
-            'rejection_reason' => null,
-        ]);
+        $submittedAt = now();
+        $actorId = Auth::id();
 
-        $assignedTendik = $service->assignApplication($application);
+        try {
+            $previewGenerationService->generateForPhase(
+                $application,
+                LetterDocumentArtifact::PHASE_TENDIK_REVIEW,
+                [
+                    'status' => SuratKeteranganAktifApplication::STATUS_SUBMITTED,
+                    'submitted_at' => $submittedAt,
+                    'tanggal_surat' => $submittedAt,
+                ],
+                $actorId,
+            );
+        } catch (SuratKeteranganAktifPreviewGenerationException $exception) {
+            report($exception);
+
+            return response()->json([
+                'message' => 'Dokumen pratinjau pengajuan belum dapat dibuat. Silakan coba lagi.',
+            ], 503);
+        }
+
+        try {
+            [$application, $assignedTendik] = DB::transaction(function () use ($application, $service, $submittedAt) {
+                $lockedApplication = SuratKeteranganAktifApplication::query()
+                    ->whereKey($application->getKey())
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                if (
+                    (int) $lockedApplication->user_id !== (int) Auth::id()
+                    || !in_array($lockedApplication->status, [
+                        SuratKeteranganAktifApplication::STATUS_DRAFT,
+                        SuratKeteranganAktifApplication::STATUS_REVISION,
+                    ], true)
+                ) {
+                    throw new RuntimeException('SKA application is no longer submittable.');
+                }
+
+                $lockedApplication->update([
+                    'status' => SuratKeteranganAktifApplication::STATUS_SUBMITTED,
+                    'submitted_at' => $submittedAt,
+                    'revision_note' => null,
+                    'rejection_reason' => null,
+                ]);
+
+                $assignedTendik = $service->assignApplication($lockedApplication);
+
+                return [$lockedApplication->fresh(), $assignedTendik];
+            });
+        } catch (RuntimeException $exception) {
+            return response()->json([
+                'message' => 'Pengajuan sudah berubah dan tidak dapat dikirim ulang.',
+            ], 409);
+        }
 
         return response()->json([
             'message' => 'Pengajuan Surat Keterangan Aktif berhasil dikirim',
@@ -116,29 +182,48 @@ class SuratKeteranganAktifController extends Controller
     public function showForMahasiswa(SuratKeteranganAktifApplication $application)
     {
         $this->documentAccessService->ensureOwner($application, Auth::user());
+        $application->load([
+            'user.studyProgram.department.faculty',
+            'user.department.faculty',
+            'mahasiswaProfile',
+            'assignedTendik',
+        ]);
 
         return response()->json([
-            'application' => $this->forMahasiswaResponse($application->load(['mahasiswaProfile', 'assignedTendik'])),
+            'application' => $this->forMahasiswaResponse($application),
+            'profile_summary' => $this->profileDataService->profileSummaryForApplication($application),
         ]);
     }
 
     public function showForReviewer(SuratKeteranganAktifApplication $application)
     {
+        $this->authorizeTendikDetailIfApplicable(SuratKeteranganAktifApplication::LETTER_TYPE);
+        $this->authorizeAcademicDetailIfApplicable($application);
+
         // Load the canonical academic chain so the FE can render Prodi / Fakultas / Departemen
         // from the relation tree instead of the legacy mahasiswa_profiles.{program_studi,fakultas}
         // text columns (which may be null for admin-created accounts and are being deprecated).
+        $application->load([
+            'user.studyProgram.department.faculty',
+            'user.department.faculty',
+            'mahasiswaProfile',
+            'assignedTendik',
+        ]);
+
         return response()->json([
-            'application' => $application->load([
-                'user.studyProgram.department.faculty',
-                'user.department.faculty',
-                'mahasiswaProfile',
-                'assignedTendik',
-            ]),
+            'application' => $application,
+            'profile_summary' => $this->profileDataService->profileSummaryForApplication($application),
         ]);
     }
 
-    public function approveByTendik(Request $request, SuratKeteranganAktifApplication $application)
+    public function approveByTendik(
+        Request $request,
+        SuratKeteranganAktifApplication $application,
+        SuratKeteranganAktifPreviewGenerationService $previewGenerationService,
+    )
     {
+        $this->authorizeTendikAction(SuratKeteranganAktifApplication::LETTER_TYPE);
+
         $validator = Validator::make($request->all(), [
             'nomor_surat' => 'required|string|max:100',
         ]);
@@ -150,23 +235,75 @@ class SuratKeteranganAktifController extends Controller
             return response()->json(['message' => 'Pengajuan tidak berada pada tahap verifikasi Tendik.'], 422);
         }
 
-        $application->update([
-            'status' => SuratKeteranganAktifApplication::STATUS_APPROVED_TENDIK,
-            'nomor_surat' => $request->nomor_surat,
-            'assigned_to' => $application->assigned_to ?: Auth::id(),
-            'tendik_approved_at' => now(),
-            'revision_note' => null,
-            'rejection_reason' => null,
-        ]);
+        $approvedAt = now();
+        $actorId = Auth::id();
+        $nomorSurat = $request->input('nomor_surat');
+
+        try {
+            $previewGenerationService->generateForPhase(
+                $application,
+                LetterDocumentArtifact::PHASE_PRODI_REVIEW,
+                [
+                    'status' => SuratKeteranganAktifApplication::STATUS_APPROVED_TENDIK,
+                    'nomor_surat' => $nomorSurat,
+                    'tendik_approved_at' => $approvedAt,
+                    'tendik_approved_by' => $actorId,
+                    'tanggal_surat' => $approvedAt,
+                ],
+                $actorId,
+            );
+        } catch (SuratKeteranganAktifPreviewGenerationException $exception) {
+            report($exception);
+
+            return response()->json([
+                'message' => 'Dokumen pratinjau verifikasi belum dapat dibuat. Silakan coba lagi.',
+            ], 503);
+        }
+
+        try {
+            $application = DB::transaction(function () use ($application, $approvedAt, $actorId, $nomorSurat) {
+                $lockedApplication = SuratKeteranganAktifApplication::query()
+                    ->whereKey($application->getKey())
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                $actor = Auth::user()?->fresh();
+                if (
+                    !$actor
+                    || !$this->assignmentService->canHandleAny($actor, SuratKeteranganAktifApplication::LETTER_TYPE)
+                    || $lockedApplication->status !== SuratKeteranganAktifApplication::STATUS_SUBMITTED
+                ) {
+                    throw new RuntimeException('SKA application is no longer approvable by Tendik.');
+                }
+
+                $lockedApplication->update([
+                    'status' => SuratKeteranganAktifApplication::STATUS_APPROVED_TENDIK,
+                    'nomor_surat' => $nomorSurat,
+                    'assigned_to' => $lockedApplication->assigned_to ?: $actorId,
+                    'tendik_approved_at' => $approvedAt,
+                    'tendik_approved_by' => $actorId,
+                    'revision_note' => null,
+                    'rejection_reason' => null,
+                ]);
+
+                return $lockedApplication->fresh();
+            });
+        } catch (RuntimeException $exception) {
+            return response()->json([
+                'message' => 'Pengajuan sudah berubah dan tidak dapat diverifikasi ulang.',
+            ], 409);
+        }
 
         return response()->json([
             'message' => 'Pengajuan berhasil diverifikasi dan diteruskan ke Kaprodi/Sekprodi',
-            'application' => $application->fresh(),
+            'application' => $application,
         ]);
     }
 
     public function reviseByTendik(Request $request, SuratKeteranganAktifApplication $application)
     {
+        $this->authorizeTendikAction(SuratKeteranganAktifApplication::LETTER_TYPE);
+
         return $this->markRevision($request, $application, [
             SuratKeteranganAktifApplication::STATUS_SUBMITTED,
         ]);
@@ -174,107 +311,197 @@ class SuratKeteranganAktifController extends Controller
 
     public function rejectByTendik(Request $request, SuratKeteranganAktifApplication $application)
     {
+        $this->authorizeTendikAction(SuratKeteranganAktifApplication::LETTER_TYPE);
+
         return $this->markRejected($request, $application, [
             SuratKeteranganAktifApplication::STATUS_SUBMITTED,
         ]);
     }
 
-    public function approveByAkademik(SuratKeteranganAktifApplication $application, SuratKeteranganAktifService $service)
+    private function authorizeTendikAction(string $letterType): void
+    {
+        $user = Auth::user();
+        if (!$this->assignmentService->canHandleAny($user, $letterType)) {
+            abort(403, 'Tidak berwenang memproses pengajuan ini.');
+        }
+    }
+
+    private function authorizeTendikDetailIfApplicable(string $letterType): void
+    {
+        $user = Auth::user();
+        if ($user?->role !== 'tendik') {
+            return;
+        }
+
+        if (!$this->assignmentService->canHandleAny($user, $letterType)) {
+            abort(403, 'Tidak berwenang melihat detail pengajuan ini.');
+        }
+    }
+
+    private function authorizeAcademicDetailIfApplicable(SuratKeteranganAktifApplication $application): void
+    {
+        if (Auth::user()?->role !== 'akademik') {
+            return;
+        }
+
+        $this->authorizeAcademicDetail($application, $this->academicRoutingService);
+    }
+
+    public function approveByAkademik(
+        SuratKeteranganAktifApplication $application,
+        SuratKeteranganAktifPreviewGenerationService $previewGenerationService,
+    )
     {
         $subRole = Auth::user()->sub_role;
+        $guardResponse = $this->guardAcademicAction(
+            $application,
+            $this->academicRoutingService,
+            SuratKeteranganAktifApplication::STATUS_APPROVED_TENDIK,
+            SuratKeteranganAktifApplication::STATUS_APPROVED_KAPRODI,
+            'Pengajuan tidak berada pada tahap persetujuan Kaprodi/Sekprodi.',
+            'Pengajuan tidak berada pada tahap persetujuan Kadep/Sekdep.'
+        );
+        if ($guardResponse) {
+            return $guardResponse;
+        }
 
         if (in_array($subRole, ['kaprodi', 'sekprodi'], true)) {
             if ($application->status !== SuratKeteranganAktifApplication::STATUS_APPROVED_TENDIK) {
                 return response()->json(['message' => 'Pengajuan tidak berada pada tahap persetujuan Kaprodi/Sekprodi.'], 422);
             }
 
-            $application->update([
-                'status' => SuratKeteranganAktifApplication::STATUS_APPROVED_KAPRODI,
-                'kaprodi_approved_at' => now(),
-                'kaprodi_approved_by' => Auth::id(),
-                'revision_note' => null,
-                'rejection_reason' => null,
-            ]);
+            $approvedAt = now();
+            $actorId = Auth::id();
 
-            return response()->json([
-                'message' => 'Pengajuan disetujui dan diteruskan ke Kadep/Sekdep',
-                'application' => $application->fresh(),
-            ]);
-        }
-
-        if (in_array($subRole, ['kadep', 'sekdep'], true)) {
             try {
-                return DB::transaction(function () use ($application, $service) {
-                    $lockedApplication = SuratKeteranganAktifApplication::whereKey($application->id)
+                $previewGenerationService->generateForPhase(
+                    $application,
+                    LetterDocumentArtifact::PHASE_DEPARTEMEN_REVIEW,
+                    [
+                        'status' => SuratKeteranganAktifApplication::STATUS_APPROVED_KAPRODI,
+                        'kaprodi_approved_at' => $approvedAt,
+                        'kaprodi_approved_by' => $actorId,
+                    ],
+                    $actorId,
+                );
+            } catch (SuratKeteranganAktifPreviewGenerationException $exception) {
+                report($exception);
+
+                return response()->json([
+                    'message' => 'Dokumen pratinjau persetujuan Prodi belum dapat dibuat. Silakan coba lagi.',
+                ], 503);
+            }
+
+            try {
+                $application = DB::transaction(function () use ($application, $approvedAt, $actorId) {
+                    $lockedApplication = SuratKeteranganAktifApplication::query()
+                        ->whereKey($application->getKey())
                         ->lockForUpdate()
                         ->firstOrFail();
 
-                    if ($lockedApplication->status !== SuratKeteranganAktifApplication::STATUS_APPROVED_KAPRODI) {
-                        return response()->json(['message' => 'Pengajuan tidak berada pada tahap persetujuan Kadep/Sekdep.'], 422);
+                    $actor = Auth::user()?->fresh();
+                    if (
+                        !$actor
+                        || !$this->academicRoutingService->canHandleProdiStage($actor, $lockedApplication)
+                        || $lockedApplication->status !== SuratKeteranganAktifApplication::STATUS_APPROVED_TENDIK
+                    ) {
+                        throw new RuntimeException('SKA application is no longer approvable by Prodi.');
                     }
 
-                    $shouldGeneratePdf = empty($lockedApplication->generated_pdf_path);
-
                     $lockedApplication->update([
-                        'status' => SuratKeteranganAktifApplication::STATUS_READY_FOR_STUDENT_REVIEW,
-                        'kadep_approved_at' => now(),
-                        'kadep_approved_by' => Auth::id(),
+                        'status' => SuratKeteranganAktifApplication::STATUS_APPROVED_KAPRODI,
+                        'kaprodi_approved_at' => $approvedAt,
+                        'kaprodi_approved_by' => $actorId,
                         'revision_note' => null,
                         'rejection_reason' => null,
                     ]);
 
-                    if ($shouldGeneratePdf) {
-                        $service->generateDocument($lockedApplication->fresh(), Auth::user());
-                    }
-
-                    return response()->json([
-                        'message' => 'Pengajuan disetujui dan menunggu review mahasiswa',
-                        'application' => $lockedApplication->fresh(),
-                    ]);
+                    return $lockedApplication->fresh();
                 });
-            } catch (\Throwable $exception) {
+            } catch (RuntimeException $exception) {
+                return response()->json([
+                    'message' => 'Pengajuan sudah berubah dan tidak dapat disetujui ulang oleh Prodi.',
+                ], 409);
+            }
+
+            return response()->json([
+                'message' => 'Pengajuan disetujui dan diteruskan ke Kadep/Sekdep',
+                'application' => $application,
+            ]);
+        }
+
+        if (in_array($subRole, ['kadep', 'sekdep'], true)) {
+            if ($application->status !== SuratKeteranganAktifApplication::STATUS_APPROVED_KAPRODI) {
+                return response()->json(['message' => 'Pengajuan tidak berada pada tahap persetujuan Kadep/Sekdep.'], 422);
+            }
+
+            $approvedAt = now();
+            $actorId = Auth::id();
+
+            try {
+                $previewGenerationService->generateForPhase(
+                    $application,
+                    LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW,
+                    [
+                        'status' => SuratKeteranganAktifApplication::STATUS_READY_FOR_STUDENT_REVIEW,
+                        'kadep_approved_at' => $approvedAt,
+                        'kadep_approved_by' => $actorId,
+                    ],
+                    $actorId,
+                );
+            } catch (SuratKeteranganAktifPreviewGenerationException $exception) {
                 report($exception);
 
                 return response()->json([
-                    'message' => 'Pengajuan disetujui, tetapi dokumen PDF gagal dibuat. Status tidak diubah.',
-                ], 500);
+                    'message' => 'Dokumen pratinjau persetujuan Kadep belum dapat dibuat. Silakan coba lagi.',
+                ], 503);
             }
+
+            try {
+                $application = DB::transaction(function () use ($application, $approvedAt, $actorId) {
+                    $lockedApplication = SuratKeteranganAktifApplication::query()
+                        ->whereKey($application->getKey())
+                        ->lockForUpdate()
+                        ->firstOrFail();
+
+                    $actor = Auth::user()?->fresh();
+                    if (
+                        !$actor
+                        || !$this->academicRoutingService->canHandleDepartmentStage($actor, $lockedApplication)
+                        || $lockedApplication->status !== SuratKeteranganAktifApplication::STATUS_APPROVED_KAPRODI
+                    ) {
+                        throw new RuntimeException('SKA application is no longer approvable by Kadep/Sekdep.');
+                    }
+
+                    $lockedApplication->update([
+                        'status' => SuratKeteranganAktifApplication::STATUS_READY_FOR_STUDENT_REVIEW,
+                        'kadep_approved_at' => $approvedAt,
+                        'kadep_approved_by' => $actorId,
+                        'revision_note' => null,
+                        'rejection_reason' => null,
+                    ]);
+
+                    return $lockedApplication->fresh();
+                });
+            } catch (RuntimeException $exception) {
+                return response()->json([
+                    'message' => 'Pengajuan sudah berubah dan tidak dapat disetujui ulang oleh Kadep/Sekdep.',
+                ], 409);
+            }
+
+            return response()->json([
+                'message' => 'Pengajuan disetujui dan menunggu review mahasiswa',
+                'application' => $application,
+            ]);
         }
 
         return response()->json(['message' => 'Sub-role akademik tidak dikenali.'], 403);
     }
 
-    public function preview(SuratKeteranganAktifApplication $application)
-    {
-        $this->documentAccessService->ensureOwner($application, Auth::user());
-
-        if (!$this->documentAccessService->canPreview($application)) {
-            return response()->json([
-                'message' => 'Dokumen belum tersedia untuk direview.',
-            ], 422);
-        }
-
-        $path = $this->documentAccessService->resolveGeneratedDocumentPath(
-            $application,
-            'generated_pdf_path',
-            self::GENERATED_PDF_PREFIX
-        );
-        if (!$path) {
-            return response()->json([
-                'message' => 'Dokumen PDF belum tersedia.',
-            ], 404);
-        }
-
-        $this->documentAccessService->markPreviewedIfNeeded($application);
-
-        return response()->file($path, [
-            'Content-Type' => 'application/pdf',
-            'Content-Disposition' => 'inline; filename="' . $this->documentFilename($application) . '"',
-            'Cache-Control' => 'private, no-store, max-age=0',
-        ]);
-    }
-
-    public function complete(SuratKeteranganAktifApplication $application)
+    public function complete(
+        SuratKeteranganAktifApplication $application,
+        LetterDocumentArtifactService $artifactService
+    )
     {
         $this->documentAccessService->ensureOwner($application, Auth::user());
 
@@ -291,48 +518,156 @@ class SuratKeteranganAktifController extends Controller
             ], 422);
         }
 
-        if (!$this->documentAccessService->hasBeenPreviewed($application)) {
-            return response()->json([
-                'message' => 'Silakan review dokumen sebelum menyelesaikan pengajuan.',
-            ], 422);
+        $artifactError = $this->completionArtifactError($application, $artifactService);
+        if ($artifactError) {
+            return $artifactError;
         }
 
-        $path = $this->documentAccessService->resolveGeneratedDocumentPath(
-            $application,
-            'generated_pdf_path',
-            self::GENERATED_PDF_PREFIX
-        );
-        if (!$path) {
-            return response()->json([
-                'message' => 'Dokumen PDF belum tersedia.',
-            ], 404);
-        }
+        $completedAt = now();
 
-        $application->update([
-            'status' => SuratKeteranganAktifApplication::STATUS_COMPLETED,
-            'student_reviewed_at' => now(),
-            'completed_at' => now(),
-        ]);
+        try {
+            $application = DB::transaction(function () use ($application, $completedAt) {
+                $lockedApplication = SuratKeteranganAktifApplication::query()
+                    ->whereKey($application->getKey())
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                if (
+                    (int) $lockedApplication->user_id !== (int) Auth::id()
+                    || $lockedApplication->status !== SuratKeteranganAktifApplication::STATUS_READY_FOR_STUDENT_REVIEW
+                ) {
+                    throw new RuntimeException('SKA application is no longer completable.');
+                }
+
+                $lockedApplication->update([
+                    'status' => SuratKeteranganAktifApplication::STATUS_COMPLETED,
+                    'student_reviewed_at' => $completedAt,
+                    'completed_at' => $completedAt,
+                ]);
+
+                return $lockedApplication->fresh(['mahasiswaProfile', 'assignedTendik']);
+            });
+        } catch (RuntimeException $exception) {
+            return response()->json([
+                'message' => 'Pengajuan sudah berubah dan tidak dapat diselesaikan ulang.',
+            ], 409);
+        }
 
         return response()->json([
             'message' => 'Pengajuan Surat Keterangan Aktif telah diselesaikan.',
-            'application' => $this->forMahasiswaResponse($application->fresh(['mahasiswaProfile', 'assignedTendik'])),
+            'application' => $this->forMahasiswaResponse($application),
         ]);
+    }
+
+    private function completionArtifactError(
+        SuratKeteranganAktifApplication $application,
+        LetterDocumentArtifactService $artifactService
+    ): ?JsonResponse {
+        $artifact = $artifactService->latestArtifact(
+            SuratKeteranganAktifApplication::LETTER_TYPE,
+            (int) $application->getKey(),
+            LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW,
+        );
+
+        if (!$artifact) {
+            return $this->completionArtifactUnavailable();
+        }
+
+        if ($artifact->status === LetterDocumentArtifact::STATUS_GENERATING) {
+            return $this->completionArtifactErrorResponse(
+                'Dokumen final masih sedang dibuat. Silakan coba lagi beberapa saat.',
+                'artifact_generating',
+                409,
+            );
+        }
+
+        if ($artifact->status === LetterDocumentArtifact::STATUS_FAILED) {
+            return $this->completionArtifactErrorResponse(
+                'Dokumen final belum dapat tersedia karena proses pembuatan terakhir gagal. Silakan coba lagi nanti.',
+                'artifact_failed',
+                503,
+            );
+        }
+
+        if (
+            $artifact->status !== LetterDocumentArtifact::STATUS_READY
+            || !$this->isExpectedPrivateArtifactPdfPath($artifact->pdf_path)
+            || !Storage::disk('local')->exists($artifact->pdf_path)
+        ) {
+            return $this->completionArtifactUnavailable();
+        }
+
+        return null;
+    }
+
+    private function completionArtifactUnavailable(): JsonResponse
+    {
+        return $this->completionArtifactErrorResponse(
+            'Dokumen final PDF belum tersedia.',
+            'artifact_unavailable',
+            404,
+        );
+    }
+
+    private function completionArtifactErrorResponse(string $message, string $reason, int $status): JsonResponse
+    {
+        return response()->json([
+            'message' => $message,
+            'reason' => $reason,
+        ], $status);
+    }
+
+    private function isExpectedPrivateArtifactPdfPath(?string $path): bool
+    {
+        if (!is_string($path) || trim($path) === '') {
+            return false;
+        }
+
+        $path = str_replace('\\', '/', trim($path));
+
+        return !str_contains($path, '..')
+            && str_starts_with(
+                $path,
+                'letter-document-artifacts/' . SuratKeteranganAktifApplication::LETTER_TYPE . '/',
+            )
+            && str_ends_with(strtolower($path), '.pdf');
     }
 
     public function reviseByAkademik(Request $request, SuratKeteranganAktifApplication $application)
     {
-        return $this->markRevision($request, $application, [
+        $guardResponse = $this->guardAcademicAction(
+            $application,
+            $this->academicRoutingService,
             SuratKeteranganAktifApplication::STATUS_APPROVED_TENDIK,
             SuratKeteranganAktifApplication::STATUS_APPROVED_KAPRODI,
+            'Pengajuan tidak dapat direvisi pada tahap ini.',
+            'Pengajuan tidak dapat direvisi pada tahap ini.'
+        );
+        if ($guardResponse) {
+            return $guardResponse;
+        }
+
+        return $this->markRevision($request, $application, [
+            $application->status,
         ]);
     }
 
     public function rejectByAkademik(Request $request, SuratKeteranganAktifApplication $application)
     {
-        return $this->markRejected($request, $application, [
+        $guardResponse = $this->guardAcademicAction(
+            $application,
+            $this->academicRoutingService,
             SuratKeteranganAktifApplication::STATUS_APPROVED_TENDIK,
             SuratKeteranganAktifApplication::STATUS_APPROVED_KAPRODI,
+            'Pengajuan tidak dapat ditolak pada tahap ini.',
+            'Pengajuan tidak dapat ditolak pada tahap ini.'
+        );
+        if ($guardResponse) {
+            return $guardResponse;
+        }
+
+        return $this->markRejected($request, $application, [
+            $application->status,
         ]);
     }
 
@@ -401,6 +736,9 @@ class SuratKeteranganAktifController extends Controller
             'status' => SuratKeteranganAktifApplication::STATUS_REVISION,
             'revision_note' => $request->note,
             'rejection_reason' => null,
+            'revised_at' => now(),
+            'revised_by' => Auth::id(),
+            'assigned_to' => $application->assigned_to ?: Auth::id(),
         ]);
 
         return response()->json([
@@ -426,6 +764,9 @@ class SuratKeteranganAktifController extends Controller
             'status' => SuratKeteranganAktifApplication::STATUS_REJECTED,
             'rejection_reason' => $request->reason,
             'revision_note' => null,
+            'rejected_at' => now(),
+            'rejected_by' => Auth::id(),
+            'assigned_to' => $application->assigned_to ?: Auth::id(),
         ]);
 
         return response()->json([
@@ -436,21 +777,8 @@ class SuratKeteranganAktifController extends Controller
 
     private function forMahasiswaResponse(SuratKeteranganAktifApplication $application): SuratKeteranganAktifApplication
     {
-        return $this->documentAccessService->redactGeneratedPathIfNeeded(
-            $application,
-            'generated_pdf_path',
-            self::GENERATED_PDF_PREFIX,
-            true
-        );
-    }
+        $application->setAttribute('generated_pdf_path', null);
 
-    private function documentFilename(SuratKeteranganAktifApplication $application): string
-    {
-        $application->loadMissing('mahasiswaProfile');
-        $identifier = $application->mahasiswaProfile?->nim ?: (string) $application->id;
-        $identifier = preg_replace('/[^A-Za-z0-9_-]+/', '_', $identifier) ?: '';
-        $identifier = trim($identifier, '_') ?: (string) $application->id;
-
-        return 'Surat_Keterangan_Aktif_' . $identifier . '.pdf';
+        return $application;
     }
 }

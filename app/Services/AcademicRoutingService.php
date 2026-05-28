@@ -20,6 +20,30 @@ class AcademicRoutingService
         };
     }
 
+    /**
+     * Scope-only read authorization for academic detail views (Dashboard /
+     * Dokumen / Riwayat / direct GET). Returns true when the user belongs to
+     * the application's prodi (for Kaprodi/Sekprodi) or department (for
+     * Kadep/Sekdep) regardless of workflow status — including processed and
+     * history statuses (Approved_Kaprodi, Ready_For_Student_Review,
+     * Completed, Rejected, Revision, Submitted).
+     *
+     * This is distinct from action authorization: approve/reject/revise still
+     * require the matching actionable status via guardAcademicAction.
+     */
+    public function canViewDetail(User $akademikUser, Model $application): bool
+    {
+        if ($this->isProdiApprover($akademikUser)) {
+            return $this->canHandleProdiStage($akademikUser, $application);
+        }
+
+        if ($this->isDepartmentApprover($akademikUser)) {
+            return $this->canHandleDepartmentStage($akademikUser, $application);
+        }
+
+        return false;
+    }
+
     public function canHandleProdiStage(User $akademikUser, Model $application): bool
     {
         if (!$this->isProdiApprover($akademikUser) || !$akademikUser->study_program_id) {
@@ -120,13 +144,13 @@ class AcademicRoutingService
         );
     }
 
-    private function isProdiApprover(User $user): bool
+    public function isProdiApprover(User $user): bool
     {
         return $user->role === 'akademik'
             && in_array($user->sub_role, ['kaprodi', 'sekprodi'], true);
     }
 
-    private function isDepartmentApprover(User $user): bool
+    public function isDepartmentApprover(User $user): bool
     {
         return $user->role === 'akademik'
             && in_array($user->sub_role, ['kadep', 'sekdep'], true);

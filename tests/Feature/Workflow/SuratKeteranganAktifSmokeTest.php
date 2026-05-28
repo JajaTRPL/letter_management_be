@@ -2,12 +2,11 @@
 
 namespace Tests\Feature\Workflow;
 
+use App\Models\LetterDocumentArtifact;
 use App\Models\SuratKeteranganAktifApplication;
-use App\Services\SuratKeteranganAktifService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
-use Mockery;
 use Tests\TestCase;
 
 class SuratKeteranganAktifSmokeTest extends TestCase
@@ -17,6 +16,7 @@ class SuratKeteranganAktifSmokeTest extends TestCase
 
     public function test_mahasiswa_can_save_submit_and_list_canonical_ska_application(): void
     {
+        $this->mockSkaPreviewGenerationAlwaysReady();
         $tendik = $this->tendikPersuratan([SuratKeteranganAktifApplication::LETTER_TYPE]);
         [$student] = $this->completeMahasiswa();
 
@@ -62,6 +62,7 @@ class SuratKeteranganAktifSmokeTest extends TestCase
 
     public function test_tendik_can_request_revision_and_mahasiswa_can_resubmit_canonical_ska(): void
     {
+        $this->mockSkaPreviewGenerationAlwaysReady();
         $tendik = $this->tendikPersuratan([SuratKeteranganAktifApplication::LETTER_TYPE]);
         [$student] = $this->completeMahasiswa();
         $application = $this->aktifApplication($student, ['assigned_to' => $tendik->id]);
@@ -128,7 +129,8 @@ class SuratKeteranganAktifSmokeTest extends TestCase
     public function test_canonical_ska_approval_preview_and_completion_flow(): void
     {
         Notification::fake();
-        Storage::fake('public');
+        Storage::fake('local');
+        $this->mockSkaPreviewGenerationAlwaysReady();
 
         $tendik = $this->tendikPersuratan([SuratKeteranganAktifApplication::LETTER_TYPE]);
         $kaprodi = $this->akademik('kaprodi');
@@ -164,15 +166,15 @@ class SuratKeteranganAktifSmokeTest extends TestCase
             ->assertOk()
             ->assertJsonPath('application.status', SuratKeteranganAktifApplication::STATUS_APPROVED_KAPRODI);
 
-        $this->mockAktifDocumentGeneration();
-
         $this->actingAs($kadep, 'sanctum')
             ->patchJson("/api/akademik/surat-keterangan-aktif/{$applicationId}/approve")
             ->assertOk()
             ->assertJsonPath('application.status', SuratKeteranganAktifApplication::STATUS_READY_FOR_STUDENT_REVIEW);
 
+        $this->createReadyMahasiswaArtifact(SuratKeteranganAktifApplication::findOrFail($applicationId));
+
         $this->actingAs($student, 'sanctum')
-            ->get("/api/mahasiswa/surat-keterangan-aktif/{$applicationId}/preview")
+            ->get("/api/mahasiswa/surat-keterangan-aktif/{$applicationId}/generated-preview")
             ->assertOk();
 
         $this->actingAs($student, 'sanctum')
@@ -183,7 +185,6 @@ class SuratKeteranganAktifSmokeTest extends TestCase
         $this->assertDatabaseHas('surat_keterangan_aktif_applications', [
             'id' => $applicationId,
             'status' => SuratKeteranganAktifApplication::STATUS_COMPLETED,
-            'generated_pdf_path' => '/storage/surat-keterangan-aktif/generated/final.pdf',
         ]);
     }
 
@@ -202,19 +203,35 @@ class SuratKeteranganAktifSmokeTest extends TestCase
         ], $overrides);
     }
 
-    private function mockAktifDocumentGeneration(): void
+    private function createReadyMahasiswaArtifact(SuratKeteranganAktifApplication $application): LetterDocumentArtifact
     {
-        $mock = Mockery::mock(SuratKeteranganAktifService::class);
-        $mock->shouldReceive('generateDocument')
-            ->once()
-            ->andReturnUsing(function (SuratKeteranganAktifApplication $application): string {
-                $path = 'surat-keterangan-aktif/generated/final.pdf';
-                Storage::disk('public')->put($path, '%PDF-1.4 test');
-                $application->update(['generated_pdf_path' => Storage::url($path)]);
+        $phase = LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW;
+        $pdfPath = 'letter-document-artifacts/'
+            . SuratKeteranganAktifApplication::LETTER_TYPE
+            . '/'
+            . $application->id
+            . '/'
+            . $phase
+            . '/preview_1.pdf';
 
-                return Storage::url($path);
-            });
+        Storage::disk('local')->put($pdfPath, "%PDF-1.4\nmahasiswa_review");
 
-        $this->app->instance(SuratKeteranganAktifService::class, $mock);
+        return LetterDocumentArtifact::create([
+            'letter_type' => SuratKeteranganAktifApplication::LETTER_TYPE,
+            'application_id' => $application->id,
+            'phase' => $phase,
+            'version' => 1,
+            'docx_path' => 'letter-document-artifacts/'
+                . SuratKeteranganAktifApplication::LETTER_TYPE
+                . '/'
+                . $application->id
+                . '/'
+                . $phase
+                . '/source_1.docx',
+            'pdf_path' => $pdfPath,
+            'source_hash' => hash('sha256', $application->id . '|' . $phase . '|smoke'),
+            'status' => LetterDocumentArtifact::STATUS_READY,
+            'generated_at' => now(),
+        ]);
     }
 }
