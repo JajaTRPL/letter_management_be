@@ -239,7 +239,7 @@ private const ALLOWED_DOMAINS = ['mail.ugm.ac.id', 'ugm.ac.id'];
 - [x] Removed `.env.shared` from tracked tree (commit `90875b0`); replaced with safe `.env.example`.
 - [x] Broadened backend `.gitignore` to `.env`, `.env.*`, `!.env.example` so future variants stay out.
 - [x] Removed frontend `.env` from tracked tree; added safe `.env.example`.
-- [x] Purged `.env.shared` from backend git history (force-with-lease, see [APP_KEY Rotation](#-app_key-rotation-procedure)).
+- [ ] Purge `.env.shared` from backend git history with `git filter-repo` (planned; blocked on `git-filter-repo` installation). The leaked `APP_KEY` value still lives in commits from `58e1cf1` through `feb0207`; treat as compromised and follow [APP_KEY Rotation](#-app_key-rotation-procedure) until the rewrite lands.
 - [x] Generated unique `APP_KEY` per developer is now standard (no committed shared key).
 
 ### Outstanding (Operational, Not in Git)
