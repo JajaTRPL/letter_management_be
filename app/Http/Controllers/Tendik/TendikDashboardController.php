@@ -2,18 +2,22 @@
 
 namespace App\Http\Controllers\Tendik;
 
+use App\Http\Controllers\Concerns\AddsSupportingDocumentMetadata;
 use App\Http\Controllers\Controller;
 use App\Models\LetterDocumentArtifact;
 use App\Models\ProsesLuarNegeriApplication;
 use App\Models\ScholarshipApplication;
 use App\Models\SuratKeteranganAktifApplication;
 use App\Models\SuratPengantarMagangApplication;
+use App\Models\SuratTugasApplication;
 use App\Models\User;
 use App\Notifications\ScholarshipStatusNotification;
 use App\Enums\UserStatus;
 use App\Services\BeasiswaPreviewGenerationException;
 use App\Services\BeasiswaPreviewGenerationService;
 use App\Services\LetterAssignmentService;
+use App\Services\LetterAttachmentMetadataService;
+use App\Services\LetterRetentionSummaryService;
 use App\Services\LetterTaskCursorFeedService;
 use App\Services\LetterTaskFeedService;
 use App\Services\MahasiswaProfileDataService;
@@ -27,6 +31,8 @@ use RuntimeException;
 
 class TendikDashboardController extends Controller
 {
+    use AddsSupportingDocumentMetadata;
+
     // Eager-loads that the feed-row enrichment depends on.
     private const TENDIK_ROW_RELATIONS = [
         'mahasiswaProfile.user',
@@ -40,7 +46,9 @@ class TendikDashboardController extends Controller
     public function __construct(
         private LetterAssignmentService $assignmentService,
         private LetterTaskCursorFeedService $cursorFeedService,
-        private LetterTaskFeedService $taskFeedService
+        private LetterTaskFeedService $taskFeedService,
+        private LetterAttachmentMetadataService $attachmentMetadataService,
+        private LetterRetentionSummaryService $retentionSummaryService
     )
     {
     }
@@ -116,7 +124,8 @@ class TendikDashboardController extends Controller
                 $tasksByType[ScholarshipApplication::LETTER_TYPE] ?? collect(),
                 $tasksByType[SuratPengantarMagangApplication::LETTER_TYPE] ?? collect(),
                 $tasksByType[SuratKeteranganAktifApplication::LETTER_TYPE] ?? collect(),
-                $tasksByType[ProsesLuarNegeriApplication::LETTER_TYPE] ?? collect()
+                $tasksByType[ProsesLuarNegeriApplication::LETTER_TYPE] ?? collect(),
+                $tasksByType[SuratTugasApplication::LETTER_TYPE] ?? collect()
             ),
             'scope' => $scope,
         ]);
@@ -140,7 +149,12 @@ class TendikDashboardController extends Controller
         $application->setAttribute('generated_docx_path', null);
 
         return response()->json([
-            'application' => $application,
+            'application' => $this->withSupportingDocumentMetadata(
+                $application,
+                ScholarshipApplication::LETTER_TYPE,
+                $this->attachmentMetadataService,
+                $this->retentionSummaryService,
+            ),
             'profile_summary' => $profileDataService->profileSummaryForApplication($application),
             'student' => [
                 'name' => $normalized['name'],
@@ -359,7 +373,8 @@ class TendikDashboardController extends Controller
                 $tasksByType[ScholarshipApplication::LETTER_TYPE] ?? collect(),
                 $tasksByType[SuratPengantarMagangApplication::LETTER_TYPE] ?? collect(),
                 $tasksByType[SuratKeteranganAktifApplication::LETTER_TYPE] ?? collect(),
-                $tasksByType[ProsesLuarNegeriApplication::LETTER_TYPE] ?? collect()
+                $tasksByType[ProsesLuarNegeriApplication::LETTER_TYPE] ?? collect(),
+                $tasksByType[SuratTugasApplication::LETTER_TYPE] ?? collect()
             ),
             'scope' => $scope,
         ]);
@@ -395,6 +410,7 @@ class TendikDashboardController extends Controller
             SuratPengantarMagangApplication::LETTER_TYPE => SuratPengantarMagangApplication::class,
             SuratKeteranganAktifApplication::LETTER_TYPE => SuratKeteranganAktifApplication::class,
             ProsesLuarNegeriApplication::LETTER_TYPE => ProsesLuarNegeriApplication::class,
+            SuratTugasApplication::LETTER_TYPE => SuratTugasApplication::class,
         ] as $letterType => $modelClass) {
             $activeQuery = $this->assignmentService->applyFeedVisibility(
                 $modelClass::whereIn('status', [
@@ -446,6 +462,7 @@ class TendikDashboardController extends Controller
             SuratPengantarMagangApplication::LETTER_TYPE => SuratPengantarMagangApplication::class,
             SuratKeteranganAktifApplication::LETTER_TYPE => SuratKeteranganAktifApplication::class,
             ProsesLuarNegeriApplication::LETTER_TYPE => ProsesLuarNegeriApplication::class,
+            SuratTugasApplication::LETTER_TYPE => SuratTugasApplication::class,
         ];
     }
 

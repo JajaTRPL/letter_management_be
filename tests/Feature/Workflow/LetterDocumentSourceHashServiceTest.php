@@ -8,11 +8,13 @@ use App\Models\ProsesLuarNegeriApplication;
 use App\Models\ScholarshipApplication;
 use App\Models\SuratKeteranganAktifApplication;
 use App\Models\SuratPengantarMagangApplication;
+use App\Models\SuratTugasApplication;
 use App\Services\BeasiswaPhaseResolver;
 use App\Services\LetterDocumentSourceHashService;
 use App\Services\ProsesLuarNegeriPhaseResolver;
 use App\Services\SuratKeteranganAktifPhaseResolver;
 use App\Services\SuratPengantarMagangPhaseResolver;
+use App\Services\SuratTugasPhaseResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Storage;
@@ -58,6 +60,73 @@ class LetterDocumentSourceHashServiceTest extends TestCase
     private function magangResolver(): SuratPengantarMagangPhaseResolver
     {
         return $this->app->make(SuratPengantarMagangPhaseResolver::class);
+    }
+
+    private function suratTugasResolver(): SuratTugasPhaseResolver
+    {
+        return $this->app->make(SuratTugasPhaseResolver::class);
+    }
+
+    public function test_surat_tugas_payload_contains_rendered_fields_and_excludes_aggregates(): void
+    {
+        $department = $this->department(['name' => 'Departemen Teknik Elektro dan Informatika']);
+        $department->faculty()->update(['name' => 'Sekolah Vokasi UGM']);
+        $program = $this->studyProgram($department, ['code' => 'TRPL', 'name' => 'Teknologi Rekayasa Perangkat Lunak']);
+        [$student] = $this->completeMahasiswa(['name' => 'Mahasiswa Tugas'], ['nim' => '22/493038/SV/20654'], $program);
+        $application = $this->suratTugasApplication($student, [
+            'nomor_surat_tugas' => 'ST/001/2026',
+            'nama_perusahaan' => 'PT Surat Tugas',
+            'kegiatan' => 'Kerja Praktik',
+            'posisi' => 'Backend Engineer Intern',
+            'dosen_pembimbing_dpa' => 'Dr. DPA',
+            'tgl_mulai' => '2026-06-01',
+            'tgl_selesai' => '2026-08-31',
+        ]);
+        $kadep = $this->akademik('kadep', ['department_id' => $department->id, 'name' => 'Ketua Resmi', 'nip' => '198001012010011001']);
+        $phase = LetterDocumentArtifact::PHASE_PRODI_REVIEW;
+        $flags = $this->suratTugasResolver()->phaseFlagsFor($application, $phase);
+
+        $payload = $this->hasher()->canonicalSuratTugasPayload($application->fresh(), $phase, $flags, [
+            'tanggal_surat' => '2026-05-25',
+            'official_kadep' => $kadep,
+        ]);
+
+        $this->assertSame(SuratTugasApplication::LETTER_TYPE, $payload['letter_type']);
+        $this->assertSame('surat-tugas-docx-gotenberg-v1-contract', $payload['rendered']['profile']);
+        $this->assertSame('ST/001/2026', $payload['application']['nomor_surat_tugas']);
+        $this->assertSame('PT Surat Tugas', $payload['application']['nama_perusahaan']);
+        $this->assertSame('Kerja Praktik', $payload['application']['kegiatan']);
+        $this->assertSame('Backend Engineer Intern', $payload['application']['posisi']);
+        $this->assertSame('Backend Engineer Intern', $payload['application']['posisi']);
+        $this->assertSame('Dr. DPA', $payload['internship']['dpa']);
+        $this->assertSame('Sekolah Vokasi', $payload['student']['fakultas']);
+        $this->assertSame('Teknik Elektro dan Informatika', $payload['student']['departemen']);
+        $this->assertSame('Ketua Resmi', $payload['rendered']['nama_kadep']);
+        // Magang Pengantar-only fields must NOT appear in the Surat Tugas payload.
+        $this->assertArrayNotHasKey('jabatan_penerima', $payload['application']);
+        $this->assertArrayNotHasKey('alamat_jalan', $payload['application']);
+        $this->assertArrayNotHasKey('kode_pos', $payload['application']);
+    }
+
+    public function test_surat_tugas_number_only_affects_numbered_phase_and_legacy_changes_do_not(): void
+    {
+        $application = $this->suratTugasApplication(null, ['nomor_surat_tugas' => 'ST/001/2026']);
+        $prodiPhase = LetterDocumentArtifact::PHASE_PRODI_REVIEW;
+        $prodiFlags = $this->suratTugasResolver()->phaseFlagsFor($application, $prodiPhase);
+
+        // nomor_surat_tugas affects the numbered phase.
+        $before = $this->hasher()->hashForSuratTugas($application->fresh(), $prodiPhase, $prodiFlags);
+        $application->update(['nomor_surat_tugas' => 'ST/999/2026']);
+        $after = $this->hasher()->hashForSuratTugas($application->fresh(), $prodiPhase, $prodiFlags);
+        $this->assertNotSame($before, $after, 'nomor_surat_tugas must affect the numbered phase.');
+
+        // Tendik phase has no number gate, so the number must not change its hash.
+        $tendikPhase = LetterDocumentArtifact::PHASE_TENDIK_REVIEW;
+        $tendikFlags = $this->suratTugasResolver()->phaseFlagsFor($application, $tendikPhase);
+        $beforeTendik = $this->hasher()->hashForSuratTugas($application->fresh(), $tendikPhase, $tendikFlags);
+        $application->update(['nomor_surat_tugas' => 'ST/NO-HASH/2026']);
+        $afterTendik = $this->hasher()->hashForSuratTugas($application->fresh(), $tendikPhase, $tendikFlags);
+        $this->assertSame($beforeTendik, $afterTendik, 'nomor_surat_tugas must not affect the tendik phase (no number gate).');
     }
 
     public function test_same_input_produces_same_hash(): void
@@ -892,18 +961,43 @@ class LetterDocumentSourceHashServiceTest extends TestCase
         $this->assertSame(SuratPengantarMagangApplication::LETTER_TYPE, $payload['letter_type']);
         $this->assertSame('magang-docx-gotenberg-v1-final-contract', $payload['rendered']['profile']);
         $this->assertSame('MAG/PENGANTAR/001/2026', $payload['application']['nomor_surat_pengantar']);
-        $this->assertSame('MAG/TUGAS/001/2026', $payload['application']['nomor_surat_tugas']);
+        // S1 (Magang standalone): nomor_surat_tugas is no longer part of the Magang
+        // canonical payload (Surat Tugas is a separate letter).
+        $this->assertArrayNotHasKey('nomor_surat_tugas', $payload['application']);
         $this->assertSame('Direktur Operasional', $payload['application']['jabatan_penerima']);
         $this->assertSame('Jl. Kontrak No. 1', $payload['application']['alamat_jalan']);
         $this->assertSame('01 Juni 2026', $payload['internship']['tgl_mulai']);
         $this->assertSame('31 Agustus 2026', $payload['internship']['tgl_selesai']);
-        $this->assertSame('Backend Engineer Intern', $payload['internship']['posisi']);
+        // fakultas, dpa, and posisi are no longer part of the Magang canonical
+        // payload (refreshed Pengantar-only template does not render them).
+        $this->assertArrayNotHasKey('posisi', $payload['internship']);
+        $this->assertArrayNotHasKey('dpa', $payload['internship']);
+        $this->assertArrayNotHasKey('fakultas', $payload['student']);
+        $this->assertArrayNotHasKey('fakultas', $payload['rendered']);
         $this->assertSame('TRPL', $payload['student']['kode_prodi']);
         $this->assertSame('Teknik Elektro dan Informatika', $payload['student']['departemen']);
-        $this->assertSame('Sekolah Vokasi', $payload['student']['fakultas']);
         $this->assertSame('Ketua Departemen', $payload['rendered']['jabatan_kadep']);
         $this->assertSame('Ketua Resmi', $payload['rendered']['nama_kadep']);
         $this->assertSame('25 Mei 2026', $payload['rendered']['tanggal_surat']);
+    }
+
+    public function test_magang_faculty_name_change_does_not_affect_hash(): void
+    {
+        // Regression: fakultas is no longer rendered by the Pengantar-only Magang
+        // template, so renaming the faculty must NOT change the Magang source hash.
+        $department = $this->department(['name' => 'Departemen Teknik Elektro dan Informatika']);
+        $department->faculty()->update(['name' => 'Sekolah Vokasi']);
+        $program = $this->studyProgram($department, ['code' => 'TRPL', 'name' => 'TRPL']);
+        [$student] = $this->completeMahasiswa(['name' => 'Mahasiswa Magang'], ['nim' => '111'], $program);
+        $application = $this->magangApplication($student, ['nomor_surat_pengantar' => 'MAG/P/001/2026']);
+        $phase = LetterDocumentArtifact::PHASE_PRODI_REVIEW;
+        $flags = $this->magangResolver()->phaseFlagsFor($application, $phase);
+
+        $before = $this->hasher()->hashForMagang($application->fresh(), $phase, $flags);
+        $department->faculty()->update(['name' => 'Fakultas Diganti Total']);
+        $after = $this->hasher()->hashForMagang($application->fresh(), $phase, $flags);
+
+        $this->assertSame($before, $after, 'Renaming the faculty must not change the Magang hash (fakultas not rendered).');
     }
 
     public function test_magang_pending_numbers_and_date_affect_hash_without_mutating_application(): void
@@ -927,8 +1021,12 @@ class LetterDocumentSourceHashServiceTest extends TestCase
         $this->assertNull($application->fresh()->nomor_surat_tugas);
     }
 
-    public function test_magang_dual_numbers_affect_numbered_phase_but_not_tendik_phase(): void
+    public function test_magang_pengantar_number_affects_numbered_phase_but_tugas_number_and_tendik_phase_do_not(): void
     {
+        // S1 (Magang standalone): nomor_surat_pengantar still drives the numbered
+        // phases; nomor_surat_tugas (legacy, now Surat-Tugas-only) must NOT change
+        // the Magang hash — so editing a legacy tugas number never invalidates an
+        // existing Magang artifact.
         $application = $this->magangApplication(null, [
             'nomor_surat_pengantar' => 'MAG/P/001/2026',
             'nomor_surat_tugas' => 'MAG/T/001/2026',
@@ -936,19 +1034,19 @@ class LetterDocumentSourceHashServiceTest extends TestCase
         $prodiPhase = LetterDocumentArtifact::PHASE_PRODI_REVIEW;
         $prodiFlags = $this->magangResolver()->phaseFlagsFor($application, $prodiPhase);
 
-        foreach ([
-            'nomor_surat_pengantar' => 'MAG/P/999/2026',
-            'nomor_surat_tugas' => 'MAG/T/999/2026',
-        ] as $field => $newValue) {
-            $application->update([
-                'nomor_surat_pengantar' => 'MAG/P/001/2026',
-                'nomor_surat_tugas' => 'MAG/T/001/2026',
-            ]);
-            $before = $this->hasher()->hashForMagang($application->fresh(), $prodiPhase, $prodiFlags);
-            $application->update([$field => $newValue]);
-            $after = $this->hasher()->hashForMagang($application->fresh(), $prodiPhase, $prodiFlags);
-            $this->assertNotSame($before, $after, "{$field} must affect numbered phases.");
-        }
+        // Pengantar number affects the numbered phase.
+        $application->update(['nomor_surat_pengantar' => 'MAG/P/001/2026', 'nomor_surat_tugas' => 'MAG/T/001/2026']);
+        $before = $this->hasher()->hashForMagang($application->fresh(), $prodiPhase, $prodiFlags);
+        $application->update(['nomor_surat_pengantar' => 'MAG/P/999/2026']);
+        $afterPengantar = $this->hasher()->hashForMagang($application->fresh(), $prodiPhase, $prodiFlags);
+        $this->assertNotSame($before, $afterPengantar, 'nomor_surat_pengantar must affect numbered phases.');
+
+        // Tugas number must NOT affect the Magang hash (regression for the split).
+        $application->update(['nomor_surat_pengantar' => 'MAG/P/001/2026', 'nomor_surat_tugas' => 'MAG/T/001/2026']);
+        $beforeTugas = $this->hasher()->hashForMagang($application->fresh(), $prodiPhase, $prodiFlags);
+        $application->update(['nomor_surat_tugas' => 'MAG/T/999/2026']);
+        $afterTugas = $this->hasher()->hashForMagang($application->fresh(), $prodiPhase, $prodiFlags);
+        $this->assertSame($beforeTugas, $afterTugas, 'nomor_surat_tugas must NOT affect the Magang hash after the split.');
 
         $tendikPhase = LetterDocumentArtifact::PHASE_TENDIK_REVIEW;
         $tendikFlags = $this->magangResolver()->phaseFlagsFor($application, $tendikPhase);
@@ -997,8 +1095,6 @@ class LetterDocumentSourceHashServiceTest extends TestCase
             'kode_pos' => '99999',
             'tgl_mulai' => '2026-06-02',
             'tgl_selesai' => '2026-09-01',
-            'dosen_pembimbing_dpa' => 'Dr. Baru',
-            'peran' => 'Intern Baru',
         ] as $field => $value) {
             $application->update($base);
             $before = $this->hasher()->hashForMagang($application->fresh(), $phase, $flags);
@@ -1007,7 +1103,12 @@ class LetterDocumentSourceHashServiceTest extends TestCase
             $this->assertNotSame($before, $after, "{$field} must affect Magang final source hash.");
         }
 
+        // dpa (dosen_pembimbing_dpa) and posisi (peran) are NO LONGER rendered by
+        // the Pengantar-only Magang template, so they must NOT affect the hash —
+        // alongside the legacy aggregate columns.
         foreach ([
+            'dosen_pembimbing_dpa' => 'Dr. Tidak Dirender',
+            'peran' => 'Posisi Tidak Dirender',
             'nomor_surat' => 'LEGACY/CHANGED',
             'nama_penerima' => 'Legacy Penerima Changed',
             'alamat_perusahaan' => 'Legacy alamat berubah',
@@ -1046,7 +1147,8 @@ class LetterDocumentSourceHashServiceTest extends TestCase
         $payload = $this->hasher()->canonicalMagangPayload($application->fresh(), $phase, $flags);
 
         $this->assertSame('-', $payload['application']['nomor_surat_pengantar']);
-        $this->assertSame('-', $payload['application']['nomor_surat_tugas']);
+        // S1: nomor_surat_tugas removed from the Magang payload entirely.
+        $this->assertArrayNotHasKey('nomor_surat_tugas', $payload['application']);
         $this->assertSame('-', $payload['application']['jabatan_penerima']);
         $this->assertSame('-', $payload['application']['alamat_jalan']);
         $this->assertSame('-', $payload['internship']['tgl_mulai']);

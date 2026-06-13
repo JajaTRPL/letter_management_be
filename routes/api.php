@@ -45,6 +45,15 @@ Route::middleware('throttle:api')->group(function () {
                 abort(403);
             }
 
+            // Supporting documents are available only through their dedicated
+            // authenticated inline-preview endpoints. Keep the generic raw
+            // storage route closed even while legacy source files are retained.
+            foreach (['scholarships/transcripts', 'scholarships/slips', 'surat-pengantar-magang/proposals', 'surat-tugas/supporting'] as $blocked) {
+                if ($relativePath === $blocked || str_starts_with($relativePath, $blocked . '/')) {
+                    abort(403);
+                }
+            }
+
             foreach (['surat-pengantar-magang/generated', 'surat-keterangan-aktif/generated', 'proses-luar-negeri/generated'] as $blocked) {
                 if ($relativePath === $blocked || str_starts_with($relativePath, $blocked . '/')) {
                     abort(403);
@@ -77,38 +86,6 @@ Route::middleware('throttle:api')->group(function () {
                 } else {
                     abort(403);
                 }
-            } elseif (str_starts_with($relativePath, 'surat-pengantar-magang/proposals/')) {
-                $application = \App\Models\SuratPengantarMagangApplication::whereIn('proposal_kegiatan_magang_path', $storageCandidates)->first();
-                abort_unless($application, 403);
-
-                $authorized = match ($user->role) {
-                    'super_admin' => true,
-                    'tendik' => app(\App\Services\LetterAssignmentService::class)
-                        ->canHandle($user, \App\Models\SuratPengantarMagangApplication::LETTER_TYPE),
-                    'akademik' => app(\App\Services\AcademicRoutingService::class)->canHandleProdiStage($user, $application)
-                        || app(\App\Services\AcademicRoutingService::class)->canHandleDepartmentStage($user, $application),
-                    'mahasiswa' => (int) $application->user_id === (int) $user->id,
-                    default => false,
-                };
-                abort_unless($authorized, 403);
-            } elseif (str_starts_with($relativePath, 'scholarships/transcripts/') || str_starts_with($relativePath, 'scholarships/slips/')) {
-                $application = \App\Models\ScholarshipApplication::where(function ($query) use ($storageCandidates) {
-                    $query->whereIn('transkrip_nilai_path', $storageCandidates)
-                        ->orWhereIn('slip_gaji_ayah_path', $storageCandidates)
-                        ->orWhereIn('slip_gaji_ibu_path', $storageCandidates);
-                })->first();
-                abort_unless($application, 403);
-
-                $authorized = match ($user->role) {
-                    'super_admin' => true,
-                    'tendik' => app(\App\Services\LetterAssignmentService::class)
-                        ->canHandle($user, \App\Models\ScholarshipApplication::LETTER_TYPE),
-                    'akademik' => app(\App\Services\AcademicRoutingService::class)->canHandleProdiStage($user, $application)
-                        || app(\App\Services\AcademicRoutingService::class)->canHandleDepartmentStage($user, $application),
-                    'mahasiswa' => (int) $application->user_id === (int) $user->id,
-                    default => false,
-                };
-                abort_unless($authorized, 403);
             } else {
                 abort(403);
             }
@@ -146,11 +123,26 @@ Route::middleware('throttle:api')->group(function () {
         Route::get('/study-programs-grouped', [StudyProgramController::class, 'grouped']);
 
         // Beasiswa supporting-document preview bytes (role-scoped inside controller).
-        // Separate from /api/storage which serves attachments; frontend fetches this
-        // endpoint and renders a PDF blob URL.
+        // Separate from /api/storage, which is intentionally closed to supporting
+        // documents. Frontend fetches this endpoint and renders a PDF blob URL.
         Route::get(
             '/scholarship/{application}/supporting-documents/{field}/preview',
             [\App\Http\Controllers\ScholarshipSupportingDocumentController::class, 'preview']
+        );
+
+        // Surat Pengantar Magang supporting-document preview bytes (proposal).
+        // Mirrors the Beasiswa endpoint above: role-scoped inside the controller,
+        // inline (non-attachment) response so the FE renders it via PDF.js.
+        Route::get(
+            '/surat-pengantar-magang/{application}/supporting-documents/{field}/preview',
+            [\App\Http\Controllers\MagangSupportingDocumentController::class, 'preview']
+        );
+
+        // Surat Tugas supporting-document preview bytes (proposal + uploaded
+        // Surat Pengantar Magang PDF). Same role-scoped, inline pattern.
+        Route::get(
+            '/surat-tugas/{application}/supporting-documents/{field}/preview',
+            [\App\Http\Controllers\SuratTugasSupportingDocumentController::class, 'preview']
         );
 
 
@@ -246,6 +238,14 @@ Route::middleware('throttle:api')->group(function () {
                 Route::patch('/{application}/revise', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'reviseByTendik']);
             });
 
+            Route::prefix('surat-tugas')->group(function () {
+                Route::get('/{application}', [\App\Http\Controllers\SuratTugasController::class, 'showForReviewer']);
+                Route::get('/{application}/generated-preview', [\App\Http\Controllers\SuratTugasGeneratedPreviewController::class, 'tendik']);
+                Route::patch('/{application}/approve', [\App\Http\Controllers\SuratTugasController::class, 'approveByTendik']);
+                Route::patch('/{application}/reject', [\App\Http\Controllers\SuratTugasController::class, 'rejectByTendik']);
+                Route::patch('/{application}/revise', [\App\Http\Controllers\SuratTugasController::class, 'reviseByTendik']);
+            });
+
             // Letter Review Actions
             Route::get('/letter/{application}', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'showLetter']);
             Route::patch('/letter/{application}/approve', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'approveLetter']);
@@ -294,6 +294,14 @@ Route::middleware('throttle:api')->group(function () {
                 Route::patch('/{application}/approve', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'approveByAkademik']);
                 Route::patch('/{application}/reject', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'rejectByAkademik']);
                 Route::patch('/{application}/revise', [\App\Http\Controllers\ProsesLuarNegeriController::class, 'reviseByAkademik']);
+            });
+
+            Route::prefix('surat-tugas')->group(function () {
+                Route::get('/{application}', [\App\Http\Controllers\SuratTugasController::class, 'showForReviewer']);
+                Route::get('/{application}/generated-preview', [\App\Http\Controllers\SuratTugasGeneratedPreviewController::class, 'akademik']);
+                Route::patch('/{application}/approve', [\App\Http\Controllers\SuratTugasController::class, 'approveByAkademik']);
+                Route::patch('/{application}/reject', [\App\Http\Controllers\SuratTugasController::class, 'rejectByAkademik']);
+                Route::patch('/{application}/revise', [\App\Http\Controllers\SuratTugasController::class, 'reviseByAkademik']);
             });
         });
 
@@ -347,6 +355,17 @@ Route::middleware('throttle:api')->group(function () {
                 Route::get('/{application}/final-download', \App\Http\Controllers\SuratPengantarMagangFinalDownloadController::class);
                 Route::post('/{application}/complete', [\App\Http\Controllers\SuratPengantarMagangController::class, 'complete']);
                 Route::get('/{application}', [\App\Http\Controllers\SuratPengantarMagangController::class, 'showForMahasiswa']);
+            });
+
+            Route::prefix('surat-tugas')->group(function () {
+                Route::get('/applications', [\App\Http\Controllers\SuratTugasController::class, 'getApplications']);
+                Route::get('/draft', [\App\Http\Controllers\SuratTugasController::class, 'getDraft']);
+                Route::post('/draft', [\App\Http\Controllers\SuratTugasController::class, 'saveDraft']);
+                Route::post('/submit', [\App\Http\Controllers\SuratTugasController::class, 'submitApplication']);
+                Route::get('/{application}/generated-preview', [\App\Http\Controllers\SuratTugasGeneratedPreviewController::class, 'mahasiswa']);
+                Route::get('/{application}/final-download', \App\Http\Controllers\SuratTugasFinalDownloadController::class);
+                Route::post('/{application}/complete', [\App\Http\Controllers\SuratTugasController::class, 'complete']);
+                Route::get('/{application}', [\App\Http\Controllers\SuratTugasController::class, 'showForMahasiswa']);
             });
 
             Route::prefix('surat-keterangan-aktif')->group(function () {

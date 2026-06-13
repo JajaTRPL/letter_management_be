@@ -26,47 +26,36 @@ class SuratPengantarMagangPhaseResolver
     /**
      * @return array{
      *     include_nomor_pengantar: bool,
-     *     include_nomor_tugas: bool,
      *     include_paraf_pengantar: bool,
-     *     include_paraf_tugas: bool,
-     *     include_kadep_ttd_pengantar: bool,
-     *     include_kadep_ttd_tugas: bool
+     *     include_kadep_ttd_pengantar: bool
      * }
      */
     public function phaseFlagsFor(SuratPengantarMagangApplication $application, string $phase): array
     {
+        // Surat Pengantar Magang is Pengantar-only (Surat Tugas split out in S1;
+        // it becomes its own letter type in S2). Only Pengantar flags exist now —
+        // tugas-only flags were removed. Legacy tugas DB columns are retained for
+        // compatibility but never drive the Magang document/hash.
         return match ($phase) {
             LetterDocumentArtifact::PHASE_PRODI_REVIEW => [
                 'include_nomor_pengantar' => true,
-                'include_nomor_tugas' => true,
                 'include_paraf_pengantar' => false,
-                'include_paraf_tugas' => false,
                 'include_kadep_ttd_pengantar' => false,
-                'include_kadep_ttd_tugas' => false,
             ],
             LetterDocumentArtifact::PHASE_DEPARTEMEN_REVIEW => [
                 'include_nomor_pengantar' => true,
-                'include_nomor_tugas' => true,
                 'include_paraf_pengantar' => true,
-                'include_paraf_tugas' => true,
                 'include_kadep_ttd_pengantar' => false,
-                'include_kadep_ttd_tugas' => false,
             ],
             LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW => [
                 'include_nomor_pengantar' => true,
-                'include_nomor_tugas' => true,
                 'include_paraf_pengantar' => true,
-                'include_paraf_tugas' => true,
                 'include_kadep_ttd_pengantar' => true,
-                'include_kadep_ttd_tugas' => true,
             ],
             default => [
                 'include_nomor_pengantar' => false,
-                'include_nomor_tugas' => false,
                 'include_paraf_pengantar' => false,
-                'include_paraf_tugas' => false,
                 'include_kadep_ttd_pengantar' => false,
-                'include_kadep_ttd_tugas' => false,
             ],
         };
     }

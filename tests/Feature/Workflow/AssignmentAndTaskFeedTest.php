@@ -50,6 +50,56 @@ class AssignmentAndTaskFeedTest extends TestCase
         $this->assertSame('administrasi', $type['category']);
     }
 
+    public function test_surat_types_includes_surat_tugas(): void
+    {
+        $admin = $this->primarySuperAdmin();
+
+        $types = $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/surat-types')
+            ->assertOk()
+            ->json();
+
+        $type = collect($types)->firstWhere('key', \App\Models\SuratTugasApplication::LETTER_TYPE);
+
+        $this->assertNotNull($type);
+        $this->assertSame('surat-tugas', $type['key']);
+        $this->assertSame('Surat Tugas', $type['label']);
+        $this->assertSame('administrasi', $type['category']);
+    }
+
+    public function test_super_admin_assignment_accepts_surat_tugas_key(): void
+    {
+        $admin = $this->primarySuperAdmin();
+
+        $this->actingAs($admin, 'sanctum')
+            ->postJson('/api/super-admin/users', [
+                'name' => 'Surat Tugas Tendik',
+                'email' => 'surat-tugas-tendik@example.test',
+                'password' => 'password123',
+                'role' => 'tendik',
+                'tendik_role' => 'persuratan',
+                'assigned_tasks' => [\App\Models\SuratTugasApplication::LETTER_TYPE],
+            ])
+            ->assertCreated();
+
+        $this->assertSame(
+            [\App\Models\SuratTugasApplication::LETTER_TYPE],
+            \App\Models\User::where('email', 'surat-tugas-tendik@example.test')->firstOrFail()->assigned_tasks
+        );
+    }
+
+    public function test_assignment_service_can_handle_surat_tugas_for_assigned_tendik(): void
+    {
+        $service = $this->app->make(\App\Services\LetterAssignmentService::class);
+        $assigned = $this->tendikPersuratan([\App\Models\SuratTugasApplication::LETTER_TYPE]);
+        $other = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
+
+        $this->assertTrue($service->canHandle($assigned, \App\Models\SuratTugasApplication::LETTER_TYPE));
+        $this->assertFalse($service->canHandle($other, \App\Models\SuratTugasApplication::LETTER_TYPE));
+        // Existing letters remain handled for their assignee.
+        $this->assertTrue($service->canHandle($other, ScholarshipApplication::LETTER_TYPE));
+    }
+
     public function test_super_admin_assignment_accepts_surat_keterangan_aktif_key(): void
     {
         $admin = $this->primarySuperAdmin();

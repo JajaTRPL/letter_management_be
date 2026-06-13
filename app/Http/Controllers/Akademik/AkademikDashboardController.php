@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Akademik;
 
+use App\Http\Controllers\Concerns\AddsSupportingDocumentMetadata;
 use App\Http\Controllers\Concerns\AuthorizesAcademicApplications;
 use App\Http\Controllers\Controller;
 use App\Models\LetterDocumentArtifact;
@@ -9,6 +10,7 @@ use App\Models\ProsesLuarNegeriApplication;
 use App\Models\ScholarshipApplication;
 use App\Models\SuratKeteranganAktifApplication;
 use App\Models\SuratPengantarMagangApplication;
+use App\Models\SuratTugasApplication;
 use App\Models\User;
 use App\Notifications\ScholarshipStatusNotification;
 use App\Enums\UserStatus;
@@ -16,6 +18,8 @@ use App\Services\AcademicRoutingService;
 use App\Services\AcademicSignatoryService;
 use App\Services\BeasiswaPreviewGenerationException;
 use App\Services\BeasiswaPreviewGenerationService;
+use App\Services\LetterAttachmentMetadataService;
+use App\Services\LetterRetentionSummaryService;
 use App\Services\LetterTaskCursorFeedService;
 use App\Services\LetterTaskFeedService;
 use App\Services\MahasiswaProfileDataService;
@@ -28,6 +32,7 @@ use RuntimeException;
 class AkademikDashboardController extends Controller
 {
     use AuthorizesAcademicApplications;
+    use AddsSupportingDocumentMetadata;
 
     private const DASHBOARD_TASK_LIMIT = 100;
     private const AKADEMIK_ROW_RELATIONS = [
@@ -45,7 +50,9 @@ class AkademikDashboardController extends Controller
     public function __construct(
         private LetterTaskCursorFeedService $cursorFeedService,
         private LetterTaskFeedService $taskFeedService,
-        private AcademicRoutingService $academicRoutingService
+        private AcademicRoutingService $academicRoutingService,
+        private LetterAttachmentMetadataService $attachmentMetadataService,
+        private LetterRetentionSummaryService $retentionSummaryService
     )
     {
     }
@@ -67,7 +74,8 @@ class AkademikDashboardController extends Controller
             $tasksByType[ScholarshipApplication::class] ?? collect(),
             $tasksByType[SuratPengantarMagangApplication::class] ?? collect(),
             $tasksByType[SuratKeteranganAktifApplication::class] ?? collect(),
-            $tasksByType[ProsesLuarNegeriApplication::class] ?? collect()
+            $tasksByType[ProsesLuarNegeriApplication::class] ?? collect(),
+            $tasksByType[SuratTugasApplication::class] ?? collect()
         );
 
         return response()->json([
@@ -171,6 +179,7 @@ class AkademikDashboardController extends Controller
         $magangTasks = collect();
         $aktifTasks = collect();
         $prosesLuarNegeriTasks = collect();
+        $suratTugasTasks = collect();
         $matchingTaskCount = 0;
 
         if ($targetStatus && $applyAcademicScope) {
@@ -195,9 +204,14 @@ class AkademikDashboardController extends Controller
                 ->orderBy('created_at', 'desc')
                 ->limit(self::DASHBOARD_TASK_LIMIT)
                 ->get();
+
+            $suratTugasTasks = $this->academicDashboardQuery(SuratTugasApplication::class, $targetStatus, $applyAcademicScope, true)
+                ->orderBy('created_at', 'desc')
+                ->limit(self::DASHBOARD_TASK_LIMIT)
+                ->get();
         }
 
-        $taskRows = $this->taskFeedService->combinedAkademikRows($tasks, $magangTasks, $aktifTasks, $prosesLuarNegeriTasks);
+        $taskRows = $this->taskFeedService->combinedAkademikRows($tasks, $magangTasks, $aktifTasks, $prosesLuarNegeriTasks, $suratTugasTasks);
         $displayedTaskCount = $taskRows->count();
 
         return response()->json([
@@ -242,6 +256,7 @@ class AkademikDashboardController extends Controller
             SuratPengantarMagangApplication::class,
             SuratKeteranganAktifApplication::class,
             ProsesLuarNegeriApplication::class,
+            SuratTugasApplication::class,
         ];
     }
 
@@ -278,7 +293,12 @@ class AkademikDashboardController extends Controller
         $application->setAttribute('generated_docx_path', null);
 
         return response()->json([
-            'application' => $application,
+            'application' => $this->withSupportingDocumentMetadata(
+                $application,
+                ScholarshipApplication::LETTER_TYPE,
+                $this->attachmentMetadataService,
+                $this->retentionSummaryService,
+            ),
             'profile_summary' => $profileDataService->profileSummaryForApplication($application),
             'student' => [
                 'name' => $normalized['name'],

@@ -3,6 +3,7 @@
 namespace Tests\Feature\Workflow;
 
 use App\Models\LetterDocumentArtifact;
+use App\Models\LetterApplicationAttachment;
 use App\Models\SuratPengantarMagangApplication;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -21,6 +22,7 @@ class SuratPengantarMagangSmokeTest extends TestCase
 
     public function test_mahasiswa_can_save_submit_and_list_magang_application(): void
     {
+        Storage::fake('local');
         Storage::fake('public');
         $tendik = $this->tendikPersuratan([SuratPengantarMagangApplication::LETTER_TYPE]);
         [$student] = $this->completeMahasiswa();
@@ -43,10 +45,20 @@ class SuratPengantarMagangSmokeTest extends TestCase
             'nama_perusahaan' => 'PT Test',
             'status' => SuratPengantarMagangApplication::STATUS_DRAFT,
         ]);
-        $this->assertNotNull(
+        $this->assertNull(
             SuratPengantarMagangApplication::find($applicationId)->proposal_kegiatan_magang_path,
-            'Proposal upload must persist a storage path.',
+            'Proposal upload must not write a legacy marker or raw storage path.',
         );
+        $this->assertDatabaseHas('letter_application_attachments', [
+            'letter_type' => SuratPengantarMagangApplication::LETTER_TYPE,
+            'application_id' => $applicationId,
+            'document_key' => 'proposal',
+        ]);
+        $attachment = LetterApplicationAttachment::where('letter_type', SuratPengantarMagangApplication::LETTER_TYPE)
+            ->where('application_id', $applicationId)
+            ->where('document_key', 'proposal')
+            ->firstOrFail();
+        $this->assertTrue(Storage::disk('local')->exists($attachment->storage_path));
 
         $this->mockMagangPreviewGenerationAlwaysReady();
 
@@ -79,6 +91,7 @@ class SuratPengantarMagangSmokeTest extends TestCase
         $tendik = $this->tendikPersuratan([SuratPengantarMagangApplication::LETTER_TYPE]);
         [$student] = $this->completeMahasiswa();
         $application = $this->magangApplication($student, ['assigned_to' => $tendik->id]);
+        $this->attachRegistryDocument($application, SuratPengantarMagangApplication::LETTER_TYPE, 'proposal', 'Proposal Magang.pdf');
 
         $this->actingAs($tendik, 'sanctum')
             ->patchJson("/api/tendik/surat-pengantar-magang/{$application->id}/revise", [

@@ -8,6 +8,7 @@ use App\Models\ProsesLuarNegeriApplication;
 use App\Models\ScholarshipApplication;
 use App\Models\SuratKeteranganAktifApplication;
 use App\Models\SuratPengantarMagangApplication;
+use App\Models\SuratTugasApplication;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
@@ -27,6 +28,7 @@ class LetterDocumentSourceHashService
     private const SKA_RENDER_PROFILE = 'ska-docx-gotenberg-v1-final-contract';
     private const PLN_RENDER_PROFILE = 'pln-docx-gotenberg-v1-final-contract';
     private const MAGANG_RENDER_PROFILE = 'magang-docx-gotenberg-v1-final-contract';
+    private const SURAT_TUGAS_RENDER_PROFILE = 'surat-tugas-docx-gotenberg-v1-contract';
 
     public function __construct(
         private ?AcademicSignatoryService $signatoryService = null,
@@ -99,11 +101,8 @@ class LetterDocumentSourceHashService
     /**
      * @param array{
      *     include_nomor_pengantar: bool,
-     *     include_nomor_tugas: bool,
      *     include_paraf_pengantar: bool,
-     *     include_paraf_tugas: bool,
-     *     include_kadep_ttd_pengantar: bool,
-     *     include_kadep_ttd_tugas: bool
+     *     include_kadep_ttd_pengantar: bool
      * } $phaseFlags
      * @param array<string, mixed> $pendingOverrides
      */
@@ -120,6 +119,167 @@ class LetterDocumentSourceHashService
         }
 
         return hash('sha256', $encoded);
+    }
+
+    /**
+     * @param array{include_nomor_tugas: bool, include_paraf_tugas: bool, include_kadep_ttd_tugas: bool} $phaseFlags
+     * @param array<string, mixed> $pendingOverrides
+     */
+    public function hashForSuratTugas(
+        SuratTugasApplication $application,
+        string $phase,
+        array $phaseFlags,
+        array $pendingOverrides = [],
+    ): string {
+        $payload = $this->canonicalSuratTugasPayload($application, $phase, $phaseFlags, $pendingOverrides);
+        $encoded = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($encoded === false) {
+            throw new \RuntimeException('Failed to encode Surat Tugas source-hash payload.');
+        }
+
+        return hash('sha256', $encoded);
+    }
+
+    /**
+     * Canonical Surat Tugas payload (standalone letter; renders its own tugas
+     * section). Includes only fields the Surat Tugas template renders. Legacy
+     * aggregate aliases are deliberately not read.
+     *
+     * @param array{include_nomor_tugas: bool, include_paraf_tugas: bool, include_kadep_ttd_tugas: bool} $phaseFlags
+     * @param array<string, mixed> $pendingOverrides
+     * @return array<string, mixed>
+     */
+    public function canonicalSuratTugasPayload(
+        SuratTugasApplication $application,
+        string $phase,
+        array $phaseFlags,
+        array $pendingOverrides = [],
+    ): array {
+        $application = $this->suratTugasApplicationSnapshot($application, $pendingOverrides);
+        $application->loadMissing([
+            'user.studyProgram.department.faculty',
+            'user.department.faculty',
+            'mahasiswaProfile',
+        ]);
+
+        $studentData = $this->profileDataService->forApplication($application);
+        $officialKadep = $this->officialKadepForPayload($application, $pendingOverrides);
+        $departmentDisplay = $this->renderText($studentData['department_display'] ?? null);
+        $renderedDepartmentName = $this->signatoryService->academicOfficeUnitName('kadep', $departmentDisplay);
+        $renderedFaculty = $this->renderedFacultyName($studentData['fakultas_display'] ?? null);
+        $renderedTanggalSurat = $this->normalizeRenderedDate(
+            $pendingOverrides['tanggal_surat'] ?? $this->resolveSuratTugasTanggalSurat($application, $phase),
+        );
+        $includesParaf = ($phaseFlags['include_paraf_tugas'] ?? false);
+        $includesKadepTtd = ($phaseFlags['include_kadep_ttd_tugas'] ?? false);
+
+        $payload = [
+            'letter_type' => SuratTugasApplication::LETTER_TYPE,
+            'application' => [
+                'id' => $application->getKey(),
+                'nomor_surat_tugas' => ($phaseFlags['include_nomor_tugas'] ?? false)
+                    ? $this->renderText($application->getAttribute('nomor_surat_tugas'))
+                    : null,
+                'nama_perusahaan' => $this->renderText($application->getAttribute('nama_perusahaan')),
+                'kegiatan' => $this->renderText($application->getAttribute('kegiatan')),
+                'posisi' => $this->renderText($application->getAttribute('posisi')),
+            ],
+            'student' => [
+                'nama' => $this->renderText($studentData['name'] ?? null),
+                'nim' => $this->renderText($studentData['nim'] ?? null),
+                'prodi' => $this->renderText($studentData['program_studi_display'] ?? null),
+                'departemen' => $renderedDepartmentName,
+                'fakultas' => $renderedFaculty,
+                'study_program_id' => $studentData['study_program_id'] ?? null,
+                'department_id' => $studentData['department_id'] ?? null,
+                'faculty_id' => $studentData['faculty_id'] ?? null,
+            ],
+            'internship' => [
+                'tgl_mulai' => $this->normalizeExplicitRenderedDate($application->getAttribute('tgl_mulai')),
+                'tgl_selesai' => $this->normalizeExplicitRenderedDate($application->getAttribute('tgl_selesai')),
+                'dpa' => $this->renderText($application->getAttribute('dosen_pembimbing_dpa')),
+            ],
+            'phase' => $phase,
+            'phase_flags' => $this->normalizeSuratTugasFlags($phaseFlags),
+            'rendered' => [
+                'profile' => self::SURAT_TUGAS_RENDER_PROFILE,
+                'tanggal_surat' => $renderedTanggalSurat,
+                'jabatan_kadep' => $this->signatoryService->academicOfficeRoleTitle('kadep'),
+                'departemen' => $renderedDepartmentName,
+                'fakultas' => $renderedFaculty,
+                'nama_kadep' => $this->renderText($officialKadep?->getAttribute('name')),
+                'nip_kadep' => $this->signatoryService->nipLikeValue($officialKadep),
+            ],
+            'signatory' => [
+                'kadep_signature' => $includesKadepTtd
+                    ? $this->publicImageMarker($this->signatoryService->signaturePath($officialKadep), 'missing:kadep_signature')
+                    : null,
+                'paraf' => $includesParaf
+                    ? $this->magangGlobalParafMarker()
+                    : null,
+            ],
+            'template_marker' => $this->templateMarker('template_surat_tugas_cache_path'),
+        ];
+
+        return $this->sortRecursive($payload);
+    }
+
+    private function normalizeSuratTugasFlags(array $flags): array
+    {
+        $known = ['include_nomor_tugas', 'include_paraf_tugas', 'include_kadep_ttd_tugas'];
+        $out = [];
+        foreach ($known as $key) {
+            $out[$key] = (bool) ($flags[$key] ?? false);
+        }
+        ksort($out);
+
+        return $out;
+    }
+
+    private function suratTugasApplicationSnapshot(SuratTugasApplication $application, array $overrides): SuratTugasApplication
+    {
+        $snapshot = $application->newInstance($application->getAttributes(), true);
+        $snapshot->setAttribute($application->getKeyName(), $application->getKey());
+        $snapshot->exists = $application->exists;
+        $snapshot->setRelations($application->getRelations());
+
+        foreach ([
+            'status',
+            'nomor_surat_tugas',
+            'nama_perusahaan',
+            'kegiatan',
+            'posisi',
+            'tgl_mulai',
+            'tgl_selesai',
+            'dosen_pembimbing_dpa',
+            'submitted_at',
+            'tendik_approved_at',
+            'tendik_approved_by',
+            'kaprodi_approved_at',
+            'kaprodi_approved_by',
+            'kadep_approved_at',
+            'kadep_approved_by',
+        ] as $attribute) {
+            if (array_key_exists($attribute, $overrides)) {
+                $snapshot->setAttribute($attribute, $overrides[$attribute]);
+            }
+        }
+
+        return $snapshot;
+    }
+
+    private function resolveSuratTugasTanggalSurat(SuratTugasApplication $application, string $phase): mixed
+    {
+        if ($phase === LetterDocumentArtifact::PHASE_TENDIK_REVIEW) {
+            return $application->getAttribute('submitted_at')
+                ?? $application->getAttribute('created_at')
+                ?? Carbon::now();
+        }
+
+        return $application->getAttribute('tendik_approved_at')
+            ?? $application->getAttribute('submitted_at')
+            ?? $application->getAttribute('created_at')
+            ?? Carbon::now();
     }
 
     /**
@@ -452,16 +612,14 @@ class LetterDocumentSourceHashService
     }
 
     /**
-     * Canonical Magang payload for the accepted two-section final DOCX
-     * contract. Legacy aggregate aliases are deliberately not read here.
+     * Canonical Magang payload for the accepted Pengantar-only final DOCX
+     * contract. Legacy aggregate aliases (and the split-out Surat Tugas fields)
+     * are deliberately not read here.
      *
      * @param array{
      *     include_nomor_pengantar: bool,
-     *     include_nomor_tugas: bool,
      *     include_paraf_pengantar: bool,
-     *     include_paraf_tugas: bool,
-     *     include_kadep_ttd_pengantar: bool,
-     *     include_kadep_ttd_tugas: bool
+     *     include_kadep_ttd_pengantar: bool
      * } $phaseFlags
      * @param array<string, mixed> $pendingOverrides
      * @return array<string, mixed>
@@ -483,14 +641,15 @@ class LetterDocumentSourceHashService
         $officialKadep = $this->officialKadepForPayload($application, $pendingOverrides);
         $departmentDisplay = $this->renderText($studentData['department_display'] ?? null);
         $renderedDepartmentName = $this->signatoryService->academicOfficeUnitName('kadep', $departmentDisplay);
-        $renderedFaculty = $this->renderedFacultyName($studentData['fakultas_display'] ?? null);
+        // fakultas, dpa, and posisi are intentionally NOT part of the Magang
+        // canonical payload — the refreshed Pengantar-only template does not render
+        // them, so they must not key the artifact. Changing any of them must not
+        // change the Magang source hash (completed artifacts stay pinned).
         $renderedTanggalSurat = $this->normalizeRenderedDate(
             $pendingOverrides['tanggal_surat'] ?? $this->resolveMagangTanggalSurat($application, $phase),
         );
-        $includesParaf = ($phaseFlags['include_paraf_pengantar'] ?? false)
-            || ($phaseFlags['include_paraf_tugas'] ?? false);
-        $includesKadepTtd = ($phaseFlags['include_kadep_ttd_pengantar'] ?? false)
-            || ($phaseFlags['include_kadep_ttd_tugas'] ?? false);
+        $includesParaf = ($phaseFlags['include_paraf_pengantar'] ?? false);
+        $includesKadepTtd = ($phaseFlags['include_kadep_ttd_pengantar'] ?? false);
 
         $payload = [
             'letter_type' => SuratPengantarMagangApplication::LETTER_TYPE,
@@ -499,9 +658,12 @@ class LetterDocumentSourceHashService
                 'nomor_surat_pengantar' => ($phaseFlags['include_nomor_pengantar'] ?? false)
                     ? $this->renderText($application->getAttribute('nomor_surat_pengantar'))
                     : null,
-                'nomor_surat_tugas' => ($phaseFlags['include_nomor_tugas'] ?? false)
-                    ? $this->renderText($application->getAttribute('nomor_surat_tugas'))
-                    : null,
+                // S1 (Magang standalone): nomor_surat_tugas intentionally excluded
+                // from the Magang canonical payload — Surat Tugas is now a separate
+                // letter. Changing the legacy tugas column must NOT alter the Magang
+                // source hash. (Completed Magang artifacts are pinned: final-download
+                // and complete only read the stored PHASE_MAHASISWA_REVIEW artifact
+                // and never regenerate, so the hash change cannot mutate issued PDFs.)
                 'jabatan_penerima' => $this->renderText($application->getAttribute('jabatan_penerima')),
                 'nama_perusahaan' => $this->renderText($application->getAttribute('nama_perusahaan')),
                 'alamat_jalan' => $this->renderText($application->getAttribute('alamat_jalan')),
@@ -517,7 +679,6 @@ class LetterDocumentSourceHashService
                 'prodi' => $this->renderText($studentData['program_studi_display'] ?? null),
                 'kode_prodi' => $this->renderText($studentData['study_program_code'] ?? null),
                 'departemen' => $renderedDepartmentName,
-                'fakultas' => $renderedFaculty,
                 'study_program_id' => $studentData['study_program_id'] ?? null,
                 'department_id' => $studentData['department_id'] ?? null,
                 'faculty_id' => $studentData['faculty_id'] ?? null,
@@ -525,8 +686,6 @@ class LetterDocumentSourceHashService
             'internship' => [
                 'tgl_mulai' => $this->normalizeExplicitRenderedDate($application->getAttribute('tgl_mulai')),
                 'tgl_selesai' => $this->normalizeExplicitRenderedDate($application->getAttribute('tgl_selesai')),
-                'dpa' => $this->renderText($application->getAttribute('dosen_pembimbing_dpa')),
-                'posisi' => $this->renderText($application->getAttribute('peran')),
             ],
             'phase' => $phase,
             'phase_flags' => $this->normalizeMagangFlags($phaseFlags),
@@ -535,7 +694,6 @@ class LetterDocumentSourceHashService
                 'tanggal_surat' => $renderedTanggalSurat,
                 'jabatan_kadep' => $this->signatoryService->academicOfficeRoleTitle('kadep'),
                 'departemen' => $renderedDepartmentName,
-                'fakultas' => $renderedFaculty,
                 'nama_kadep' => $this->renderText($officialKadep?->getAttribute('name')),
                 'nip_kadep' => $this->signatoryService->nipLikeValue($officialKadep),
             ],
@@ -567,13 +725,12 @@ class LetterDocumentSourceHashService
 
     private function normalizeMagangFlags(array $flags): array
     {
+        // S1 (Magang standalone): only Pengantar flags participate in the Magang
+        // hash. Tugas-only flags are excluded so legacy tugas data cannot shift it.
         $known = [
             'include_nomor_pengantar',
-            'include_nomor_tugas',
             'include_paraf_pengantar',
-            'include_paraf_tugas',
             'include_kadep_ttd_pengantar',
-            'include_kadep_ttd_tugas',
         ];
         $out = [];
         foreach ($known as $key) {
@@ -755,7 +912,6 @@ class LetterDocumentSourceHashService
         foreach ([
             'status',
             'nomor_surat_pengantar',
-            'nomor_surat_tugas',
             'jabatan_penerima',
             'nama_perusahaan',
             'alamat_jalan',

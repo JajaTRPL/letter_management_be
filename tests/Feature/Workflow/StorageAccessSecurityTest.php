@@ -142,7 +142,7 @@ class StorageAccessSecurityTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_owner_mahasiswa_can_access_own_magang_proposal(): void
+    public function test_owner_mahasiswa_cannot_access_own_magang_proposal_via_raw_storage(): void
     {
         Storage::fake('public');
         Storage::disk('public')->put('surat-pengantar-magang/proposals/proposal.pdf', '%PDF');
@@ -153,7 +153,7 @@ class StorageAccessSecurityTest extends TestCase
 
         $this->actingAs($student, 'sanctum')
             ->get('/api/storage/surat-pengantar-magang/proposals/proposal.pdf')
-            ->assertOk();
+            ->assertForbidden();
     }
 
     public function test_unrelated_student_cannot_access_another_students_magang_proposal(): void
@@ -171,7 +171,7 @@ class StorageAccessSecurityTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_assigned_tendik_can_access_magang_proposal_and_unassigned_tendik_cannot(): void
+    public function test_assigned_and_unassigned_tendik_cannot_access_magang_proposal_via_raw_storage(): void
     {
         Storage::fake('public');
         Storage::disk('public')->put('surat-pengantar-magang/proposals/proposal.pdf', '%PDF');
@@ -185,14 +185,14 @@ class StorageAccessSecurityTest extends TestCase
 
         $this->actingAs($assignedTendik, 'sanctum')
             ->get('/api/storage/surat-pengantar-magang/proposals/proposal.pdf')
-            ->assertOk();
+            ->assertForbidden();
 
         $this->actingAs($unassignedTendik, 'sanctum')
             ->get('/api/storage/surat-pengantar-magang/proposals/proposal.pdf')
             ->assertForbidden();
     }
 
-    public function test_scoped_akademik_can_access_magang_proposal_and_wrong_scope_cannot(): void
+    public function test_scoped_and_wrong_scope_akademik_cannot_access_magang_proposal_via_raw_storage(): void
     {
         Storage::fake('public');
         Storage::disk('public')->put('surat-pengantar-magang/proposals/proposal.pdf', '%PDF');
@@ -211,14 +211,14 @@ class StorageAccessSecurityTest extends TestCase
 
         $this->actingAs($scopedAkademik, 'sanctum')
             ->get('/api/storage/surat-pengantar-magang/proposals/proposal.pdf')
-            ->assertOk();
+            ->assertForbidden();
 
         $this->actingAs($wrongAkademik, 'sanctum')
             ->get('/api/storage/surat-pengantar-magang/proposals/proposal.pdf')
             ->assertForbidden();
     }
 
-    public function test_owner_mahasiswa_can_access_own_scholarship_attachment(): void
+    public function test_owner_mahasiswa_cannot_access_own_scholarship_attachment_via_raw_storage(): void
     {
         Storage::fake('public');
         Storage::disk('public')->put('scholarships/transcripts/file.pdf', '%PDF');
@@ -229,7 +229,7 @@ class StorageAccessSecurityTest extends TestCase
 
         $this->actingAs($student, 'sanctum')
             ->get('/api/storage/scholarships/transcripts/file.pdf')
-            ->assertOk();
+            ->assertForbidden();
     }
 
     public function test_unrelated_student_cannot_access_another_students_scholarship_attachment(): void
@@ -247,7 +247,7 @@ class StorageAccessSecurityTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_assigned_tendik_can_access_scholarship_attachment_and_unassigned_tendik_cannot(): void
+    public function test_assigned_and_unassigned_tendik_cannot_access_scholarship_attachment_via_raw_storage(): void
     {
         Storage::fake('public');
         Storage::disk('public')->put('scholarships/slips/slip.pdf', '%PDF');
@@ -261,14 +261,14 @@ class StorageAccessSecurityTest extends TestCase
 
         $this->actingAs($assignedTendik, 'sanctum')
             ->get('/api/storage/scholarships/slips/slip.pdf')
-            ->assertOk();
+            ->assertForbidden();
 
         $this->actingAs($unassignedTendik, 'sanctum')
             ->get('/api/storage/scholarships/slips/slip.pdf')
             ->assertForbidden();
     }
 
-    public function test_scoped_akademik_can_access_scholarship_attachment_and_wrong_scope_cannot(): void
+    public function test_scoped_and_wrong_scope_akademik_cannot_access_scholarship_attachment_via_raw_storage(): void
     {
         Storage::fake('public');
         Storage::disk('public')->put('scholarships/transcripts/file.pdf', '%PDF');
@@ -287,7 +287,7 @@ class StorageAccessSecurityTest extends TestCase
 
         $this->actingAs($scopedAkademik, 'sanctum')
             ->get('/api/storage/scholarships/transcripts/file.pdf')
-            ->assertOk();
+            ->assertForbidden();
 
         $this->actingAs($wrongAkademik, 'sanctum')
             ->get('/api/storage/scholarships/transcripts/file.pdf')
@@ -313,6 +313,23 @@ class StorageAccessSecurityTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_surat_tugas_supporting_documents_cannot_be_accessed_via_raw_storage(): void
+    {
+        Storage::fake('public');
+        Storage::disk('public')->put('surat-tugas/supporting/proposals/proposal.pdf', '%PDF');
+        Storage::disk('public')->put('surat-tugas/supporting/pengantar/pengantar.pdf', '%PDF');
+        [$student] = $this->completeMahasiswa();
+
+        foreach ([
+            '/api/storage/surat-tugas/supporting/proposals/proposal.pdf',
+            '/api/storage/surat-tugas/supporting/pengantar/pengantar.pdf',
+        ] as $url) {
+            $this->actingAs($student, 'sanctum')
+                ->get($url)
+                ->assertForbidden();
+        }
+    }
+
     public function test_missing_authorized_file_returns_404_after_authorization(): void
     {
         Storage::fake('public');
@@ -331,6 +348,7 @@ class StorageAccessSecurityTest extends TestCase
         foreach ([
             '/api/storage/profiles/fotos/%2e%2e/.env',
             '/api/storage/profiles/fotos/%252e%252e/.env',
+            '/api/storage/profiles/fotos/photo.jpg%00.png',
         ] as $url) {
             $this->actingAs($student, 'sanctum')
                 ->get($url)
@@ -345,6 +363,9 @@ class StorageAccessSecurityTest extends TestCase
         Storage::disk('public')->put('profiles/signatures/signature.png', 'png');
         Storage::disk('public')->put('surat-pengantar-magang/proposals/proposal.pdf', '%PDF');
         Storage::disk('public')->put('scholarships/transcripts/file.pdf', '%PDF');
+        Storage::disk('public')->put('scholarships/slips/slip.pdf', '%PDF');
+        Storage::disk('public')->put('surat-tugas/supporting/proposals/proposal.pdf', '%PDF');
+        Storage::disk('public')->put('surat-tugas/supporting/pengantar/pengantar.pdf', '%PDF');
         Storage::disk('public')->put('surat-pengantar-magang/generated/final.pdf', '%PDF');
         Storage::disk('public')->put('letter-document-artifacts/surat-permohonan-beasiswa/1/tendik_review/preview.pdf', '%PDF');
 
@@ -353,6 +374,9 @@ class StorageAccessSecurityTest extends TestCase
             '/storage/profiles/signatures/signature.png',
             '/storage/surat-pengantar-magang/proposals/proposal.pdf',
             '/storage/scholarships/transcripts/file.pdf',
+            '/storage/scholarships/slips/slip.pdf',
+            '/storage/surat-tugas/supporting/proposals/proposal.pdf',
+            '/storage/surat-tugas/supporting/pengantar/pengantar.pdf',
             '/storage/surat-pengantar-magang/generated/final.pdf',
             '/storage/letter-document-artifacts/surat-permohonan-beasiswa/1/tendik_review/preview.pdf',
         ] as $url) {

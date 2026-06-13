@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\ScholarshipApplication;
+use App\Models\SuratTugasApplication;
 use Illuminate\Support\Facades\Cache;
 
 class SuratAnalyticsService
@@ -30,6 +31,10 @@ class SuratAnalyticsService
         'aktif'       => '1–3 Hari Kerja',
         'magang'      => '2–5 Hari Kerja',
         'luar_negeri' => '2–4 Hari Kerja',
+        // Approved temporary fallback: Surat Tugas currently shares the Magang
+        // approval chain. Replaced automatically by the live per-type average
+        // once enough Completed Surat Tugas rows exist (see calculateDurations).
+        'surat-tugas' => '2–5 Hari Kerja',
     ];
 
     /**
@@ -53,8 +58,12 @@ class SuratAnalyticsService
      */
     private function calculateDurations(): array
     {
-        // Pass 1: Query last 30 days
-        $recentResults = $this->queryCompletedDurations(now()->subDays(30));
+        // Pass 1: Query last 30 days. Scholarship-derived buckets (beasiswa/
+        // magang/aktif/luar_negeri) and the standalone Surat Tugas table are
+        // merged into one type-keyed collection so the loop below treats every
+        // letter type identically.
+        $recentResults = collect($this->queryCompletedDurations(now()->subDays(30)))
+            ->merge($this->queryCompletedSuratTugasDurations(now()->subDays(30)));
 
         // Pass 2: Query ALL history (only used as fallback)
         $allResults = null;
@@ -80,7 +89,8 @@ class SuratAnalyticsService
 
             // Fallback: try ALL historical data for this type
             if ($allResults === null) {
-                $allResults = $this->queryCompletedDurations(null);
+                $allResults = collect($this->queryCompletedDurations(null))
+                    ->merge($this->queryCompletedSuratTugasDurations(null));
             }
 
             $allGroup = $allResults->get($type);
@@ -122,30 +132,76 @@ class SuratAnalyticsService
                   ->orWhereNotNull('kaprodi_approved_at');
             });
 
-        if ($since) {
-            $query->where(function ($q) use ($since) {
-                $q->where('kadep_approved_at', '>=', $since)
-                  ->orWhere(function ($q2) use ($since) {
-                      $q2->whereNull('kadep_approved_at')
-                         ->where('kaprodi_approved_at', '>=', $since);
-                  });
-            });
-        }
+        $this->applyCompletionSinceFilter($query, $since);
 
         return $query
             ->select('scholarship_name', 'submitted_at', 'kadep_approved_at', 'kaprodi_approved_at')
             ->get()
-            ->map(function ($app) {
-                $completedAt = $app->kadep_approved_at ?? $app->kaprodi_approved_at;
-                $durationDays = $app->submitted_at->diffInSeconds($completedAt) / 86400;
-
-                return [
-                    'type'     => $this->normalizeType($app->scholarship_name),
-                    'duration' => $durationDays,
-                ];
-            })
+            ->map(fn ($app) => [
+                'type'     => $this->normalizeType($app->scholarship_name),
+                'duration' => $this->durationDays($app),
+            ])
             ->filter(fn ($item) => $item['duration'] > 0 && $item['duration'] <= self::MAX_DURATION_DAYS)
             ->groupBy('type');
+    }
+
+    /**
+     * Live Surat Tugas durations from its own standalone table, bucketed under
+     * the canonical 'surat-tugas' key. Reuses the identical completion-window,
+     * duration math and outlier filter as the other letters.
+     *
+     * @param \Carbon\Carbon|null $since
+     * @return \Illuminate\Support\Collection
+     */
+    private function queryCompletedSuratTugasDurations($since)
+    {
+        $query = SuratTugasApplication::whereNotNull('submitted_at')
+            ->where('status', SuratTugasApplication::STATUS_COMPLETED)
+            ->where(function ($q) {
+                $q->whereNotNull('kadep_approved_at')
+                  ->orWhereNotNull('kaprodi_approved_at');
+            });
+
+        $this->applyCompletionSinceFilter($query, $since);
+
+        return $query
+            ->select('submitted_at', 'kadep_approved_at', 'kaprodi_approved_at')
+            ->get()
+            ->map(fn ($app) => [
+                'type'     => SuratTugasApplication::LETTER_TYPE,
+                'duration' => $this->durationDays($app),
+            ])
+            ->filter(fn ($item) => $item['duration'] > 0 && $item['duration'] <= self::MAX_DURATION_DAYS)
+            ->groupBy('type');
+    }
+
+    /**
+     * Shared completion-window filter: count a row as completed within the
+     * window if its final approval (Kadep, else Kaprodi) lands on/after $since.
+     */
+    private function applyCompletionSinceFilter($query, $since): void
+    {
+        if (!$since) {
+            return;
+        }
+
+        $query->where(function ($q) use ($since) {
+            $q->where('kadep_approved_at', '>=', $since)
+              ->orWhere(function ($q2) use ($since) {
+                  $q2->whereNull('kadep_approved_at')
+                     ->where('kaprodi_approved_at', '>=', $since);
+              });
+        });
+    }
+
+    /**
+     * Shared duration math: submitted → final approval, expressed in days.
+     */
+    private function durationDays($app): float
+    {
+        $completedAt = $app->kadep_approved_at ?? $app->kaprodi_approved_at;
+
+        return $app->submitted_at->diffInSeconds($completedAt) / 86400;
     }
 
     /**

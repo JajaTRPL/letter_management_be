@@ -48,34 +48,28 @@ class SuratPengantarMagangPhaseResolverTest extends TestCase
         }
     }
 
-    public function test_phase_flags_gate_both_document_sections(): void
+    public function test_phase_flags_gate_pengantar_section_only_after_tugas_split(): void
     {
+        // S1 (Magang standalone): all tugas-only flags are permanently false. The
+        // Magang artifact renders the Pengantar section only; paraf/Kadep-TTD turn
+        // on progressively for the Pengantar section across phases.
         $application = $this->magangApplication();
 
         $this->assertSame($this->allFalseFlags(), $this->resolver()->phaseFlagsFor($application, LetterDocumentArtifact::PHASE_TENDIK_REVIEW));
         $this->assertSame([
             'include_nomor_pengantar' => true,
-            'include_nomor_tugas' => true,
             'include_paraf_pengantar' => false,
-            'include_paraf_tugas' => false,
             'include_kadep_ttd_pengantar' => false,
-            'include_kadep_ttd_tugas' => false,
         ], $this->resolver()->phaseFlagsFor($application, LetterDocumentArtifact::PHASE_PRODI_REVIEW));
         $this->assertSame([
             'include_nomor_pengantar' => true,
-            'include_nomor_tugas' => true,
             'include_paraf_pengantar' => true,
-            'include_paraf_tugas' => true,
             'include_kadep_ttd_pengantar' => false,
-            'include_kadep_ttd_tugas' => false,
         ], $this->resolver()->phaseFlagsFor($application, LetterDocumentArtifact::PHASE_DEPARTEMEN_REVIEW));
         $this->assertSame([
             'include_nomor_pengantar' => true,
-            'include_nomor_tugas' => true,
             'include_paraf_pengantar' => true,
-            'include_paraf_tugas' => true,
             'include_kadep_ttd_pengantar' => true,
-            'include_kadep_ttd_tugas' => true,
         ], $this->resolver()->phaseFlagsFor($application, LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW));
     }
 
@@ -88,11 +82,8 @@ class SuratPengantarMagangPhaseResolverTest extends TestCase
     {
         return [
             'include_nomor_pengantar' => false,
-            'include_nomor_tugas' => false,
             'include_paraf_pengantar' => false,
-            'include_paraf_tugas' => false,
             'include_kadep_ttd_pengantar' => false,
-            'include_kadep_ttd_tugas' => false,
         ];
     }
 }

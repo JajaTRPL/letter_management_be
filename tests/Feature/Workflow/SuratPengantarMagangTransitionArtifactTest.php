@@ -53,6 +53,7 @@ class SuratPengantarMagangTransitionArtifactTest extends TestCase
             'submitted_at' => null,
             'assigned_to' => null,
         ]);
+        $this->attachRegistryDocument($application, SuratPengantarMagangApplication::LETTER_TYPE, 'proposal', 'Proposal Magang.pdf');
 
         $this->expectPreviewGenerationCall(
             LetterDocumentArtifact::PHASE_TENDIK_REVIEW,
@@ -86,6 +87,7 @@ class SuratPengantarMagangTransitionArtifactTest extends TestCase
             'revision_note' => 'Perbaiki data.',
             'rejection_reason' => 'Alasan lama.',
         ]);
+        $this->attachRegistryDocument($application, SuratPengantarMagangApplication::LETTER_TYPE, 'proposal', 'Proposal Magang.pdf');
 
         $this->expectPreviewGenerationCall(LetterDocumentArtifact::PHASE_TENDIK_REVIEW);
 
@@ -108,6 +110,7 @@ class SuratPengantarMagangTransitionArtifactTest extends TestCase
             'submitted_at' => null,
             'assigned_to' => null,
         ]);
+        $this->attachRegistryDocument($application, SuratPengantarMagangApplication::LETTER_TYPE, 'proposal', 'Proposal Magang.pdf');
 
         $this->mockPreviewGenerationThrows();
 
@@ -148,7 +151,7 @@ class SuratPengantarMagangTransitionArtifactTest extends TestCase
             },
         );
 
-        $this->actingAs($tendik, 'sanctum')
+        $response = $this->actingAs($tendik, 'sanctum')
             ->patchJson("/api/tendik/surat-pengantar-magang/{$application->id}/approve", [
                 'nomor_surat_pengantar' => 'MAG/PENGANTAR/WIRE/001',
                 'nomor_surat_tugas' => 'MAG/TUGAS/WIRE/001',
@@ -157,6 +160,7 @@ class SuratPengantarMagangTransitionArtifactTest extends TestCase
             ->assertJsonPath('application.status', SuratPengantarMagangApplication::STATUS_APPROVED_TENDIK)
             ->assertJsonPath('application.nomor_surat_pengantar', 'MAG/PENGANTAR/WIRE/001')
             ->assertJsonPath('application.nomor_surat_tugas', 'MAG/TUGAS/WIRE/001');
+        $this->assertArrayNotHasKey('proposal_kegiatan_magang_path', $response->json('application'));
 
         $fresh = $application->fresh();
         $this->assertSame('MAG/PENGANTAR/WIRE/001', $fresh->nomor_surat);
@@ -205,7 +209,9 @@ class SuratPengantarMagangTransitionArtifactTest extends TestCase
                 'nomor_surat' => 'MAG/LEGACY/ONLY',
             ])
             ->assertUnprocessable()
-            ->assertJsonValidationErrors(['nomor_surat_pengantar', 'nomor_surat_tugas']);
+            // S1 (Magang standalone): only nomor_surat_pengantar is required now.
+            ->assertJsonValidationErrors(['nomor_surat_pengantar'])
+            ->assertJsonMissingValidationErrors(['nomor_surat_tugas']);
 
         $this->assertSame(SuratPengantarMagangApplication::STATUS_SUBMITTED, $legacyApplication->fresh()->status);
         $this->assertNull($legacyApplication->fresh()->nomor_surat);

@@ -30,7 +30,7 @@ class SuratPengantarMagangPreviewGenerationService
 
     /**
      * @param array<string, mixed> $overrides In-memory render values such as
-     *     nomor_surat_pengantar, nomor_surat_tugas, tanggal_surat, or official_kadep.
+     *     nomor_surat_pengantar, tanggal_surat, or official_kadep.
      */
     public function generateForCurrentPhase(
         SuratPengantarMagangApplication $application,
@@ -284,7 +284,6 @@ class SuratPengantarMagangPreviewGenerationService
         foreach ([
             'status',
             'nomor_surat_pengantar',
-            'nomor_surat_tugas',
             'jabatan_penerima',
             'nama_perusahaan',
             'alamat_jalan',
