@@ -48,6 +48,7 @@ class BeasiswaSubmitPreviewArtifactTest extends TestCase
             'submitted_at' => null,
             'assigned_to' => null,
         ]);
+        $this->attachBeasiswaRequiredDocuments($application);
 
         $this->actingAs($student, 'sanctum')
             ->postJson('/api/mahasiswa/surat-permohonan-beasiswa/submit', [
@@ -92,6 +93,7 @@ class BeasiswaSubmitPreviewArtifactTest extends TestCase
             'revision_note' => 'Perbaiki data keluarga.',
             'revised_at' => Carbon::parse('2026-05-20 09:00:00'),
         ]);
+        $this->attachBeasiswaRequiredDocuments($application);
 
         $this->actingAs($student, 'sanctum')
             ->postJson('/api/mahasiswa/surat-permohonan-beasiswa/submit', [
@@ -117,6 +119,7 @@ class BeasiswaSubmitPreviewArtifactTest extends TestCase
             'submitted_at' => null,
             'assigned_to' => null,
         ]);
+        $this->attachBeasiswaRequiredDocuments($application);
 
         $this->actingAs($student, 'sanctum')
             ->postJson('/api/mahasiswa/surat-permohonan-beasiswa/submit', [
@@ -148,6 +151,7 @@ class BeasiswaSubmitPreviewArtifactTest extends TestCase
             'submitted_at' => null,
             'assigned_to' => null,
         ]);
+        $this->attachBeasiswaRequiredDocuments($application);
 
         $previewService = Mockery::mock(BeasiswaPreviewGenerationService::class);
         $previewService->shouldReceive('generateForPhase')
@@ -185,6 +189,7 @@ class BeasiswaSubmitPreviewArtifactTest extends TestCase
             'submitted_at' => null,
             'assigned_to' => null,
         ]);
+        $this->attachBeasiswaRequiredDocuments($application);
 
         $pendingSubmittedAt = Carbon::now();
         $ready = app(BeasiswaPreviewGenerationService::class)->generateForPhase(
