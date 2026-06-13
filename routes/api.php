@@ -160,6 +160,21 @@ Route::middleware('throttle:api')->group(function () {
             Route::get('/reports/login-activity', [\App\Http\Controllers\SuperAdmin\UserController::class, 'loginReport']);
             Route::get('/reports/admin-logs', [\App\Http\Controllers\SuperAdmin\UserController::class, 'activityLog']);
 
+            // Global completed-letter retention controls. Super Admin only;
+            // scheduler activation remains config-driven outside this API.
+            Route::prefix('retention')->group(function () {
+                Route::get('/overview', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'overview']);
+                Route::get('/policy', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'policy']);
+                Route::put('/policy', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'updatePolicy']);
+                Route::get('/candidates', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'candidates']);
+                Route::get('/archives', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'archives']);
+                Route::get('/actions', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'actions']);
+                Route::post('/dry-run', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'dryRun']);
+                Route::post('/execute', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'execute']);
+                Route::post('/archives/{artifact}/restore', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'restore']);
+                Route::post('/archives/{artifact}/purge', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'purge']);
+            });
+
             // Template Operations
             Route::post('/templates/update-pdf', [\App\Http\Controllers\SuperAdmin\TemplateController::class, 'updatePdf']);
             Route::get('/templates', [\App\Http\Controllers\SuperAdmin\TemplateManagementController::class, 'index']);

@@ -2,13 +2,16 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Concerns\AddsSupportingDocumentMetadata;
 use App\Http\Controllers\Concerns\AuthorizesAcademicApplications;
 use App\Models\LetterDocumentArtifact;
 use App\Models\SuratKeteranganAktifApplication;
 use App\Services\AcademicRoutingService;
 use App\Services\LetterAssignmentService;
+use App\Services\LetterAttachmentMetadataService;
 use App\Services\LetterDocumentAccessService;
 use App\Services\LetterDocumentArtifactService;
+use App\Services\LetterRetentionSummaryService;
 use App\Services\MahasiswaProfileDataService;
 use App\Services\SuratKeteranganAktifPreviewGenerationException;
 use App\Services\SuratKeteranganAktifPreviewGenerationService;
@@ -24,12 +27,15 @@ use RuntimeException;
 class SuratKeteranganAktifController extends Controller
 {
     use AuthorizesAcademicApplications;
+    use AddsSupportingDocumentMetadata;
 
     public function __construct(
         private LetterDocumentAccessService $documentAccessService,
         private LetterAssignmentService $assignmentService,
         private AcademicRoutingService $academicRoutingService,
-        private MahasiswaProfileDataService $profileDataService
+        private MahasiswaProfileDataService $profileDataService,
+        private LetterAttachmentMetadataService $attachmentMetadataService,
+        private LetterRetentionSummaryService $retentionSummaryService,
     ) {
     }
 
@@ -67,7 +73,11 @@ class SuratKeteranganAktifController extends Controller
             ],
             'profile' => $user->mahasiswaProfile,
             'profile_summary' => $this->profileDataService->profileSummaryForUser($user),
-            'application' => $application,
+            'application' => $application ? $this->withSupportingDocumentMetadata(
+                $application,
+                SuratKeteranganAktifApplication::LETTER_TYPE,
+                $this->attachmentMetadataService,
+            ) : null,
         ]);
     }
 
@@ -94,7 +104,11 @@ class SuratKeteranganAktifController extends Controller
 
         return response()->json([
             'message' => 'Draft Surat Keterangan Aktif berhasil disimpan',
-            'application' => $application->fresh('mahasiswaProfile'),
+            'application' => $this->withSupportingDocumentMetadata(
+                $application->fresh('mahasiswaProfile'),
+                SuratKeteranganAktifApplication::LETTER_TYPE,
+                $this->attachmentMetadataService,
+            ),
         ]);
     }
 
@@ -174,7 +188,11 @@ class SuratKeteranganAktifController extends Controller
 
         return response()->json([
             'message' => 'Pengajuan Surat Keterangan Aktif berhasil dikirim',
-            'application' => $application->fresh('mahasiswaProfile'),
+            'application' => $this->withSupportingDocumentMetadata(
+                $application->fresh('mahasiswaProfile'),
+                SuratKeteranganAktifApplication::LETTER_TYPE,
+                $this->attachmentMetadataService,
+            ),
             'assigned_to' => $assignedTendik?->name,
         ]);
     }
@@ -211,7 +229,12 @@ class SuratKeteranganAktifController extends Controller
         ]);
 
         return response()->json([
-            'application' => $application,
+            'application' => $this->withSupportingDocumentMetadata(
+                $application,
+                SuratKeteranganAktifApplication::LETTER_TYPE,
+                $this->attachmentMetadataService,
+                $this->retentionSummaryService,
+            ),
             'profile_summary' => $this->profileDataService->profileSummaryForApplication($application),
         ]);
     }
@@ -779,6 +802,11 @@ class SuratKeteranganAktifController extends Controller
     {
         $application->setAttribute('generated_pdf_path', null);
 
-        return $application;
+        return $this->withSupportingDocumentMetadata(
+            $application,
+            SuratKeteranganAktifApplication::LETTER_TYPE,
+            $this->attachmentMetadataService,
+            $this->retentionSummaryService,
+        );
     }
 }
