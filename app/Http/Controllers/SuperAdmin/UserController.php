@@ -46,7 +46,10 @@ class UserController extends Controller
             'studyProgram:id,code,name,department_id',
             'studyProgram.department:id,code,name,faculty_id',
             'studyProgram.department.faculty:id,code,name',
-            'department:id,code,name',
+            // Direct department relation (Kadep/Sekdep) must also expose faculty
+            // so the frontend can resolve Fakultas without falling back to '-'.
+            'department:id,code,name,faculty_id',
+            'department.faculty:id,code,name',
             'laboratory:id,code,name',
         ])
         ->select('id', 'name', 'email', 'nip', 'role', 'sub_role', 'tendik_role', 'laboratory_id', 'study_program_id', 'department_id', 'role_level', 'status', 'assigned_tasks', 'created_at')
