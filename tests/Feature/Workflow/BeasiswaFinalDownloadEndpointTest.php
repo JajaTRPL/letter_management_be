@@ -144,6 +144,24 @@ class BeasiswaFinalDownloadEndpointTest extends TestCase
             'nomor_surat' => '001/SPB/2026',
         ]);
         $this->artifact($application, LetterDocumentArtifact::PHASE_DEPARTEMEN_REVIEW);
+
+        $response = $this->actingAs($student, 'sanctum')
+            ->getJson("/api/mahasiswa/surat-permohonan-beasiswa/{$application->id}/final-download")
+            ->assertNotFound()
+            ->assertJsonPath('reason', 'artifact_unavailable');
+
+        $this->assertStringNotContainsString('letter-document-artifacts', $response->getContent());
+        $this->assertStringNotContainsString('source_hash', $response->getContent());
+    }
+
+    public function test_failed_mahasiswa_review_pdf_artifact_returns_safe_failed_status_without_path_leak(): void
+    {
+        [$student] = $this->completeMahasiswa();
+        $application = $this->scholarshipApplication($student, [
+            'status' => ScholarshipApplication::STATUS_COMPLETED,
+            'completed_at' => Carbon::now(),
+            'nomor_surat' => '001/SPB/2026',
+        ]);
         $this->artifact(
             $application,
             LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW,
@@ -152,8 +170,8 @@ class BeasiswaFinalDownloadEndpointTest extends TestCase
 
         $response = $this->actingAs($student, 'sanctum')
             ->getJson("/api/mahasiswa/surat-permohonan-beasiswa/{$application->id}/final-download")
-            ->assertNotFound()
-            ->assertJsonPath('reason', 'artifact_unavailable');
+            ->assertStatus(503)
+            ->assertJsonPath('reason', 'artifact_failed');
 
         $this->assertStringNotContainsString('letter-document-artifacts', $response->getContent());
         $this->assertStringNotContainsString('source_hash', $response->getContent());

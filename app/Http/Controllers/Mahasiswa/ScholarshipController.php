@@ -607,33 +607,23 @@ class ScholarshipController extends Controller
             && str_ends_with(strtolower($path), '.pdf');
     }
 
-    public function finalDownload(
-        ScholarshipApplication $application,
-        LetterDocumentArtifactService $artifactService,
-    ) {
-        $this->documentAccessService->ensureOwner($application, Auth::user());
-
-        if ($application->status !== ScholarshipApplication::STATUS_COMPLETED) {
-            return response()->json([
-                'message' => 'Dokumen final hanya tersedia setelah pengajuan selesai.',
-            ], 403);
-        }
-
-        $artifact = $artifactService->latestReadyArtifact(
+    public function finalDownload(ScholarshipApplication $application)
+    {
+        $decision = $this->documentAccessService->finalDownload(
+            $application,
+            Auth::user(),
             ScholarshipApplication::LETTER_TYPE,
-            $application->id,
-            LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW,
         );
 
-        if (!$artifact || !$artifact->pdf_path || !Storage::disk('local')->exists($artifact->pdf_path)) {
+        if (!$decision->allowedToDownload() || $decision->absolutePath() === null) {
             return response()->json([
-                'message' => 'Dokumen final PDF belum tersedia.',
-                'reason' => 'artifact_unavailable',
-            ], 404);
+                'message' => $decision->message(),
+                'reason' => $decision->reason(),
+            ], $decision->status());
         }
 
         $response = response()->download(
-            Storage::disk('local')->path($artifact->pdf_path),
+            $decision->absolutePath(),
             $this->finalPdfFilename($application),
             [
                 'Content-Type' => 'application/pdf',
