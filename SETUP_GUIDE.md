@@ -32,14 +32,15 @@ copy .env.example .env
 
 ### 2. Replace Google OAuth Credentials
 
-Open `.env` and replace the placeholder values:
+Open `.env` and set the Google Client ID (the only value used at runtime):
 
 ```env
 GOOGLE_CLIENT_ID=<ask team lead for the shared Client ID>
-GOOGLE_CLIENT_SECRET=<ask team lead for the shared Client Secret>
 ```
 
-> ⚠️ **These credentials are shared across the team** — everyone uses the SAME values. Ask the team lead (Jaja) for the real values via private message.
+> ⚠️ **The Client ID is shared across the team** — everyone uses the SAME value. Ask the team lead (Jaja) for the real value via private message.
+>
+> `GOOGLE_CLIENT_SECRET` and `GOOGLE_REDIRECT_URI` are loaded by `config/services.php` but **not used** by the current GIS ID-token flow. Leave them blank in `.env` unless you add an Authorization Code flow in the future.
 
 ### 3. Database Setup
 
@@ -141,12 +142,12 @@ npm run dev
 
 ### Required ENV Variables
 
-| Variable | Where | Example | Shared? |
-|----------|-------|---------|---------|
-| `GOOGLE_CLIENT_ID` | Backend `.env` | `1080XXXXX-XXXXX.apps.googleusercontent.com` | ✅ Shared — same for all developers |
-| `GOOGLE_CLIENT_SECRET` | Backend `.env` | `GOCSPX-XXXXX` | ✅ Shared — same for all developers |
-| `GOOGLE_REDIRECT_URI` | Backend `.env` | _(leave empty — not used in GIS token flow)_ | ✅ Shared |
-| `VITE_GOOGLE_CLIENT_ID` | Frontend `.env` | Same as `GOOGLE_CLIENT_ID` | ✅ Shared |
+| Variable | Where | Example | Actually Used? | Shared? |
+|----------|-------|---------|----------------|---------|
+| `GOOGLE_CLIENT_ID` | Backend `.env` | `your-client-id.apps.googleusercontent.com` | ✅ Yes — `aud` check in `verifyIdToken()` | ✅ Shared |
+| `GOOGLE_CLIENT_SECRET` | Backend `.env` | _(leave empty)_ | ❌ Not used by GIS token flow | ✅ Shared |
+| `GOOGLE_REDIRECT_URI` | Backend `.env` | _(leave empty)_ | ❌ Not used — no callback route exists | ✅ Shared |
+| `VITE_GOOGLE_CLIENT_ID` | Frontend `.env` | Same as `GOOGLE_CLIENT_ID` | ✅ Yes — passed to `google.accounts.id.initialize()` | ✅ Shared |
 
 ### Code Locations
 
@@ -174,13 +175,12 @@ npm run dev
 3. Navigate to **APIs & Services → Credentials**
 4. Click **Create Credentials → OAuth 2.0 Client ID**
 5. Application type: **Web application**
-6. Add these **Authorized JavaScript origins**:
-   - `http://localhost:5173` (Vite dev server)
-   - `http://localhost:8000` (Laravel dev server)
-   - `http://localhost` (general)
-7. Add these **Authorized redirect URIs** (optional for GIS token flow):
-   - `http://localhost:5173`
-   - `http://localhost:8000/api/auth/google/callback`
+6. Add these **Authorized JavaScript origins** (required for GIS to work):
+   - `http://localhost:5173` (Vite dev server — **required**)
+   - `http://localhost:8000` (Laravel dev server — recommended)
+   - `http://localhost` (general — optional)
+7. **Authorized redirect URIs** are not used by the GIS ID-token flow. You may leave this section empty or add:
+   - `http://localhost:5173` (optional, for future use)
 8. Navigate to **APIs & Services → OAuth consent screen**
 9. Add **Test users** (your `@mail.ugm.ac.id` or `@ugm.ac.id` emails)
 
@@ -210,10 +210,11 @@ private const ALLOWED_DOMAINS = ['mail.ugm.ac.id', 'ugm.ac.id'];
 | `DB_HOST` | `127.0.0.1` | Localhost |
 | `DB_PORT` | `5432` | Default PG port |
 | `DB_DATABASE` | `letter-message` | Database name |
-| `GOOGLE_CLIENT_ID` | _ask team lead_ | Shared OAuth Client ID |
-| `GOOGLE_CLIENT_SECRET` | _ask team lead_ | Shared OAuth Client Secret |
+| `GOOGLE_CLIENT_ID` | _ask team lead_ | Shared OAuth Client ID (only env key used at runtime) |
+| `GOOGLE_CLIENT_SECRET` | _(leave empty)_ | Loaded by config but **not used** by GIS token flow |
+| `GOOGLE_REDIRECT_URI` | _(leave empty)_ | Loaded by config but **not used** — no callback route |
 | `VITE_GOOGLE_CLIENT_ID` | Same as `GOOGLE_CLIENT_ID` | Frontend uses this |
-| `TEMPLATE_BEASISWA_ID` | `1wnQYvwVO45M3LDDLEitsfjMFgkwj9S7f` | Google Docs template |
+| `TEMPLATE_BEASISWA_ID` | `1QeM5eAy2KaNiAS-q6jiD88rme2iPnomh` | Google Docs template (rotated; old ID deprecated after folder exposure) |
 
 ### Personal Values (Must Change Per Developer)
 
@@ -227,23 +228,26 @@ private const ALLOWED_DOMAINS = ['mail.ugm.ac.id', 'ugm.ac.id'];
 
 ## ⚠️ Security Notes
 
-> Onboarding-era shortcuts have been cleaned up (2026-05-28). The notes below reflect the current state, not historical risks.
+> Onboarding-era shortcuts have been cleaned up. The notes below reflect the current state.
 
 ### Current Posture
 - No `.env`, `.env.*` (other than `.env.example`), private keys, or DB dumps are tracked.
-- Backend `.env.example` ships with empty `APP_KEY=` and empty `DB_PASSWORD=` — both must be filled locally.
-- Frontend `.env.example` ships only with a placeholder `VITE_GOOGLE_CLIENT_ID` (public OAuth Client ID; not a secret by Google's design).
-- No real Google OAuth **Client Secret** was found in any tracked file — only the literal placeholder string `YOUR_GOOGLE_CLIENT_SECRET_HERE`. If the team's Google Client Secret was shared outside Git (e.g., private message) and is considered compromised, rotate it in Google Cloud Console independently — that rotation is not required by anything in git tracked content.
+- Backend `.env.example` ships with empty `APP_KEY=`, empty `DB_PASSWORD=`, and placeholder-only Google OAuth keys — all must be filled locally.
+- Frontend `.env.example` ships only with a placeholder `VITE_GOOGLE_CLIENT_ID`.
+- `.env.example` must **never** contain real credentials. Only placeholders (e.g., `your-google-client-id.apps.googleusercontent.com`) are acceptable.
 
-### Historical Cleanup Completed (2026-05-28)
-- [x] Removed `.env.shared` from tracked tree (commit `90875b0`); replaced with safe `.env.example`.
-- [x] Broadened backend `.gitignore` to `.env`, `.env.*`, `!.env.example` so future variants stay out.
-- [x] Removed frontend `.env` from tracked tree; added safe `.env.example`.
-- [ ] Purge `.env.shared` from backend git history with `git filter-repo` (planned; blocked on `git-filter-repo` installation). The leaked `APP_KEY` value still lives in commits from `58e1cf1` through `feb0207`; treat as compromised and follow [APP_KEY Rotation](#-app_key-rotation-procedure) until the rewrite lands.
-- [x] Generated unique `APP_KEY` per developer is now standard (no committed shared key).
+### Historical Cleanup
+- [x] Removed `.env.shared` from tracked tree (commit `90875b0`); replaced with safe `.env.example`. _(2026-05-28)_
+- [x] Broadened backend `.gitignore` to `.env`, `.env.*`, `!.env.example` so future variants stay out. _(2026-05-28)_
+- [x] Removed frontend `.env` from tracked tree; added safe `.env.example`. _(2026-05-28)_
+- [x] Generated unique `APP_KEY` per developer is now standard (no committed shared key). _(2026-05-28)_
+- [x] Removed real `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (GOCSPX-…), and `GOOGLE_REDIRECT_URI` from both `.env.example` files; replaced with safe placeholders. _(2026-05-29)_
+- [ ] Purge `.env.shared` and old `.env.example` commits containing real secrets from git history with `git filter-repo`. Real `GOOGLE_CLIENT_SECRET` and `GOOGLE_CLIENT_ID` values exist in history and should be treated as compromised until purged.
+- [ ] **Rotate the Google OAuth Client Secret** in Google Cloud Console — the real secret was committed to `.env.example` in tracked history.
 
 ### Outstanding (Operational, Not in Git)
-- [ ] If the team's Google OAuth Client Secret was distributed via private channels and is considered exposed, revoke and recreate it in Google Cloud Console.
+- [ ] Rotate the Google OAuth Client Secret in Google Cloud Console (required — real secret was in tracked `.env.example`).
+- [ ] Purge secrets from git history with `git filter-repo` or BFG.
 - [ ] Set up proper secret management for future production deployment (e.g., a vault or environment-specific config service) — out of scope for current local-dev workflow.
 
 ---

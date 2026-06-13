@@ -74,10 +74,14 @@ final class FinalTemplatePlaceholderContracts
         'paraf_rekomendasi',
     ];
 
+    // Surat Pengantar Magang — Pengantar-only contract (Surat Tugas split out in
+    // S1, S2 will add it as its own letter type). Matches the refreshed Google Doc
+    // (source of truth): tugas-only placeholders (nomor_surat_tugas,
+    // ttd_kadep_tugas, paraf_tugas) AND fakultas/dpa/posisi are intentionally
+    // ABSENT from the new template, so they are not part of the Magang contract.
     public const MAGANG = [
         'tanggal_surat',
         'nomor_surat_pengantar',
-        'nomor_surat_tugas',
         'jabatan_penerima',
         'nama_perusahaan',
         'alamat_jalan',
@@ -93,14 +97,9 @@ final class FinalTemplatePlaceholderContracts
         'kode_prodi',
         'tgl_mulai',
         'tgl_selesai',
-        'fakultas',
-        'dpa',
-        'posisi',
         'jabatan_kadep',
         'ttd_kadep_pengantar',
         'paraf_pengantar',
-        'ttd_kadep_tugas',
-        'paraf_tugas',
         'nama_kadep',
         'nip_kadep',
     ];
@@ -149,6 +148,28 @@ final class FinalTemplatePlaceholderContracts
         'kode_prodi',
     ];
 
+    // Standalone Surat Tugas (S2). Derived from the Surat Tugas Google Doc.
+    public const SURAT_TUGAS = [
+        'nomor_surat_tugas',
+        'tanggal_surat',
+        'nama_kadep',
+        'nip_kadep',
+        'jabatan_kadep',
+        'departemen',
+        'fakultas',
+        'nama',
+        'nim',
+        'prodi',
+        'dpa',
+        'kegiatan',
+        'nama_perusahaan',
+        'posisi',
+        'tgl_mulai',
+        'tgl_selesai',
+        'ttd_kadep_tugas',
+        'paraf_tugas',
+    ];
+
     /**
      * @return array<string, array{name: string, placeholders: list<string>}>
      */
@@ -170,6 +191,10 @@ final class FinalTemplatePlaceholderContracts
             'proses-luar-negeri' => [
                 'name' => 'Proses Luar Negeri',
                 'placeholders' => self::PLN,
+            ],
+            'surat-tugas' => [
+                'name' => 'Surat Tugas',
+                'placeholders' => self::SURAT_TUGAS,
             ],
         ];
     }
