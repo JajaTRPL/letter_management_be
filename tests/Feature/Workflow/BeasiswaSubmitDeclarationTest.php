@@ -19,6 +19,7 @@ class BeasiswaSubmitDeclarationTest extends TestCase
     public function test_submit_is_rejected_without_declaration_payload(): void
     {
         Notification::fake();
+        Storage::fake('local');
         Storage::fake('public');
 
         [$student] = $this->completeMahasiswa();
@@ -26,6 +27,7 @@ class BeasiswaSubmitDeclarationTest extends TestCase
             'status' => ScholarshipApplication::STATUS_DRAFT,
             'submitted_at' => null,
         ]);
+        $this->attachBeasiswaRequiredDocuments($application);
 
         $this->actingAs($student, 'sanctum')
             ->postJson('/api/mahasiswa/surat-permohonan-beasiswa/submit', [])
@@ -67,6 +69,7 @@ class BeasiswaSubmitDeclarationTest extends TestCase
     public function test_submit_succeeds_with_accepted_declaration(): void
     {
         Notification::fake();
+        Storage::fake('local');
         Storage::fake('public');
         $previewService = Mockery::mock(BeasiswaPreviewGenerationService::class);
         $previewService->shouldReceive('generateForPhase')
@@ -81,6 +84,7 @@ class BeasiswaSubmitDeclarationTest extends TestCase
             'status' => ScholarshipApplication::STATUS_DRAFT,
             'submitted_at' => null,
         ]);
+        $this->attachBeasiswaRequiredDocuments($application);
 
         $this->actingAs($student, 'sanctum')
             ->postJson('/api/mahasiswa/surat-permohonan-beasiswa/submit', [

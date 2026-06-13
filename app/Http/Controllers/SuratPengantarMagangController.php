@@ -2,14 +2,18 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Concerns\AddsSupportingDocumentMetadata;
 use App\Http\Controllers\Concerns\AuthorizesAcademicApplications;
 use App\Models\LetterDocumentArtifact;
 use App\Models\SuratPengantarMagangApplication;
 use App\Services\AcademicRoutingService;
 use App\Services\AcademicSignatoryService;
 use App\Services\LetterAssignmentService;
+use App\Services\LetterAttachmentMetadataService;
+use App\Services\LetterAttachmentRequirementService;
 use App\Services\LetterDocumentAccessService;
 use App\Services\LetterDocumentArtifactService;
+use App\Services\LetterRetentionSummaryService;
 use App\Services\MahasiswaProfileDataService;
 use App\Services\SuratPengantarMagangPreviewGenerationException;
 use App\Services\SuratPengantarMagangPreviewGenerationService;
@@ -25,12 +29,15 @@ use RuntimeException;
 class SuratPengantarMagangController extends Controller
 {
     use AuthorizesAcademicApplications;
+    use AddsSupportingDocumentMetadata;
 
     public function __construct(
         private LetterDocumentAccessService $documentAccessService,
         private LetterAssignmentService $assignmentService,
         private AcademicRoutingService $academicRoutingService,
-        private MahasiswaProfileDataService $profileDataService
+        private MahasiswaProfileDataService $profileDataService,
+        private LetterAttachmentMetadataService $attachmentMetadataService,
+        private LetterRetentionSummaryService $retentionSummaryService,
     ) {
     }
 
@@ -72,11 +79,23 @@ class SuratPengantarMagangController extends Controller
         ]);
     }
 
-    public function saveDraft(Request $request)
+    public function saveDraft(
+        Request $request,
+        \App\Services\LetterAttachmentUploadService $attachmentUploadService,
+        LetterAttachmentRequirementService $attachmentRequirementService,
+    )
     {
         $application = $this->getOrCreateDraftApplication();
+        $hasRegistryProposal = !in_array(
+            'proposal',
+            $attachmentRequirementService->missingRequiredDocumentKeys(
+                SuratPengantarMagangApplication::LETTER_TYPE,
+                (int) $application->getKey(),
+            ),
+            true,
+        );
 
-        $validator = Validator::make($request->all(), $this->applicationRules($application, $request->all()));
+        $validator = Validator::make($request->all(), $this->applicationRules($hasRegistryProposal, $request->all()));
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
@@ -99,11 +118,19 @@ class SuratPengantarMagangController extends Controller
             'dosen_pembimbing_dpa',
         ]);
 
+        // Proposal write goes to the PRIVATE local disk via the shared attachment
+        // registry. The upload service persists the new registry row
+        // transactionally and only cleans up a replaced registry-managed private
+        // file after commit. The legacy proposal column is left unchanged so
+        // historical public/private values remain available for fallback proof.
         if ($request->hasFile('proposal_kegiatan_magang')) {
-            $path = $request->file('proposal_kegiatan_magang')
-                ->store('surat-pengantar-magang/proposals', 'public');
-            $this->deletePublicFile($application->proposal_kegiatan_magang_path);
-            $data['proposal_kegiatan_magang_path'] = Storage::url($path);
+            $attachmentUploadService->store(
+                $application,
+                SuratPengantarMagangApplication::LETTER_TYPE,
+                'proposal',
+                $request->file('proposal_kegiatan_magang'),
+                Auth::id(),
+            );
         }
 
         $application->update($data);
@@ -117,6 +144,7 @@ class SuratPengantarMagangController extends Controller
     public function submitApplication(
         SuratPengantarMagangService $service,
         SuratPengantarMagangPreviewGenerationService $previewGenerationService,
+        LetterAttachmentRequirementService $attachmentRequirementService,
     )
     {
         $application = SuratPengantarMagangApplication::where('user_id', Auth::id())
@@ -129,6 +157,12 @@ class SuratPengantarMagangController extends Controller
 
         $applicationData = $application->toArray();
         $validator = Validator::make($applicationData, $this->submissionRules($applicationData));
+        $this->addMissingAttachmentRequirementErrors(
+            $validator,
+            $attachmentRequirementService,
+            SuratPengantarMagangApplication::LETTER_TYPE,
+            (int) $application->getKey(),
+        );
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
@@ -228,7 +262,12 @@ class SuratPengantarMagangController extends Controller
         ]);
 
         return response()->json([
-            'application' => $application,
+            'application' => $this->withSupportingDocumentMetadata(
+                $application,
+                SuratPengantarMagangApplication::LETTER_TYPE,
+                $this->attachmentMetadataService,
+                $this->retentionSummaryService,
+            ),
             'profile_summary' => $this->profileDataService->profileSummaryForApplication($application),
         ]);
     }
@@ -244,7 +283,10 @@ class SuratPengantarMagangController extends Controller
         $validator = Validator::make($request->all(), [
             'nomor_surat' => ['nullable', 'string', 'max:100'],
             'nomor_surat_pengantar' => ['required', 'string', 'max:100'],
-            'nomor_surat_tugas' => ['required', 'string', 'max:100'],
+            // S1 (Magang standalone): Surat Tugas split out — the Magang letter no
+            // longer requires a tugas number. Accepted-but-optional for legacy
+            // compatibility; it no longer drives the Magang document or hash.
+            'nomor_surat_tugas' => ['nullable', 'string', 'max:100'],
         ]);
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
@@ -320,7 +362,10 @@ class SuratPengantarMagangController extends Controller
 
         return response()->json([
             'message' => 'Pengajuan berhasil diverifikasi dan diteruskan ke Kaprodi/Sekprodi',
-            'application' => $application,
+            'application' => $this->withRetiredAttachmentFieldsHidden(
+                $application,
+                SuratPengantarMagangApplication::LETTER_TYPE,
+            ),
         ]);
     }
 
@@ -462,7 +507,10 @@ class SuratPengantarMagangController extends Controller
 
             return response()->json([
                 'message' => 'Pengajuan disetujui dan diteruskan ke Kadep/Sekdep',
-                'application' => $application,
+                'application' => $this->withRetiredAttachmentFieldsHidden(
+                    $application,
+                    SuratPengantarMagangApplication::LETTER_TYPE,
+                ),
             ]);
         }
 
@@ -534,7 +582,10 @@ class SuratPengantarMagangController extends Controller
 
             return response()->json([
                 'message' => 'Pengajuan disetujui dan menunggu review mahasiswa',
-                'application' => $application,
+                'application' => $this->withRetiredAttachmentFieldsHidden(
+                    $application,
+                    SuratPengantarMagangApplication::LETTER_TYPE,
+                ),
             ]);
         }
 
@@ -742,7 +793,7 @@ class SuratPengantarMagangController extends Controller
         );
     }
 
-    private function applicationRules(?SuratPengantarMagangApplication $application = null, array $data = []): array
+    private function applicationRules(bool $hasRegistryProposal = false, array $data = []): array
     {
         return array_merge([
             'nama_penerima' => 'required|string|max:255',
@@ -752,7 +803,7 @@ class SuratPengantarMagangController extends Controller
             'rentang_tanggal' => 'required|string|max:255',
             'dosen_pembimbing_dpa' => 'required|string|max:255',
             'proposal_kegiatan_magang' => [
-                $application?->proposal_kegiatan_magang_path ? 'nullable' : 'required',
+                $hasRegistryProposal ? 'nullable' : 'required',
                 'file',
                 'mimes:pdf',
                 'max:2048',
@@ -769,8 +820,24 @@ class SuratPengantarMagangController extends Controller
             'peran' => 'required|string|max:255',
             'rentang_tanggal' => 'required|string|max:255',
             'dosen_pembimbing_dpa' => 'required|string|max:255',
-            'proposal_kegiatan_magang_path' => 'required|string',
         ], $this->finalContractInputRules($data));
+    }
+
+    private function addMissingAttachmentRequirementErrors(
+        \Illuminate\Validation\Validator $validator,
+        LetterAttachmentRequirementService $attachmentRequirementService,
+        string $letterType,
+        int $applicationId,
+    ): void {
+        $validator->after(function (\Illuminate\Validation\Validator $validator) use ($attachmentRequirementService, $letterType, $applicationId): void {
+            foreach ($attachmentRequirementService->missingRequiredDocumentKeys($letterType, $applicationId) as $documentKey) {
+                $attribute = $attachmentRequirementService->legacyValidationAttribute($letterType, $documentKey);
+                $validator->errors()->add(
+                    $attribute,
+                    'The ' . str_replace('_', ' ', $attribute) . ' field is required.',
+                );
+            }
+        });
     }
 
     /**
@@ -824,7 +891,10 @@ class SuratPengantarMagangController extends Controller
 
         return response()->json([
             'message' => 'Permintaan revisi berhasil dikirim',
-            'application' => $application->fresh(),
+            'application' => $this->withRetiredAttachmentFieldsHidden(
+                $application->fresh(),
+                SuratPengantarMagangApplication::LETTER_TYPE,
+            ),
         ]);
     }
 
@@ -852,7 +922,10 @@ class SuratPengantarMagangController extends Controller
 
         return response()->json([
             'message' => 'Pengajuan berhasil ditolak',
-            'application' => $application->fresh(),
+            'application' => $this->withRetiredAttachmentFieldsHidden(
+                $application->fresh(),
+                SuratPengantarMagangApplication::LETTER_TYPE,
+            ),
         ]);
     }
 
@@ -860,39 +933,11 @@ class SuratPengantarMagangController extends Controller
     {
         $application->setAttribute('generated_pdf_path', null);
 
-        return $application;
-    }
-
-    private function deletePublicFile(?string $filePath): void
-    {
-        $path = $this->publicDiskPath($filePath);
-        if ($path && Storage::disk('public')->exists($path)) {
-            Storage::disk('public')->delete($path);
-        }
-    }
-
-    private function publicDiskPath(?string $filePath): ?string
-    {
-        if (!$filePath) {
-            return null;
-        }
-
-        $path = parse_url($filePath, PHP_URL_PATH) ?: $filePath;
-        $path = str_replace('\\', '/', $path);
-        $path = ltrim($path, '/');
-
-        if (str_starts_with($path, 'storage/')) {
-            $path = substr($path, strlen('storage/'));
-        }
-
-        if (str_starts_with($path, 'api/storage/')) {
-            $path = substr($path, strlen('api/storage/'));
-        }
-
-        if ($path === '' || str_contains($path, '..')) {
-            return null;
-        }
-
-        return str_starts_with($path, 'surat-pengantar-magang/proposals/') ? $path : null;
+        return $this->withSupportingDocumentMetadata(
+            $application,
+            SuratPengantarMagangApplication::LETTER_TYPE,
+            $this->attachmentMetadataService,
+            $this->retentionSummaryService,
+        );
     }
 }
