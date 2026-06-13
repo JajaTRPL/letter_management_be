@@ -107,14 +107,15 @@ class SuratPengantarMagangPreviewGenerationServiceTest extends TestCase
         $service = $this->service();
         $previous = $service->generateForCurrentPhase($application->fresh());
 
+        // Magang Pengantar-only: nomor_surat_tugas, dpa (dosen_pembimbing_dpa) and
+        // posisi (peran) no longer feed the Magang hash, so they are intentionally
+        // excluded from the "changes create a new artifact" set (their hash-
+        // stability is covered by a dedicated regression in the source-hash suite).
         foreach ([
             'nomor_surat_pengantar' => 'MAG/P/002/2026',
-            'nomor_surat_tugas' => 'MAG/T/002/2026',
             'alamat_jalan' => 'Jl. Perubahan No. 2',
             'tgl_mulai' => '2026-06-02',
             'tgl_selesai' => '2026-09-01',
-            'dosen_pembimbing_dpa' => 'Dr. DPA Berubah',
-            'peran' => 'Platform Engineer Intern',
         ] as $field => $value) {
             $application->update([$field => $value]);
             $next = $service->generateForCurrentPhase($application->fresh());
@@ -124,7 +125,7 @@ class SuratPengantarMagangPreviewGenerationServiceTest extends TestCase
             $previous = $next;
         }
 
-        $this->assertSame(8, LetterDocumentArtifact::query()->count());
+        $this->assertSame(5, LetterDocumentArtifact::query()->count());
     }
 
     public function test_legacy_aggregate_changes_do_not_create_new_artifact_when_explicit_contract_is_unchanged(): void
@@ -269,7 +270,8 @@ class SuratPengantarMagangPreviewGenerationServiceTest extends TestCase
         $xml = implode("\n", TemplatePlaceholderAssertions::wordXmlEntries(Storage::disk('local')->path($first->docx_path)));
         $text = html_entity_decode((string) preg_replace('/<[^>]+>/', '', $xml), ENT_QUOTES | ENT_XML1, 'UTF-8');
         $this->assertStringContainsString('MAG/P/PENDING/P3-001', $text);
-        $this->assertStringContainsString('MAG/T/PENDING/P3-001', $text);
+        // S1 (Magang standalone): tugas number is no longer rendered into the Magang doc.
+        $this->assertStringNotContainsString('MAG/T/PENDING/P3-001', $text);
 
         $second = $service->generateForPhase($application->fresh(), LetterDocumentArtifact::PHASE_PRODI_REVIEW, [
             'nomor_surat_pengantar' => 'MAG/P/PENDING/P3-002',

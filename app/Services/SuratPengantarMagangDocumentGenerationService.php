@@ -20,7 +20,6 @@ class SuratPengantarMagangDocumentGenerationService
 {
     private const KADEP_TTD_PLACEHOLDERS = [
         'ttd_kadep_pengantar' => 'include_kadep_ttd_pengantar',
-        'ttd_kadep_tugas' => 'include_kadep_ttd_tugas',
     ];
 
     private const KADEP_TTD_IMAGE_DIMENSIONS = [
@@ -31,7 +30,6 @@ class SuratPengantarMagangDocumentGenerationService
 
     private const PARAF_PLACEHOLDERS = [
         'paraf_pengantar',
-        'paraf_tugas',
     ];
 
     private const PARAF_IMAGE_DIMENSIONS = [
@@ -52,7 +50,7 @@ class SuratPengantarMagangDocumentGenerationService
      * application or artifact mutations.
      *
      * @param array<string, mixed> $overrides Pending render values such as
-     *     nomor_surat_pengantar, nomor_surat_tugas, tanggal_surat, or official_kadep.
+     *     nomor_surat_pengantar, tanggal_surat, or official_kadep.
      */
     public function generateDocumentForPhase(
         SuratPengantarMagangApplication $application,
@@ -186,9 +184,6 @@ class SuratPengantarMagangDocumentGenerationService
             'nomor_surat_pengantar' => $phaseFlags['include_nomor_pengantar']
                 ? $application['nomor_surat_pengantar']
                 : '',
-            'nomor_surat_tugas' => $phaseFlags['include_nomor_tugas']
-                ? $application['nomor_surat_tugas']
-                : '',
             'jabatan_penerima' => $application['jabatan_penerima'],
             'nama_perusahaan' => $application['nama_perusahaan'],
             'alamat_jalan' => $application['alamat_jalan'],
@@ -204,9 +199,6 @@ class SuratPengantarMagangDocumentGenerationService
             'kode_prodi' => $student['kode_prodi'],
             'tgl_mulai' => $internship['tgl_mulai'],
             'tgl_selesai' => $internship['tgl_selesai'],
-            'fakultas' => $student['fakultas'],
-            'dpa' => $internship['dpa'],
-            'posisi' => $internship['posisi'],
             'jabatan_kadep' => $rendered['jabatan_kadep'],
             'nama_kadep' => $rendered['nama_kadep'],
             'nip_kadep' => $rendered['nip_kadep'],
@@ -227,8 +219,7 @@ class SuratPengantarMagangDocumentGenerationService
         array $phaseFlags,
         array $overrides,
     ): void {
-        $includesKadepTtd = $phaseFlags['include_kadep_ttd_pengantar']
-            || $phaseFlags['include_kadep_ttd_tugas'];
+        $includesKadepTtd = $phaseFlags['include_kadep_ttd_pengantar'];
         if ($includesKadepTtd) {
             $officialKadep = $this->officialKadepForRender($application, $overrides);
             $signaturePath = $this->publicImageAbsolutePath($this->signatoryService->signaturePath($officialKadep));
@@ -247,8 +238,7 @@ class SuratPengantarMagangDocumentGenerationService
             }
         }
 
-        $includesParaf = $phaseFlags['include_paraf_pengantar']
-            || $phaseFlags['include_paraf_tugas'];
+        $includesParaf = $phaseFlags['include_paraf_pengantar'];
         if ($includesParaf) {
             $parafPath = $this->signatoryService->globalParafFilePath();
             if (!$parafPath || !is_file($parafPath)) {
@@ -288,11 +278,8 @@ class SuratPengantarMagangDocumentGenerationService
             'student.prodi' => 'program studi mahasiswa',
             'student.departemen' => 'departemen mahasiswa',
             'student.kode_prodi' => 'kode program studi',
-            'student.fakultas' => 'fakultas mahasiswa',
             'internship.tgl_mulai' => 'tanggal mulai magang',
             'internship.tgl_selesai' => 'tanggal selesai magang',
-            'internship.dpa' => 'DPA',
-            'internship.posisi' => 'posisi magang',
             'rendered.jabatan_kadep' => 'jabatan Kadep',
             'rendered.nama_kadep' => 'nama Kadep',
             'rendered.nip_kadep' => 'NIP Kadep',
@@ -300,9 +287,6 @@ class SuratPengantarMagangDocumentGenerationService
 
         if ($phaseFlags['include_nomor_pengantar']) {
             $requirements['application.nomor_surat_pengantar'] = 'nomor surat pengantar';
-        }
-        if ($phaseFlags['include_nomor_tugas']) {
-            $requirements['application.nomor_surat_tugas'] = 'nomor surat tugas';
         }
 
         foreach ($requirements as $path => $label) {
@@ -354,7 +338,6 @@ class SuratPengantarMagangDocumentGenerationService
         foreach ([
             'status',
             'nomor_surat_pengantar',
-            'nomor_surat_tugas',
             'jabatan_penerima',
             'nama_perusahaan',
             'alamat_jalan',

@@ -5,13 +5,20 @@ namespace Tests\Feature\Workflow;
 use App\Enums\UserStatus;
 use App\Models\Department;
 use App\Models\Faculty;
+use App\Models\LetterApplicationAttachment;
 use App\Models\MahasiswaProfile;
 use App\Models\ProsesLuarNegeriApplication;
 use App\Models\ScholarshipApplication;
 use App\Models\StudyProgram;
 use App\Models\SuratKeteranganAktifApplication;
 use App\Models\SuratPengantarMagangApplication;
+use App\Models\SuratTugasApplication;
 use App\Models\User;
+use App\Support\LetterAttachmentDefinitionRegistry;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 trait WorkflowTestHelpers
@@ -109,13 +116,18 @@ trait WorkflowTestHelpers
             ? [$student, $student->mahasiswaProfile]
             : $this->completeMahasiswa();
 
-        return ScholarshipApplication::create(array_merge([
+        return $this->createApplicationPreservingHistoricalAttachments(ScholarshipApplication::class, array_merge([
             'user_id' => $student->id,
             'mahasiswa_profile_id' => $profile?->id,
             'scholarship_name' => 'Beasiswa Test',
             'status' => ScholarshipApplication::STATUS_SUBMITTED,
             'submitted_at' => now(),
-        ], $attributes));
+        ], $attributes), [
+            'ktm_path',
+            'transkrip_nilai_path',
+            'slip_gaji_ayah_path',
+            'slip_gaji_ibu_path',
+        ]);
     }
 
     private function magangApplication(?User $student = null, array $attributes = []): SuratPengantarMagangApplication
@@ -124,7 +136,7 @@ trait WorkflowTestHelpers
             ? [$student, $student->mahasiswaProfile]
             : $this->completeMahasiswa();
 
-        return SuratPengantarMagangApplication::create(array_merge([
+        return $this->createApplicationPreservingHistoricalAttachments(SuratPengantarMagangApplication::class, array_merge([
             'user_id' => $student->id,
             'mahasiswa_profile_id' => $profile?->id,
             'nama_penerima' => 'HR Department',
@@ -147,7 +159,123 @@ trait WorkflowTestHelpers
             'nomor_surat_tugas' => null,
             'status' => SuratPengantarMagangApplication::STATUS_SUBMITTED,
             'submitted_at' => now(),
-        ], $attributes));
+        ], $attributes), ['proposal_kegiatan_magang_path']);
+    }
+
+    private function suratTugasApplication(?User $student = null, array $attributes = []): SuratTugasApplication
+    {
+        [$student, $profile] = $student
+            ? [$student, $student->mahasiswaProfile]
+            : $this->completeMahasiswa();
+
+        return $this->createApplicationPreservingHistoricalAttachments(SuratTugasApplication::class, array_merge([
+            'user_id' => $student->id,
+            'mahasiswa_profile_id' => $profile?->id,
+            'nama_perusahaan' => 'PT Test',
+            'kegiatan' => 'Magang Kerja Praktik',
+            'posisi' => 'Software Engineer Intern',
+            'dosen_pembimbing_dpa' => 'Dr. Test',
+            'tgl_mulai' => '2026-06-01',
+            'tgl_selesai' => '2026-08-31',
+            'proposal_kegiatan_magang_path' => 'surat-tugas/supporting/proposals/test.pdf',
+            'surat_pengantar_magang_path' => 'surat-tugas/supporting/pengantar/test.pdf',
+            'nomor_surat_tugas' => null,
+            'status' => SuratTugasApplication::STATUS_SUBMITTED,
+            'submitted_at' => now(),
+        ], $attributes), [
+            'proposal_kegiatan_magang_path',
+            'surat_pengantar_magang_path',
+        ]);
+    }
+
+    private function createApplicationPreservingHistoricalAttachments(string $modelClass, array $attributes, array $legacyAttachmentFields): Model
+    {
+        /** @var Model $model */
+        $model = new $modelClass();
+        $table = $model->getTable();
+        $legacyAttachmentData = array_filter(
+            array_intersect_key($attributes, array_flip($legacyAttachmentFields)),
+            fn (mixed $value, string $field): bool => Schema::hasColumn($table, $field),
+            ARRAY_FILTER_USE_BOTH,
+        );
+        $fillableData = array_diff_key($attributes, $legacyAttachmentData);
+
+        /** @var Model $application */
+        $application = $modelClass::create($fillableData);
+
+        if ($legacyAttachmentData !== []) {
+            $application->forceFill($legacyAttachmentData)->save();
+        }
+
+        return $application;
+    }
+
+    private function restoreRetiredAttachmentColumnsForLegacyFixtureTests(): void
+    {
+        foreach ($this->retiredAttachmentColumnTargetsForTests() as $table => $columns) {
+            if (! Schema::hasTable($table)) {
+                continue;
+            }
+
+            $missing = array_values(array_filter(
+                $columns,
+                fn (string $column): bool => ! Schema::hasColumn($table, $column),
+            ));
+
+            if ($missing === []) {
+                continue;
+            }
+
+            Schema::table($table, function (Blueprint $blueprint) use ($missing): void {
+                foreach ($missing as $column) {
+                    $blueprint->string($column)->nullable();
+                }
+            });
+        }
+    }
+
+    private function dropRetiredAttachmentColumnsForLegacyFixtureTests(): void
+    {
+        foreach ($this->retiredAttachmentColumnTargetsForTests() as $table => $columns) {
+            if (! Schema::hasTable($table)) {
+                continue;
+            }
+
+            $present = array_values(array_filter(
+                $columns,
+                fn (string $column): bool => Schema::hasColumn($table, $column),
+            ));
+
+            if ($present === []) {
+                continue;
+            }
+
+            Schema::table($table, function (Blueprint $blueprint) use ($present): void {
+                $blueprint->dropColumn($present);
+            });
+        }
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    private function retiredAttachmentColumnTargetsForTests(): array
+    {
+        return [
+            'scholarship_applications' => [
+                'transkrip_nilai_path',
+                'slip_gaji_ayah_path',
+                'slip_gaji_ibu_path',
+                'ktm_path',
+            ],
+            'surat_pengantar_magang_applications' => [
+                'proposal_kegiatan_magang_path',
+            ],
+            'surat_tugas_applications' => [
+                'proposal_kegiatan_magang_path',
+                'surat_pengantar_magang_path',
+            ],
+        ];
     }
 
     private function aktifApplication(?User $student = null, array $attributes = []): SuratKeteranganAktifApplication
@@ -191,6 +319,41 @@ trait WorkflowTestHelpers
             'status' => ProsesLuarNegeriApplication::STATUS_SUBMITTED,
             'submitted_at' => now(),
         ], $attributes));
+    }
+
+    private function attachRegistryDocument(
+        Model $application,
+        string $letterType,
+        string $documentKey,
+        string $filename = 'Document.pdf',
+        string $body = "%PDF test\n",
+    ): LetterApplicationAttachment {
+        $definition = LetterAttachmentDefinitionRegistry::document($letterType, $documentKey);
+        $this->assertIsArray($definition);
+
+        $disk = $definition['storage_disk'];
+        $storagePath = $definition['storage_prefix'] . $application->getKey() . '/' . Str::uuid() . '.pdf';
+        Storage::disk($disk)->put($storagePath, $body);
+
+        return LetterApplicationAttachment::create([
+            'letter_type' => $letterType,
+            'application_id' => $application->getKey(),
+            'document_key' => $documentKey,
+            'original_filename' => $filename,
+            'mime_type' => 'application/pdf',
+            'size_bytes' => strlen($body),
+            'storage_disk' => $disk,
+            'storage_path' => $storagePath,
+            'checksum_sha256' => hash('sha256', $body),
+            'uploaded_by' => $application->getAttribute('user_id'),
+        ]);
+    }
+
+    private function attachBeasiswaRequiredDocuments(ScholarshipApplication $application): void
+    {
+        $this->attachRegistryDocument($application, ScholarshipApplication::LETTER_TYPE, 'transkrip_nilai', 'Transkrip Nilai.pdf');
+        $this->attachRegistryDocument($application, ScholarshipApplication::LETTER_TYPE, 'slip_gaji_ayah', 'Slip Gaji Ayah.pdf');
+        $this->attachRegistryDocument($application, ScholarshipApplication::LETTER_TYPE, 'slip_gaji_ibu', 'Slip Gaji Ibu.pdf');
     }
 
     private function mockBeasiswaPreviewGenerationForApprove(): \Mockery\MockInterface

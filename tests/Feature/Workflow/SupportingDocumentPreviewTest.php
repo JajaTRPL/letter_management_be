@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Workflow;
 
+use App\Models\LetterApplicationAttachment;
 use App\Models\ScholarshipApplication;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -15,8 +16,24 @@ class SupportingDocumentPreviewTest extends TestCase
 
     private const PDF_BYTES = "%PDF-1.4\n%fake test pdf body\n%%EOF\n";
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->restoreRetiredAttachmentColumnsForLegacyFixtureTests();
+    }
+
+    protected function tearDown(): void
+    {
+        try {
+            $this->dropRetiredAttachmentColumnsForLegacyFixtureTests();
+        } finally {
+            parent::tearDown();
+        }
+    }
+
     private function makeScholarshipWithUploads(?User $student = null): ScholarshipApplication
     {
+        Storage::fake('local');
         Storage::fake('public');
 
         [$student, $profile] = $student
@@ -27,16 +44,24 @@ class SupportingDocumentPreviewTest extends TestCase
         Storage::disk('public')->put('scholarships/slips/slip-ayah.pdf', self::PDF_BYTES);
         Storage::disk('public')->put('scholarships/slips/slip-ibu.pdf', self::PDF_BYTES);
 
-        return ScholarshipApplication::create([
+        $application = ScholarshipApplication::create([
             'user_id' => $student->id,
             'mahasiswa_profile_id' => $profile?->id,
             'scholarship_name' => 'Beasiswa Test',
             'status' => ScholarshipApplication::STATUS_SUBMITTED,
             'submitted_at' => now(),
+        ]);
+        $application->forceFill([
             'transkrip_nilai_path' => Storage::url('scholarships/transcripts/transkrip.pdf'),
             'slip_gaji_ayah_path' => Storage::url('scholarships/slips/slip-ayah.pdf'),
             'slip_gaji_ibu_path' => Storage::url('scholarships/slips/slip-ibu.pdf'),
-        ]);
+        ])->save();
+
+        $this->attachRegistryDocument($application, ScholarshipApplication::LETTER_TYPE, 'transkrip_nilai', 'transkrip.pdf', self::PDF_BYTES);
+        $this->attachRegistryDocument($application, ScholarshipApplication::LETTER_TYPE, 'slip_gaji_ayah', 'slip-ayah.pdf', self::PDF_BYTES);
+        $this->attachRegistryDocument($application, ScholarshipApplication::LETTER_TYPE, 'slip_gaji_ibu', 'slip-ibu.pdf', self::PDF_BYTES);
+
+        return $application;
     }
 
     private function previewPath(ScholarshipApplication $application, string $field): string
@@ -47,11 +72,11 @@ class SupportingDocumentPreviewTest extends TestCase
     private function assertFetchOnlyPdfPayload($response): void
     {
         $response->assertOk();
-        $response->assertHeader('Content-Type', 'application/octet-stream');
+        $response->assertHeader('Content-Type', 'application/pdf');
         $response->assertHeader('X-Content-Type-Options', 'nosniff');
         $this->assertStringContainsString('no-store', $response->headers->get('Cache-Control') ?? '');
         $this->assertEmpty($response->headers->get('Content-Disposition') ?? '');
-        $this->assertStringStartsWith('%PDF', $response->getContent());
+        $this->assertStringStartsWith('%PDF', $response->streamedContent());
     }
 
     public function test_persuratan_tendik_can_preview_transkrip_nilai(): void
@@ -194,7 +219,12 @@ class SupportingDocumentPreviewTest extends TestCase
     public function test_missing_file_returns_safe_not_found(): void
     {
         $application = $this->makeScholarshipWithUploads();
-        Storage::disk('public')->delete('scholarships/transcripts/transkrip.pdf');
+        $path = LetterApplicationAttachment::query()
+            ->where('letter_type', ScholarshipApplication::LETTER_TYPE)
+            ->where('application_id', $application->id)
+            ->where('document_key', 'transkrip_nilai')
+            ->value('storage_path');
+        Storage::disk('local')->delete($path);
 
         $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
 
@@ -214,11 +244,13 @@ class SupportingDocumentPreviewTest extends TestCase
     public function test_path_outside_allowed_prefix_is_rejected(): void
     {
         $application = $this->makeScholarshipWithUploads();
-        // Plant a path that is NOT under scholarships/transcripts/ or scholarships/slips/.
-        $application->forceFill([
-            'transkrip_nilai_path' => Storage::url('scholarships/sample.docx'),
-        ])->save();
-        Storage::disk('public')->put('scholarships/sample.docx', 'not allowed');
+        $attachment = LetterApplicationAttachment::query()
+            ->where('letter_type', ScholarshipApplication::LETTER_TYPE)
+            ->where('application_id', $application->id)
+            ->where('document_key', 'transkrip_nilai')
+            ->firstOrFail();
+        $attachment->update(['storage_path' => 'letter-application-attachments/other/sample.pdf']);
+        Storage::disk('local')->put('letter-application-attachments/other/sample.pdf', self::PDF_BYTES);
 
         $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
 
@@ -227,7 +259,7 @@ class SupportingDocumentPreviewTest extends TestCase
             ->assertNotFound();
     }
 
-    public function test_generic_storage_route_still_serves_attachment(): void
+    public function test_generic_storage_route_rejects_attachment(): void
     {
         $application = $this->makeScholarshipWithUploads();
         $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
@@ -235,9 +267,7 @@ class SupportingDocumentPreviewTest extends TestCase
         $response = $this->actingAs($tendik, 'sanctum')
             ->get('/api/storage/scholarships/transcripts/transkrip.pdf');
 
-        $response->assertOk();
-        $disposition = $response->headers->get('Content-Disposition');
-        $this->assertNotNull($disposition);
-        $this->assertStringStartsWith('attachment', strtolower($disposition));
+        $response->assertForbidden();
+        $this->assertEmpty($response->headers->get('Content-Disposition') ?? '');
     }
 }
