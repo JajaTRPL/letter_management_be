@@ -47,6 +47,15 @@ class TemplateManagementController extends Controller
             'template_id_config_key'   => 'template_surat_pengantar_magang_id',
             'cache_path_config_key'    => 'template_surat_pengantar_magang_cache_path',
         ],
+        'surat-tugas' => [
+            'key'                      => 'surat-tugas',
+            'name'                     => 'Surat Tugas',
+            'category'                 => 'Surat Tugas',
+            'source_type'              => 'google_docs',
+            'can_refresh'              => true,
+            'template_id_config_key'   => 'template_surat_tugas_id',
+            'cache_path_config_key'    => 'template_surat_tugas_cache_path',
+        ],
     ];
 
     public function index(): JsonResponse
