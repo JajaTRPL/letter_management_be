@@ -44,6 +44,14 @@ class LetterDocumentArtifact extends Model
         'error_message',
         'generated_by',
         'generated_at',
+        'retention_deleted_at',
+        'retention_status',
+        'retention_manifest_path',
+        'archive_disk',
+        'archive_path',
+        'archive_checksum_sha256',
+        'archived_at',
+        'archive_purged_at',
     ];
 
     protected $casts = [
@@ -51,6 +59,9 @@ class LetterDocumentArtifact extends Model
         'version' => 'integer',
         'generated_by' => 'integer',
         'generated_at' => 'datetime',
+        'retention_deleted_at' => 'datetime',
+        'archived_at' => 'datetime',
+        'archive_purged_at' => 'datetime',
     ];
 
     public function generatedBy()
