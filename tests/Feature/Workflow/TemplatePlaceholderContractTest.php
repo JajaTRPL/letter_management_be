@@ -51,9 +51,10 @@ class TemplatePlaceholderContractTest extends TestCase
     {
         $expectedNumberPlaceholders = [
             'surat-permohonan-beasiswa' => ['nomor_surat_rekomendasi'],
-            'surat-pengantar-magang' => ['nomor_surat_pengantar', 'nomor_surat_tugas'],
+            'surat-pengantar-magang' => ['nomor_surat_pengantar'],
             'surat-keterangan-aktif' => ['nomor_surat_aktif'],
             'proses-luar-negeri' => ['nomor_surat_luar_negeri'],
+            'surat-tugas' => ['nomor_surat_tugas'],
         ];
 
         foreach (FinalTemplatePlaceholderContracts::all() as $key => $contract) {

@@ -6,30 +6,33 @@ use App\Models\ScholarshipApplication;
 use App\Models\ProsesLuarNegeriApplication;
 use App\Models\SuratKeteranganAktifApplication;
 use App\Models\SuratPengantarMagangApplication;
+use App\Models\SuratTugasApplication;
 use App\Support\LetterTypeRegistry;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 
 class LetterTaskFeedService
 {
-    public function combinedTendikRows($scholarshipTasks, $magangTasks, $aktifTasks = null, $prosesLuarNegeriTasks = null): Collection
+    public function combinedTendikRows($scholarshipTasks, $magangTasks, $aktifTasks = null, $prosesLuarNegeriTasks = null, $suratTugasTasks = null): Collection
     {
         return $this->tendikScholarshipRows($scholarshipTasks)
             ->merge($this->tendikMagangRows($magangTasks))
             ->merge($this->tendikAktifRows($aktifTasks ?? collect()))
             ->merge($this->tendikProsesLuarNegeriRows($prosesLuarNegeriTasks ?? collect()))
+            ->merge($this->tendikSuratTugasRows($suratTugasTasks ?? collect()))
             ->sortByDesc('_sort_at')
             ->take(100)
             ->map(fn (array $task): array => $this->withoutSortFields($task))
             ->values();
     }
 
-    public function combinedAkademikRows($scholarshipTasks, $magangTasks, $aktifTasks = null, $prosesLuarNegeriTasks = null): Collection
+    public function combinedAkademikRows($scholarshipTasks, $magangTasks, $aktifTasks = null, $prosesLuarNegeriTasks = null, $suratTugasTasks = null): Collection
     {
         return $this->akademikScholarshipRows($scholarshipTasks)
             ->merge($this->akademikMagangRows($magangTasks))
             ->merge($this->akademikAktifRows($aktifTasks ?? collect()))
             ->merge($this->akademikProsesLuarNegeriRows($prosesLuarNegeriTasks ?? collect()))
+            ->merge($this->akademikSuratTugasRows($suratTugasTasks ?? collect()))
             ->sortByDesc('sort_timestamp')
             ->map(fn (array $task): array => $this->withoutSortFields($task))
             ->values();
@@ -69,6 +72,11 @@ class LetterTaskFeedService
         return collect($tasks)->map(fn (ProsesLuarNegeriApplication $task): array => $this->tendikProsesLuarNegeriRow($task));
     }
 
+    public function tendikSuratTugasRows($tasks): Collection
+    {
+        return collect($tasks)->map(fn (SuratTugasApplication $task): array => $this->tendikSuratTugasRow($task));
+    }
+
     public function akademikScholarshipRows($tasks): Collection
     {
         return collect($tasks)->map(fn (ScholarshipApplication $task): array => $this->akademikScholarshipRow($task));
@@ -87,6 +95,11 @@ class LetterTaskFeedService
     public function akademikProsesLuarNegeriRows($tasks): Collection
     {
         return collect($tasks)->map(fn (ProsesLuarNegeriApplication $task): array => $this->akademikProsesLuarNegeriRow($task));
+    }
+
+    public function akademikSuratTugasRows($tasks): Collection
+    {
+        return collect($tasks)->map(fn (SuratTugasApplication $task): array => $this->akademikSuratTugasRow($task));
     }
 
     public function tendikScholarshipRow(ScholarshipApplication $task): array
@@ -170,6 +183,26 @@ class LetterTaskFeedService
         ], $this->actorFields($task));
     }
 
+    public function tendikSuratTugasRow(SuratTugasApplication $task): array
+    {
+        $metadata = $this->metadataFor(SuratTugasApplication::LETTER_TYPE);
+
+        return array_merge([
+            'id' => $task->id,
+            'submitted_at' => $this->formatDate($task->submitted_at ?? $task->created_at),
+            'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? ($task->mahasiswaProfile?->user?->name ?? $task->user?->name ?? '-'),
+            'nim' => $task->mahasiswaProfile?->nim ?? '-',
+            'type' => $metadata['letter_label'],
+            'letter_type' => SuratTugasApplication::LETTER_TYPE,
+            'letter_label' => $metadata['letter_label'],
+            'category' => $metadata['category'],
+            'status' => $task->status === SuratTugasApplication::STATUS_SUBMITTED ? 'Menunggu Verifikasi' : $task->status,
+            'is_overdue' => $task->submitted_at && $task->submitted_at->diffInHours(now()) > 24,
+            'docx_url' => null,
+            '_sort_at' => $task->submitted_at ?? $task->created_at,
+        ], $this->actorFields($task));
+    }
+
     /**
      * Additive actor metadata for Tendik feed rows. All keys are nullable and
      * back-fill with null on rows that pre-date the actor migration. The FE
@@ -182,7 +215,7 @@ class LetterTaskFeedService
         return [
             'assigned_to' => $task->getAttribute('assigned_to'),
             'assigned_tendik_name' => $this->relationName($task, 'assignedTendik'),
-            'nomor_surat' => $task->getAttribute('nomor_surat'),
+            'nomor_surat' => $this->displayedNumberFor($task),
             'tendik_approved_by' => $task->getAttribute('tendik_approved_by'),
             'tendik_approved_by_name' => $this->relationName($task, 'tendikApprover'),
             'revised_by' => $task->getAttribute('revised_by'),
@@ -190,6 +223,26 @@ class LetterTaskFeedService
             'rejected_by' => $task->getAttribute('rejected_by'),
             'rejected_by_name' => $this->relationName($task, 'rejector'),
         ];
+    }
+
+    /**
+     * Canonical displayed letter number. Letters that carry the shared
+     * `nomor_surat` column resolve to it (unchanged behavior); letters whose
+     * number lives in a letter-specific column fall through to it. Surat Tugas
+     * has no `nomor_surat` column and exposes `nomor_surat_tugas` here once the
+     * Tendik sets it at approval (null before that). Centralized so no per-letter
+     * conditional leaks into the row builders.
+     */
+    private function displayedNumberFor(Model $task): ?string
+    {
+        foreach (['nomor_surat', 'nomor_surat_pengantar', 'nomor_surat_tugas'] as $column) {
+            $value = $task->getAttribute($column);
+            if (is_string($value) && trim($value) !== '') {
+                return $value;
+            }
+        }
+
+        return null;
     }
 
     private function relationName(Model $task, string $relation): ?string
@@ -285,6 +338,27 @@ class LetterTaskFeedService
         ], $this->actorFields($task), $this->academicActorFields($task));
     }
 
+    public function akademikSuratTugasRow(SuratTugasApplication $task): array
+    {
+        $metadata = $this->metadataFor(SuratTugasApplication::LETTER_TYPE);
+
+        return array_merge([
+            'id' => $task->id,
+            'submitted_at' => $this->formatDate($task->created_at),
+            'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? $task->user?->name,
+            'nim' => $task->mahasiswaProfile?->nim,
+            'type' => $metadata['letter_label'],
+            'letter_type' => SuratTugasApplication::LETTER_TYPE,
+            'letter_label' => $metadata['letter_label'],
+            'category' => $metadata['category'],
+            'status' => $task->status,
+            'docx_url' => null,
+            'action_at' => $this->formatNullableDate($this->actionTimestamp($task)),
+            'is_overdue' => $task->created_at->diffInHours(now()) > 24,
+            'sort_timestamp' => $task->created_at->timestamp,
+        ], $this->actorFields($task), $this->academicActorFields($task));
+    }
+
     private function metadataFor(string $letterType): array
     {
         foreach (LetterTypeRegistry::all() as $type) {
@@ -352,6 +426,7 @@ class LetterTaskFeedService
             $task instanceof SuratPengantarMagangApplication => $this->tendikMagangRow($task),
             $task instanceof SuratKeteranganAktifApplication => $this->tendikAktifRow($task),
             $task instanceof ProsesLuarNegeriApplication => $this->tendikProsesLuarNegeriRow($task),
+            $task instanceof SuratTugasApplication => $this->tendikSuratTugasRow($task),
         };
     }
 
@@ -362,6 +437,7 @@ class LetterTaskFeedService
             $task instanceof SuratPengantarMagangApplication => $this->akademikMagangRow($task),
             $task instanceof SuratKeteranganAktifApplication => $this->akademikAktifRow($task),
             $task instanceof ProsesLuarNegeriApplication => $this->akademikProsesLuarNegeriRow($task),
+            $task instanceof SuratTugasApplication => $this->akademikSuratTugasRow($task),
         };
     }
 

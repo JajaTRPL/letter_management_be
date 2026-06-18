@@ -2,13 +2,17 @@
 
 namespace App\Http\Controllers\Mahasiswa;
 
+use App\Http\Controllers\Concerns\AddsSupportingDocumentMetadata;
 use App\Http\Controllers\Controller;
 use App\Models\LetterDocumentArtifact;
 use App\Models\ScholarshipApplication;
 use App\Services\BeasiswaPreviewGenerationException;
 use App\Services\BeasiswaPreviewGenerationService;
+use App\Services\LetterAttachmentMetadataService;
+use App\Services\LetterAttachmentRequirementService;
 use App\Services\LetterDocumentArtifactService;
 use App\Services\LetterDocumentAccessService;
+use App\Services\LetterRetentionSummaryService;
 use App\Services\MahasiswaProfileDataService;
 use App\Services\ScholarshipAutomationService;
 use Illuminate\Http\JsonResponse;
@@ -21,9 +25,13 @@ use RuntimeException;
 
 class ScholarshipController extends Controller
 {
+    use AddsSupportingDocumentMetadata;
+
     public function __construct(
         private LetterDocumentAccessService $documentAccessService,
-        private MahasiswaProfileDataService $profileDataService
+        private MahasiswaProfileDataService $profileDataService,
+        private LetterAttachmentMetadataService $attachmentMetadataService,
+        private LetterRetentionSummaryService $retentionSummaryService,
     )
     {
     }
@@ -221,7 +229,7 @@ class ScholarshipController extends Controller
     /**
      * Save Process 3: Academic & History
      */
-    public function saveStep3(Request $request)
+    public function saveStep3(Request $request, \App\Services\LetterAttachmentUploadService $attachmentUploadService)
     {
         $application = $this->editableApplicationQuery(Auth::id())->firstOrFail();
 
@@ -253,18 +261,19 @@ class ScholarshipController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        // Handle File Uploads
-        if ($request->hasFile('transkrip_nilai')) {
-            $path = $request->file('transkrip_nilai')->store('scholarships/transcripts', 'public');
-            $application->transkrip_nilai_path = Storage::url($path);
-        }
-        if ($request->hasFile('slip_gaji_ayah')) {
-            $path = $request->file('slip_gaji_ayah')->store('scholarships/slips', 'public');
-            $application->slip_gaji_ayah_path = Storage::url($path);
-        }
-        if ($request->hasFile('slip_gaji_ibu')) {
-            $path = $request->file('slip_gaji_ibu')->store('scholarships/slips', 'public');
-            $application->slip_gaji_ibu_path = Storage::url($path);
+        // Supporting-document writes go to the PRIVATE local disk via the shared
+        // attachment registry. Legacy *_path columns are intentionally left
+        // untouched until the guarded column-removal migration.
+        foreach (['transkrip_nilai', 'slip_gaji_ayah', 'slip_gaji_ibu'] as $documentKey) {
+            if ($request->hasFile($documentKey)) {
+                $attachmentUploadService->store(
+                    $application,
+                    ScholarshipApplication::LETTER_TYPE,
+                    $documentKey,
+                    $request->file($documentKey),
+                    Auth::id(),
+                );
+            }
         }
         $application->save();
 
@@ -284,7 +293,21 @@ class ScholarshipController extends Controller
             }
         }
 
-        $updateData = $request->except(['transkrip_nilai', 'slip_gaji_ayah', 'slip_gaji_ibu', 'scholarship_histories']);
+        $updateData = $request->only([
+            'scholarship_name',
+            'current_semester',
+            'family_dependents',
+            'gpa_last_semesters',
+            'ipk',
+            'sks_last_semesters',
+            'total_sks_passed',
+            'total_sks_required',
+            'on_leave',
+            'leave_semester',
+            'thesis_status',
+            'exam_plan_date',
+            'has_scholarship_history',
+        ]);
         
         // Map frontend fields to backend columns
         if (isset($updateData['gpa_last_semesters'])) {
@@ -313,6 +336,7 @@ class ScholarshipController extends Controller
         Request $request,
         ScholarshipAutomationService $automationService,
         BeasiswaPreviewGenerationService $previewGenerationService,
+        LetterAttachmentRequirementService $attachmentRequirementService,
     )
     {
         // Defense-in-depth: the FE renders an explicit declaration checkbox and gates the
@@ -333,6 +357,18 @@ class ScholarshipController extends Controller
         }
 
         $application = $this->editableApplicationQuery(Auth::id())->firstOrFail();
+
+        $attachmentValidator = Validator::make($application->toArray(), []);
+        $this->addMissingAttachmentRequirementErrors(
+            $attachmentValidator,
+            $attachmentRequirementService,
+            ScholarshipApplication::LETTER_TYPE,
+            (int) $application->getKey(),
+        );
+        if ($attachmentValidator->fails()) {
+            return response()->json(['errors' => $attachmentValidator->errors()], 422);
+        }
+
         $submittedAt = now();
 
         try {
@@ -571,33 +607,23 @@ class ScholarshipController extends Controller
             && str_ends_with(strtolower($path), '.pdf');
     }
 
-    public function finalDownload(
-        ScholarshipApplication $application,
-        LetterDocumentArtifactService $artifactService,
-    ) {
-        $this->documentAccessService->ensureOwner($application, Auth::user());
-
-        if ($application->status !== ScholarshipApplication::STATUS_COMPLETED) {
-            return response()->json([
-                'message' => 'Dokumen final hanya tersedia setelah pengajuan selesai.',
-            ], 403);
-        }
-
-        $artifact = $artifactService->latestReadyArtifact(
+    public function finalDownload(ScholarshipApplication $application)
+    {
+        $decision = $this->documentAccessService->finalDownload(
+            $application,
+            Auth::user(),
             ScholarshipApplication::LETTER_TYPE,
-            $application->id,
-            LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW,
         );
 
-        if (!$artifact || !$artifact->pdf_path || !Storage::disk('local')->exists($artifact->pdf_path)) {
+        if (!$decision->allowedToDownload() || $decision->absolutePath() === null) {
             return response()->json([
-                'message' => 'Dokumen final PDF belum tersedia.',
-                'reason' => 'artifact_unavailable',
-            ], 404);
+                'message' => $decision->message(),
+                'reason' => $decision->reason(),
+            ], $decision->status());
         }
 
         $response = response()->download(
-            Storage::disk('local')->path($artifact->pdf_path),
+            $decision->absolutePath(),
             $this->finalPdfFilename($application),
             [
                 'Content-Type' => 'application/pdf',
@@ -647,11 +673,36 @@ class ScholarshipController extends Controller
             'user.department.faculty',
         ]);
 
-        return $this->profileDataService->applicationPayload($application);
+        $payload = $this->profileDataService->applicationPayload($application);
+
+        return $this->withSupportingDocumentMetadataPayload(
+            $payload,
+            $application,
+            ScholarshipApplication::LETTER_TYPE,
+            $this->attachmentMetadataService,
+            $this->retentionSummaryService,
+        );
     }
 
     private function finalPdfFilename(ScholarshipApplication $application): string
     {
         return 'surat-permohonan-beasiswa-' . $application->id . '.pdf';
+    }
+
+    private function addMissingAttachmentRequirementErrors(
+        \Illuminate\Validation\Validator $validator,
+        LetterAttachmentRequirementService $attachmentRequirementService,
+        string $letterType,
+        int $applicationId,
+    ): void {
+        $validator->after(function (\Illuminate\Validation\Validator $validator) use ($attachmentRequirementService, $letterType, $applicationId): void {
+            foreach ($attachmentRequirementService->missingRequiredDocumentKeys($letterType, $applicationId) as $documentKey) {
+                $attribute = $attachmentRequirementService->legacyValidationAttribute($letterType, $documentKey);
+                $validator->errors()->add(
+                    $attribute,
+                    'The ' . str_replace('_', ' ', $attribute) . ' field is required.',
+                );
+            }
+        });
     }
 }

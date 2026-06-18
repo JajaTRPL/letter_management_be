@@ -43,9 +43,16 @@ class SuratPengantarMagangPhaseDocumentGenerationTest extends TestCase
             FinalTemplatePlaceholderContracts::FORBIDDEN_FINAL_PLACEHOLDERS,
         );
 
-        $this->assertSame(['unknown' => [], 'missing' => [], 'forbidden' => []], $violations);
+        // Refreshed Pengantar-only template (source of truth): strict contract
+        // match — no unknown, no missing, no forbidden placeholders.
+        $this->assertSame([], $violations['unknown']);
+        $this->assertSame([], $violations['missing']);
+        $this->assertSame([], $violations['forbidden']);
         $this->assertContains('nomor_surat_pengantar', $analysis['placeholders']);
-        $this->assertContains('nomor_surat_tugas', $analysis['placeholders']);
+        // Surat Tugas placeholders must remain absent after the split.
+        $this->assertNotContains('nomor_surat_tugas', $analysis['placeholders']);
+        $this->assertNotContains('ttd_kadep_tugas', $analysis['placeholders']);
+        $this->assertNotContains('paraf_tugas', $analysis['placeholders']);
         $this->assertNotContains('nomor_surat', $analysis['placeholders']);
         $this->assertNotContains('ttd_kadep', $analysis['placeholders']);
         $this->assertNotContains('paraf', $analysis['placeholders']);
@@ -96,11 +103,13 @@ class SuratPengantarMagangPhaseDocumentGenerationTest extends TestCase
 
             if ($expected['numbers']) {
                 $this->assertStringContainsString('MAG/PENGANTAR/PENDING/001', $text);
-                $this->assertStringContainsString('MAG/TUGAS/PENDING/001', $text);
             } else {
                 $this->assertStringNotContainsString('MAG/PENGANTAR/PENDING/001', $text);
-                $this->assertStringNotContainsString('MAG/TUGAS/PENDING/001', $text);
             }
+            // S1 (Magang standalone): the tugas number is never rendered into the
+            // Magang document anymore (Surat Tugas is a separate letter). The
+            // leftover template placeholder is mapped to '' until the Doc is edited.
+            $this->assertStringNotContainsString('MAG/TUGAS/PENDING/001', $text);
 
             $this->assertStringContainsString('Kepala Operasional Mitra', $text);
             $this->assertStringContainsString('PT Final Magang', $text);
@@ -112,16 +121,16 @@ class SuratPengantarMagangPhaseDocumentGenerationTest extends TestCase
             $this->assertStringContainsString('55281', $text);
             $this->assertStringContainsString('01 Juni 2026', $text);
             $this->assertStringContainsString('31 Agustus 2026', $text);
-            $this->assertStringContainsString('Dr. Pembimbing Resmi', $text);
-            $this->assertStringContainsString('Backend Engineer Intern', $text);
+            // fakultas / dpa / posisi placeholders were intentionally removed from
+            // the refreshed Pengantar-only Magang template, so the rendered DOCX no
+            // longer contains 'Sekolah Vokasi', 'Dr. Pembimbing Resmi', or
+            // 'Backend Engineer Intern'. They are not part of the Magang contract.
             $this->assertStringContainsString('Mahasiswa Magang Phase', $text);
             $this->assertStringContainsString('22/493038/SV/20654', $text);
             $this->assertStringContainsString('Teknologi Rekayasa Perangkat Lunak', $text);
             $this->assertStringContainsString('TRPL', $text);
             $this->assertStringContainsString('Teknik Elektro dan Informatika', $text);
             $this->assertStringNotContainsString('Departemen Departemen', $text);
-            $this->assertStringContainsString('Sekolah Vokasi', $text);
-            $this->assertStringNotContainsString('Sekolah Vokasi UGM UGM', $text);
             $this->assertStringContainsString('Ketua Departemen', $text);
             $this->assertStringContainsString('Kadep Magang Phase', $text);
             $this->assertStringContainsString('196501011990031001', $text);
@@ -139,12 +148,12 @@ class SuratPengantarMagangPhaseDocumentGenerationTest extends TestCase
         $this->assertGreaterThan(
             $mediaCounts[LetterDocumentArtifact::PHASE_PRODI_REVIEW],
             $mediaCounts[LetterDocumentArtifact::PHASE_DEPARTEMEN_REVIEW],
-            'Departemen phase must add both paraf placements.',
+            'Departemen phase must add the pengantar paraf placement (tugas removed in S1).',
         );
         $this->assertGreaterThan(
             $mediaCounts[LetterDocumentArtifact::PHASE_DEPARTEMEN_REVIEW],
             $mediaCounts[LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW],
-            'Mahasiswa phase must add both Kadep TTD placements.',
+            'Mahasiswa phase must add the pengantar Kadep TTD placement (tugas removed in S1).',
         );
 
         $fresh = $application->fresh();
@@ -170,15 +179,15 @@ class SuratPengantarMagangPhaseDocumentGenerationTest extends TestCase
         $this->assertSame([], TemplatePlaceholderAssertions::unresolvedPlaceholdersInXml($this->docxXml($path)));
     }
 
-    public function test_prodi_phase_requires_both_formal_numbers(): void
+    public function test_prodi_phase_requires_only_pengantar_number_and_tugas_is_not_required(): void
     {
+        // S1 (Magang standalone): the Magang document no longer requires a tugas
+        // number. Prodi-phase generation must succeed with the pengantar number
+        // alone and render without unresolved placeholders.
         $this->requireMagangTemplateCache();
         [$application, $kadep] = $this->phaseApplication();
 
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('nomor surat tugas wajib tersedia');
-
-        $this->service()->generateDocumentForPhase(
+        $path = $this->service()->generateDocumentForPhase(
             $application->fresh(),
             LetterDocumentArtifact::PHASE_PRODI_REVIEW,
             [
@@ -187,6 +196,12 @@ class SuratPengantarMagangPhaseDocumentGenerationTest extends TestCase
                 'official_kadep' => $kadep,
             ],
         );
+
+        $this->assertTrue(Storage::disk('local')->exists($path));
+        $xml = $this->docxXml($path);
+        $this->assertSame([], TemplatePlaceholderAssertions::unresolvedPlaceholdersInXml($xml));
+        $this->assertStringContainsString('MAG/PENGANTAR/PENDING/001', $this->plainText($xml));
+        $this->assertStringNotContainsString('MAG/TUGAS', $this->plainText($xml));
     }
 
     public function test_departemen_phase_requires_global_paraf(): void

@@ -40,7 +40,6 @@ class SuratPengantarMagangApplication extends Model
         'tgl_mulai',
         'tgl_selesai',
         'dosen_pembimbing_dpa',
-        'proposal_kegiatan_magang_path',
         'nomor_surat',
         'nomor_surat_pengantar',
         'nomor_surat_tugas',

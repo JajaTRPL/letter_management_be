@@ -55,6 +55,7 @@ class TemplateManagementTest extends TestCase
             'surat-keterangan-aktif',
             'proses-luar-negeri',
             'surat-pengantar-magang',
+            'surat-tugas',
         ], $templates->keys()->all());
 
         foreach (self::managedTemplateExpectations() as $key => $expected) {
@@ -287,6 +288,13 @@ class TemplateManagementTest extends TestCase
                 'category' => 'Surat Magang',
                 'template_id_config_key' => 'template_surat_pengantar_magang_id',
                 'cache_path_config_key' => 'template_surat_pengantar_magang_cache_path',
+            ],
+            'surat-tugas' => [
+                'key' => 'surat-tugas',
+                'name' => 'Surat Tugas',
+                'category' => 'Surat Tugas',
+                'template_id_config_key' => 'template_surat_tugas_id',
+                'cache_path_config_key' => 'template_surat_tugas_cache_path',
             ],
         ];
     }

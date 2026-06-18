@@ -10,6 +10,35 @@ use Illuminate\Support\Carbon;
 
 class MahasiswaProfileDataService
 {
+    private const COMPLETENESS_CATEGORIES = [
+        'academic_master_data',
+        'editable_personal_profile_data',
+        'family_profile_data',
+    ];
+
+    private const ACADEMIC_MASTER_DATA_LABELS = [
+        'study_program_id' => 'Program Studi',
+        'department_id' => 'Departemen',
+        'faculty_id' => 'Fakultas',
+    ];
+
+    private const EDITABLE_PERSONAL_PROFILE_DATA_LABELS = [
+        'nim' => 'NIM',
+        'tempat_lahir' => 'Tempat Lahir',
+        'tanggal_lahir' => 'Tanggal Lahir',
+        'jenis_kelamin' => 'Jenis Kelamin',
+        'no_hp' => 'No. HP',
+        'alamat_asal' => 'Alamat Asal',
+        'alamat_domisili' => 'Alamat Domisili',
+        'pas_foto_path' => 'Pas Foto',
+        'tanda_tangan_path' => 'Tanda Tangan',
+    ];
+
+    private const FAMILY_PROFILE_DATA_LABELS = [
+        'ayah_nama_lengkap' => 'Data Ayah',
+        'ibu_nama_lengkap' => 'Data Ibu',
+    ];
+
     public function __construct(private AcademicContextService $academicContextService)
     {
     }
@@ -105,51 +134,55 @@ class MahasiswaProfileDataService
     public function readinessForUser(User $user): array
     {
         $normalized = $this->forUser($user);
-
-        $academicMissing = [];
-        if (!$normalized['study_program_id']) {
-            $academicMissing[] = 'Program Studi';
-        }
-        if (!$normalized['department_id']) {
-            $academicMissing[] = 'Departemen';
-        }
-        if (!$normalized['faculty_id']) {
-            $academicMissing[] = 'Fakultas';
-        }
-
-        $profileMissing = [];
-        $profileLabels = [
-            'nim' => 'NIM',
-            'tempat_lahir' => 'Tempat Lahir',
-            'tanggal_lahir' => 'Tanggal Lahir',
-            'jenis_kelamin' => 'Jenis Kelamin',
-            'no_hp' => 'No. HP',
-            'alamat_asal' => 'Alamat Asal',
-            'alamat_domisili' => 'Alamat Domisili',
-            'pas_foto_path' => 'Pas Foto',
-            'tanda_tangan_path' => 'Tanda Tangan',
-        ];
-
-        foreach ($profileLabels as $field => $label) {
-            if (!$this->hasValue($normalized[$field] ?? null)) {
-                $profileMissing[] = $label;
-            }
-        }
+        $user->loadMissing('mahasiswaProfile.keluarga');
+        $keluarga = $user->getRelationValue('mahasiswaProfile')?->getRelationValue('keluarga') ?? collect();
+        $ayah = $keluarga->firstWhere('jenis_relasi', 'ayah');
+        $ibu = $keluarga->firstWhere('jenis_relasi', 'ibu');
 
         return [
-            'academic_master_data' => [
-                'is_complete' => $academicMissing === [],
-                'missing_fields' => $academicMissing,
-            ],
-            'editable_personal_profile_data' => [
-                'is_complete' => $profileMissing === [],
-                'missing_fields' => $profileMissing,
-            ],
+            'academic_master_data' => $this->completionCategory(
+                $normalized,
+                self::ACADEMIC_MASTER_DATA_LABELS
+            ),
+            'editable_personal_profile_data' => $this->completionCategory(
+                $normalized,
+                self::EDITABLE_PERSONAL_PROFILE_DATA_LABELS
+            ),
+            'family_profile_data' => $this->completionCategory([
+                'ayah_nama_lengkap' => $ayah?->nama_lengkap,
+                'ibu_nama_lengkap' => $ibu?->nama_lengkap,
+            ], self::FAMILY_PROFILE_DATA_LABELS),
             'workflow_actor_data' => [
                 'is_complete' => null,
                 'missing_fields' => [],
                 'note' => 'Workflow actor and academic role readiness are evaluated outside student profile completeness.',
             ],
+        ];
+    }
+
+    public function completionForUser(User $user, ?array $readiness = null): array
+    {
+        $readiness ??= $this->readinessForUser($user);
+        $missingFields = [];
+        $filledCount = 0;
+        $totalCount = 0;
+
+        foreach (self::COMPLETENESS_CATEGORIES as $categoryName) {
+            $category = $readiness[$categoryName];
+            $missingFields = array_merge($missingFields, $category['missing_fields']);
+            $filledCount += $category['filled_count'];
+            $totalCount += $category['total_count'];
+        }
+
+        return [
+            'is_complete' => $missingFields === [],
+            'missing_fields' => $missingFields,
+            'percentage' => $totalCount === 0
+                ? 0
+                : (int) round(($filledCount / $totalCount) * 100),
+            'filled_count' => $filledCount,
+            'total_count' => $totalCount,
+            'categories' => $readiness,
         ];
     }
 
@@ -358,5 +391,30 @@ class MahasiswaProfileDataService
     private function hasValue(mixed $value): bool
     {
         return $this->blankToNull($value) !== null && $value !== '-';
+    }
+
+    /**
+     * @param array<string, mixed> $values
+     * @param array<string, string> $labels
+     * @return array{is_complete: bool, missing_fields: list<string>, filled_count: int, total_count: int}
+     */
+    private function completionCategory(array $values, array $labels): array
+    {
+        $missingFields = [];
+
+        foreach ($labels as $field => $label) {
+            if (!$this->hasValue($values[$field] ?? null)) {
+                $missingFields[] = $label;
+            }
+        }
+
+        $totalCount = count($labels);
+
+        return [
+            'is_complete' => $missingFields === [],
+            'missing_fields' => $missingFields,
+            'filled_count' => $totalCount - count($missingFields),
+            'total_count' => $totalCount,
+        ];
     }
 }

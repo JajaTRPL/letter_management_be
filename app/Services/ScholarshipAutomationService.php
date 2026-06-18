@@ -221,7 +221,13 @@ class ScholarshipAutomationService
 
     protected function fetchFromGoogle(): string|false
     {
-        $templateId = config('surat.template_beasiswa_id', '1wnQYvwVO45M3LDDLEitsfjMFgkwj9S7f');
+        $templateId = trim((string) config('surat.template_beasiswa_id', ''));
+        if ($templateId === '') {
+            Log::warning('Beasiswa template Google Doc ID is not configured.');
+
+            return false;
+        }
+
         $url = "https://docs.google.com/document/d/{$templateId}/export?format=docx";
 
         $options = [

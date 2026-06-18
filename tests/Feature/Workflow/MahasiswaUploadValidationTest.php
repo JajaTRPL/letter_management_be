@@ -306,17 +306,23 @@ class MahasiswaUploadValidationTest extends TestCase
             ->assertJsonValidationErrors('proposal_kegiatan_magang');
     }
 
-    public function test_magang_draft_allows_missing_proposal_when_existing_path_already_saved(): void
+    public function test_magang_draft_allows_missing_proposal_when_registry_row_already_saved(): void
     {
+        Storage::fake('local');
         Storage::fake('public');
 
         [$student] = $this->completeMahasiswa();
-        SuratPengantarMagangApplication::create([
+        $application = SuratPengantarMagangApplication::create([
             'user_id' => $student->id,
             'mahasiswa_profile_id' => $student->mahasiswaProfile?->id,
             'status' => SuratPengantarMagangApplication::STATUS_DRAFT,
-            'proposal_kegiatan_magang_path' => '/storage/surat-pengantar-magang/proposals/existing.pdf',
         ]);
+        $this->attachRegistryDocument(
+            $application,
+            SuratPengantarMagangApplication::LETTER_TYPE,
+            'proposal',
+            'existing.pdf',
+        );
 
         $this->actingAs($student, 'sanctum')
             ->post('/api/mahasiswa/surat-pengantar-magang/draft', $this->magangDraftBasePayload())

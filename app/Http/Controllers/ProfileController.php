@@ -47,7 +47,7 @@ class ProfileController extends Controller
             $normalized = $this->profileDataService->forUser($user);
             $student = $this->profileDataService->studentForUser($user);
             $readiness = $this->profileDataService->readinessForUser($user);
-            $completeness = $this->checkProfileCompleteness($profile, $readiness);
+            $completeness = $this->profileDataService->completionForUser($user, $readiness);
 
             return response()->json([
                 'user' => array_merge(
@@ -90,35 +90,6 @@ class ProfileController extends Controller
                 'tanda_tangan_path' => $user->signature_path,
             ]
         ]);
-    }
-
-    /**
-     * Check if the student profile is complete (mahasiswa flow).
-     */
-    private function checkProfileCompleteness($profile, array $readiness)
-    {
-        $missingFields = array_merge(
-            $readiness['academic_master_data']['missing_fields'] ?? [],
-            $readiness['editable_personal_profile_data']['missing_fields'] ?? []
-        );
-
-        $keluarga = $profile->keluarga;
-
-        $ayah = $keluarga->where('jenis_relasi', 'ayah')->first();
-        if (!$ayah || $ayah->nama_lengkap === null || $ayah->nama_lengkap === '') {
-            $missingFields[] = 'Data Ayah';
-        }
-
-        $ibu = $keluarga->where('jenis_relasi', 'ibu')->first();
-        if (!$ibu || $ibu->nama_lengkap === null || $ibu->nama_lengkap === '') {
-            $missingFields[] = 'Data Ibu';
-        }
-
-        return [
-            'is_complete' => count($missingFields) === 0,
-            'missing_fields' => $missingFields,
-            'categories' => $readiness,
-        ];
     }
 
     private function studyProgramResponse(array $normalized): ?array

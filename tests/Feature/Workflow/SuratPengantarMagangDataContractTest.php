@@ -166,12 +166,14 @@ class SuratPengantarMagangDataContractTest extends TestCase
         $tendik = $this->tendikPersuratan([SuratPengantarMagangApplication::LETTER_TYPE]);
         $application = $this->magangApplication();
 
+        // S1 (Magang standalone): only nomor_surat_pengantar is required now.
         $this->actingAs($tendik, 'sanctum')
             ->patchJson("/api/tendik/surat-pengantar-magang/{$application->id}/approve", [
                 'nomor_surat' => 'MAG/LEGACY/001/2026',
             ])
             ->assertUnprocessable()
-            ->assertJsonValidationErrors(['nomor_surat_pengantar', 'nomor_surat_tugas']);
+            ->assertJsonValidationErrors(['nomor_surat_pengantar'])
+            ->assertJsonMissingValidationErrors(['nomor_surat_tugas']);
 
         $this->assertDatabaseHas('surat_pengantar_magang_applications', [
             'id' => $application->id,
@@ -182,19 +184,25 @@ class SuratPengantarMagangDataContractTest extends TestCase
         ]);
     }
 
-    public function test_tendik_explicit_number_contract_requires_both_formal_numbers(): void
+    public function test_tendik_can_approve_with_pengantar_number_only_and_tugas_is_optional(): void
     {
+        // S1 (Magang standalone): Surat Tugas split out — the Magang approval no
+        // longer requires nomor_surat_tugas. Pengantar-only is a valid approval.
         $tendik = $this->tendikPersuratan([SuratPengantarMagangApplication::LETTER_TYPE]);
         $application = $this->magangApplication();
+
+        $this->mockMagangPreviewGenerationAlwaysReady();
 
         $this->actingAs($tendik, 'sanctum')
             ->patchJson("/api/tendik/surat-pengantar-magang/{$application->id}/approve", [
                 'nomor_surat_pengantar' => 'MAG/PENGANTAR/ONLY/2026',
             ])
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['nomor_surat_tugas']);
+            ->assertOk()
+            ->assertJsonPath('application.nomor_surat_pengantar', 'MAG/PENGANTAR/ONLY/2026');
 
-        $this->assertSame(SuratPengantarMagangApplication::STATUS_SUBMITTED, $application->fresh()->status);
+        $fresh = $application->fresh();
+        $this->assertSame(SuratPengantarMagangApplication::STATUS_APPROVED_TENDIK, $fresh->status);
+        $this->assertNull($fresh->nomor_surat_tugas);
     }
 
     private function legacyDraftPayload(array $overrides = []): array

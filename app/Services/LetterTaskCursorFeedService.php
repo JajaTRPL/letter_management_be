@@ -6,6 +6,7 @@ use App\Models\ProsesLuarNegeriApplication;
 use App\Models\ScholarshipApplication;
 use App\Models\SuratKeteranganAktifApplication;
 use App\Models\SuratPengantarMagangApplication;
+use App\Models\SuratTugasApplication;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Query\Builder as QueryBuilder;
@@ -24,6 +25,7 @@ class LetterTaskCursorFeedService
         SuratPengantarMagangApplication::LETTER_TYPE => SuratPengantarMagangApplication::class,
         SuratKeteranganAktifApplication::LETTER_TYPE => SuratKeteranganAktifApplication::class,
         ProsesLuarNegeriApplication::LETTER_TYPE => ProsesLuarNegeriApplication::class,
+        SuratTugasApplication::LETTER_TYPE => SuratTugasApplication::class,
     ];
 
     private const TENDIK_RELATIONS = [
@@ -86,6 +88,14 @@ class LetterTaskCursorFeedService
                     ],
                     true
                 ),
+                $this->tendikBranch(
+                    $user,
+                    SuratTugasApplication::LETTER_TYPE,
+                    [
+                        SuratTugasApplication::STATUS_SUBMITTED,
+                    ],
+                    true
+                ),
             ],
             $request,
             self::TENDIK_RELATIONS
@@ -118,6 +128,12 @@ class LetterTaskCursorFeedService
                     $user,
                     ProsesLuarNegeriApplication::LETTER_TYPE,
                     $this->historicalStatuses(ProsesLuarNegeriApplication::class),
+                    true
+                ),
+                $this->tendikBranch(
+                    $user,
+                    SuratTugasApplication::LETTER_TYPE,
+                    $this->historicalStatuses(SuratTugasApplication::class),
                     true
                 ),
             ],

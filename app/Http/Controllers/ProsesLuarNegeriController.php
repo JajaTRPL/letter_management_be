@@ -2,14 +2,17 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Concerns\AddsSupportingDocumentMetadata;
 use App\Http\Controllers\Concerns\AuthorizesAcademicApplications;
 use App\Models\LetterDocumentArtifact;
 use App\Models\ProsesLuarNegeriApplication;
 use App\Services\AcademicRoutingService;
 use App\Services\AcademicSignatoryService;
 use App\Services\LetterAssignmentService;
+use App\Services\LetterAttachmentMetadataService;
 use App\Services\LetterDocumentAccessService;
 use App\Services\LetterDocumentArtifactService;
+use App\Services\LetterRetentionSummaryService;
 use App\Services\MahasiswaProfileDataService;
 use App\Services\ProsesLuarNegeriPreviewGenerationException;
 use App\Services\ProsesLuarNegeriPreviewGenerationService;
@@ -25,12 +28,15 @@ use RuntimeException;
 class ProsesLuarNegeriController extends Controller
 {
     use AuthorizesAcademicApplications;
+    use AddsSupportingDocumentMetadata;
 
     public function __construct(
         private LetterDocumentAccessService $documentAccessService,
         private LetterAssignmentService $assignmentService,
         private AcademicRoutingService $academicRoutingService,
-        private MahasiswaProfileDataService $profileDataService
+        private MahasiswaProfileDataService $profileDataService,
+        private LetterAttachmentMetadataService $attachmentMetadataService,
+        private LetterRetentionSummaryService $retentionSummaryService,
     ) {
     }
 
@@ -790,6 +796,11 @@ class ProsesLuarNegeriController extends Controller
     {
         $application->setAttribute('generated_pdf_path', null);
 
-        return $application;
+        return $this->withSupportingDocumentMetadata(
+            $application,
+            ProsesLuarNegeriApplication::LETTER_TYPE,
+            $this->attachmentMetadataService,
+            $this->retentionSummaryService,
+        );
     }
 }
