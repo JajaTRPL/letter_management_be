@@ -62,5 +62,18 @@ class AppServiceProvider extends ServiceProvider
 
             return Limit::perMinute(30)->by($identity);
         });
+
+        // Room management (CP2): separate buckets per concern so photo
+        // browsing can never starve management mutations and vice versa.
+        $roomLimiterIdentity = function (Request $request): string {
+            $userId = $request->user()?->getAuthIdentifier();
+
+            return $userId ? $userId.'|'.$request->ip() : $request->ip();
+        };
+
+        RateLimiter::for('room-media-upload', fn (Request $request) => Limit::perMinute(20)->by($roomLimiterIdentity($request)));
+        RateLimiter::for('room-media-view', fn (Request $request) => Limit::perMinute(120)->by($roomLimiterIdentity($request)));
+        RateLimiter::for('room-template', fn (Request $request) => Limit::perMinute(30)->by($roomLimiterIdentity($request)));
+        RateLimiter::for('room-manage', fn (Request $request) => Limit::perMinute(30)->by($roomLimiterIdentity($request)));
     }
 }

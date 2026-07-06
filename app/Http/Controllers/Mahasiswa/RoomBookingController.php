@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Mahasiswa;
 
 use App\Enums\RoomBookingStatus;
 use App\Enums\RoomType;
+use App\Http\Controllers\Concerns\BuildsRoomManagementPayloads;
 use App\Http\Controllers\Concerns\HandlesRoomBookingApi;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Peminjaman\AvailabilityRequest;
@@ -28,6 +29,7 @@ use RuntimeException;
 
 class RoomBookingController extends Controller
 {
+    use BuildsRoomManagementPayloads;
     use HandlesRoomBookingApi;
 
     public function __construct(
@@ -41,7 +43,11 @@ class RoomBookingController extends Controller
     {
         $validated = $request->validated();
         $query = Room::query()
-            ->with('owningLaboratory:id,code,name')
+            ->with([
+                'owningLaboratory:id,code,name',
+                'coverPhoto',
+                'facilityItems.facilityType:id,name,slug',
+            ])
             ->where('is_active', true)
             ->orderBy('code');
 
@@ -51,7 +57,10 @@ class RoomBookingController extends Controller
         return response()->json([
             'message' => 'Daftar ruangan aktif berhasil diambil',
             'count' => $rooms->count(),
-            'data' => $rooms->map(fn (Room $room) => $this->roomPayload($room))->all(),
+            // roomSummaryPayload is a strict superset of the legacy
+            // roomPayload shape: existing FE keeps working, CP3 gains
+            // cover photo / facility / template hints.
+            'data' => $rooms->map(fn (Room $room) => $this->roomSummaryPayload($room))->all(),
         ]);
     }
 

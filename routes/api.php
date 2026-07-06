@@ -178,6 +178,53 @@ Route::middleware('throttle:api')->group(function () {
                 Route::get('/download', [\App\Http\Controllers\RoomBookingAttachmentController::class, 'download']);
             });
 
+        // Authenticated room photo delivery (catalog content): id+variant
+        // addressing only — storage paths never appear in URLs.
+        Route::get('/rooms/{room}/photos/{photo}/{variant}', [\App\Http\Controllers\RoomMediaController::class, 'show'])
+            ->middleware('throttle:room-media-view')
+            ->whereIn('variant', ['thumb', 'display', 'full']);
+
+        /*
+        |----------------------------------------------------------------------
+        | Room Management (Super Admin + Tendik; fine-grained scope decided
+        | by RoomPermissionResolver: sarpras=classroom, kalab=own lab,
+        | laboran=all labs, super_admin=all).
+        |----------------------------------------------------------------------
+        */
+        Route::middleware('role:super_admin,tendik')->prefix('room-management')->group(function () {
+            Route::middleware('throttle:room-manage')->group(function () {
+                Route::get('/rooms', [\App\Http\Controllers\RoomManagement\RoomController::class, 'index']);
+                Route::post('/rooms', [\App\Http\Controllers\RoomManagement\RoomController::class, 'store']);
+                Route::get('/rooms/{room}', [\App\Http\Controllers\RoomManagement\RoomController::class, 'show']);
+                Route::patch('/rooms/{room}', [\App\Http\Controllers\RoomManagement\RoomController::class, 'update']);
+                Route::post('/rooms/{room}/activate', [\App\Http\Controllers\RoomManagement\RoomController::class, 'activate']);
+                Route::post('/rooms/{room}/deactivate', [\App\Http\Controllers\RoomManagement\RoomController::class, 'deactivate']);
+
+                Route::get('/facility-types', [\App\Http\Controllers\RoomManagement\RoomFacilityController::class, 'facilityTypes']);
+                Route::post('/facility-types', [\App\Http\Controllers\RoomManagement\RoomFacilityController::class, 'storeFacilityType']);
+                Route::get('/rooms/{room}/facilities', [\App\Http\Controllers\RoomManagement\RoomFacilityController::class, 'index']);
+                Route::put('/rooms/{room}/facilities', [\App\Http\Controllers\RoomManagement\RoomFacilityController::class, 'sync']);
+
+                Route::get('/rooms/{room}/photos', [\App\Http\Controllers\RoomManagement\RoomPhotoController::class, 'index']);
+                Route::delete('/rooms/{room}/photos/{photo}', [\App\Http\Controllers\RoomManagement\RoomPhotoController::class, 'destroy']);
+                Route::post('/rooms/{room}/photos/{photo}/cover', [\App\Http\Controllers\RoomManagement\RoomPhotoController::class, 'setCover']);
+                Route::patch('/rooms/{room}/photos/reorder', [\App\Http\Controllers\RoomManagement\RoomPhotoController::class, 'reorder']);
+
+                Route::get('/rooms/{room}/templates', [\App\Http\Controllers\RoomManagement\RoomTemplateController::class, 'index']);
+                Route::post('/rooms/{room}/templates/{template}/activate', [\App\Http\Controllers\RoomManagement\RoomTemplateController::class, 'activate']);
+                Route::post('/rooms/{room}/templates/{template}/deactivate', [\App\Http\Controllers\RoomManagement\RoomTemplateController::class, 'deactivate']);
+
+                Route::get('/rooms/{room}/audit-logs', [\App\Http\Controllers\RoomManagement\RoomAuditController::class, 'index']);
+            });
+
+            Route::post('/rooms/{room}/photos', [\App\Http\Controllers\RoomManagement\RoomPhotoController::class, 'store'])
+                ->middleware('throttle:room-media-upload');
+            Route::post('/rooms/{room}/templates', [\App\Http\Controllers\RoomManagement\RoomTemplateController::class, 'store'])
+                ->middleware('throttle:room-template');
+            Route::get('/rooms/{room}/templates/{template}/download', [\App\Http\Controllers\RoomManagement\RoomTemplateController::class, 'download'])
+                ->middleware('throttle:room-template');
+        });
+
 
         /*
         |----------------------------------------------------------------------
@@ -405,6 +452,9 @@ Route::middleware('throttle:api')->group(function () {
 
             Route::prefix('peminjaman-ruangan')->group(function () {
                 Route::get('/rooms', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'rooms']);
+                Route::get('/rooms/{room}', [\App\Http\Controllers\Mahasiswa\RoomCatalogController::class, 'show']);
+                Route::get('/rooms/{room}/template', [\App\Http\Controllers\Mahasiswa\RoomCatalogController::class, 'template'])
+                    ->middleware('throttle:room-template');
                 Route::get('/availability', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'availability']);
                 Route::prefix('requests')->group(function () {
                     Route::get('/', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'index']);

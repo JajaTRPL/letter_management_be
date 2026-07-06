@@ -85,6 +85,20 @@ class RoomPermissionResolver
     }
 
     /**
+     * Room photos are catalog content: any authenticated user may view
+     * photos of ACTIVE rooms; inactive rooms are visible only to their
+     * managers.
+     */
+    public function canViewRoomMedia(User $user, Room $room): bool
+    {
+        if ($room->is_active) {
+            return true;
+        }
+
+        return $this->canReadRoomManagement($user, $room);
+    }
+
+    /**
      * Rooms this user may see in the management surface.
      */
     public function manageableRoomsQuery(User $user): Builder

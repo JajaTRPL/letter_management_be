@@ -22,6 +22,7 @@ class StoreRoomRequest extends FormRequest
             'capacity' => ['required', 'integer', 'min:1'],
             'location' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'max:5000'],
+            'rules' => ['nullable', 'string', 'max:5000'],
             'owning_laboratory_id' => ['nullable', 'integer', 'exists:laboratories,id'],
         ];
     }
