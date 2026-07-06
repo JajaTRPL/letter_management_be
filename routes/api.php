@@ -121,6 +121,10 @@ Route::middleware('throttle:api')->group(function () {
         Route::get('/faculties', [FacultyController::class, 'index']);
         Route::get('/departments', [DepartmentController::class, 'index']);
         Route::get('/study-programs-grouped', [StudyProgramController::class, 'grouped']);
+        Route::get(
+            '/laboratories',
+            [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'laboratories']
+        )->middleware('role:super_admin');
 
         // Beasiswa supporting-document preview bytes (role-scoped inside controller).
         // Separate from /api/storage, which is intentionally closed to supporting
@@ -144,6 +148,13 @@ Route::middleware('throttle:api')->group(function () {
             '/surat-tugas/{application}/supporting-documents/{field}/preview',
             [\App\Http\Controllers\SuratTugasSupportingDocumentController::class, 'preview']
         );
+
+        Route::middleware('throttle:peminjaman-attachment')
+            ->prefix('peminjaman-ruangan/{booking}/attachment/surat-peminjaman')
+            ->group(function () {
+                Route::get('/preview', [\App\Http\Controllers\RoomBookingAttachmentController::class, 'preview']);
+                Route::get('/download', [\App\Http\Controllers\RoomBookingAttachmentController::class, 'download']);
+            });
 
 
         /*
@@ -213,6 +224,17 @@ Route::middleware('throttle:api')->group(function () {
             Route::put('/academic-periods/{academicPeriod}', [\App\Http\Controllers\SuperAdmin\AcademicPeriodController::class, 'update']);
             Route::delete('/academic-periods/{academicPeriod}', [\App\Http\Controllers\SuperAdmin\AcademicPeriodController::class, 'destroy']);
             Route::patch('/academic-periods/{academicPeriod}/toggle-active', [\App\Http\Controllers\SuperAdmin\AcademicPeriodController::class, 'toggleActive']);
+
+            Route::prefix('peminjaman-ruangan')->group(function () {
+                Route::get('/rooms', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'rooms']);
+                Route::post('/rooms', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'storeRoom']);
+                Route::get('/rooms/{room}', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'showRoom']);
+                Route::put('/rooms/{room}', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'updateRoom']);
+                Route::patch('/rooms/{room}/activate', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'activateRoom']);
+                Route::patch('/rooms/{room}/deactivate', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'deactivateRoom']);
+                Route::get('/requests', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'requests']);
+                Route::get('/requests/{booking}', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'showRequest']);
+            });
         });
 
 
@@ -224,6 +246,14 @@ Route::middleware('throttle:api')->group(function () {
         Route::middleware('role:tendik')->prefix('tendik')->group(function () {
             Route::get('/dashboard/tasks', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'getDashboardData']);
             Route::get('/riwayat', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'getRiwayatData']);
+
+            Route::prefix('peminjaman-ruangan/requests')->group(function () {
+                Route::get('/', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'index']);
+                Route::get('/{booking}', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'show']);
+                Route::patch('/{booking}/approve', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'approve']);
+                Route::patch('/{booking}/revise', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'revise']);
+                Route::patch('/{booking}/reject', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'reject']);
+            });
             
             // Scholarship Review Actions
             foreach (['scholarship', 'surat-permohonan-beasiswa'] as $scholarshipRoutePrefix) {
@@ -349,6 +379,24 @@ Route::middleware('throttle:api')->group(function () {
         Route::middleware('role:mahasiswa')->prefix('mahasiswa')->group(function () {
             Route::get('/dashboard', function () {
                 return response()->json(['message' => 'Halaman Dasbord Mahasiswa']);
+            });
+
+            Route::prefix('peminjaman-ruangan')->group(function () {
+                Route::get('/rooms', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'rooms']);
+                Route::get('/availability', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'availability']);
+                Route::prefix('requests')->group(function () {
+                    Route::get('/', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'index']);
+                    Route::post('/', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'store'])
+                        ->middleware('throttle:peminjaman-attachment');
+                    Route::get('/{booking}', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'show']);
+                    Route::put('/{booking}', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'update']);
+                    Route::patch('/{booking}/submit', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'submit']);
+                    Route::patch('/{booking}/cancel', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'cancel']);
+                });
+                Route::post(
+                    '/{booking}/attachment/surat-peminjaman',
+                    [\App\Http\Controllers\RoomBookingAttachmentController::class, 'replace']
+                )->middleware('throttle:peminjaman-attachment');
             });
 
             // Scholarship Application Routes

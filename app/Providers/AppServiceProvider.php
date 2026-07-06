@@ -4,7 +4,10 @@ namespace App\Providers;
 
 use App\Services\DocumentConverter;
 use App\Services\GotenbergDocumentConverter;
+use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -43,6 +46,13 @@ class AppServiceProvider extends ServiceProvider
     {
         \Illuminate\Support\Facades\RateLimiter::for('api', function (\Illuminate\Http\Request $request) {
             return \Illuminate\Cache\RateLimiting\Limit::perMinute(100)->by($request->user()?->id ?: $request->ip());
+        });
+
+        RateLimiter::for('peminjaman-attachment', function (Request $request) {
+            $userId = $request->user()?->getAuthIdentifier();
+            $identity = $userId ? $userId.'|'.$request->ip() : $request->ip();
+
+            return Limit::perMinute(30)->by($identity);
         });
     }
 }

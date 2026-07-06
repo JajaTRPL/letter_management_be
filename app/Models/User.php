@@ -75,6 +75,16 @@ class User extends Authenticatable
         return $this->belongsTo(Laboratory::class);
     }
 
+    public function requestedRoomBookings()
+    {
+        return $this->hasMany(RoomBookingRequest::class, 'requester_id');
+    }
+
+    public function reviewedRoomBookings()
+    {
+        return $this->hasMany(RoomBookingRequest::class, 'reviewer_id');
+    }
+
     /**
      * Check if this user is a Primary Super Admin
      */

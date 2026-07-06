@@ -17,4 +17,9 @@ class Laboratory extends Model
     {
         return $this->hasMany(User::class, 'laboratory_id');
     }
+
+    public function rooms()
+    {
+        return $this->hasMany(Room::class, 'owning_laboratory_id');
+    }
 }
