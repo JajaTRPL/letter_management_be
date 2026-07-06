@@ -27,6 +27,13 @@ trait WorkflowTestHelpers
 
     private function activeUser(array $attributes = []): User
     {
+        if (
+            in_array($attributes['role'] ?? 'mahasiswa', ['tendik', 'akademik'], true)
+            && !array_key_exists('nip', $attributes)
+        ) {
+            $attributes['nip'] = 'TEST-' . Str::uuid();
+        }
+
         return User::create(array_merge([
             'name' => 'Test User ' . Str::uuid(),
             'email' => Str::uuid() . '@example.test',

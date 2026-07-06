@@ -44,8 +44,16 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        \Illuminate\Support\Facades\RateLimiter::for('api', function (\Illuminate\Http\Request $request) {
-            return \Illuminate\Cache\RateLimiting\Limit::perMinute(100)->by($request->user()?->id ?: $request->ip());
+        RateLimiter::for('api', function (Request $request) {
+            return Limit::perMinute(100)->by($request->user()?->id ?: $request->ip());
+        });
+
+        RateLimiter::for('password-rotation', function (Request $request) {
+            $identity = $request->user()?->getAuthIdentifier() ?: 'guest';
+
+            return Limit::perMinute(
+                max(1, (int) config('password_rotation.max_attempts_per_minute', 6))
+            )->by($identity.'|'.$request->ip());
         });
 
         RateLimiter::for('peminjaman-attachment', function (Request $request) {

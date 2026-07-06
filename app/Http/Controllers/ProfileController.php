@@ -5,14 +5,14 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Validation\Rule;
 use App\Models\MahasiswaProfile;
 use App\Models\KeluargaMahasiswa;
 use App\Models\User;
+use App\Enums\PasswordSetMethod;
 use App\Services\MahasiswaProfileDataService;
+use App\Services\PasswordCredentialService;
 use App\Services\PasFotoNormalizer;
 
 class ProfileController extends Controller
@@ -25,7 +25,8 @@ class ProfileController extends Controller
 
     public function __construct(
         private MahasiswaProfileDataService $profileDataService,
-        private PasFotoNormalizer $pasFotoNormalizer
+        private PasFotoNormalizer $pasFotoNormalizer,
+        private PasswordCredentialService $passwordCredentials,
     ) {
     }
 
@@ -527,22 +528,31 @@ class ProfileController extends Controller
         }
 
         // For Staff / Akademik / Super Admin self-profile.
-        // Self-editable: name, nip, password, pas_foto, tanda_tangan.
+        // Self-editable: name, password, pas_foto, tanda_tangan.
         // Email remains account identity and is managed exclusively through
         // SuperAdmin\UserController::update by an authorized Super Admin.
-        // Role / status / tendik_role / sub_role / assigned_tasks / scope
-        // fields are admin-managed only and are never read off this request.
+        // NIP, role, status, tendik_role, sub_role, assigned_tasks, and scope
+        // fields are admin-managed after onboarding.
         $request->validate([
             'name' => 'nullable|string|max:255',
-            'nip' => ['nullable', 'string', 'max:50', Rule::unique('users', 'nip')->ignore($user->id)],
+            'nip' => 'prohibited',
             'password' => 'nullable|string|min:8|confirmed',
             'pas_foto' => 'nullable|image|mimes:jpeg,jpg,png,webp|max:2048',
             'tanda_tangan' => 'nullable|image|mimes:jpeg,jpg,png,webp|max:2048',
+        ], [
+            'nip.prohibited' => 'NIP hanya dapat diubah oleh Super Admin.',
         ]);
 
         if ($request->filled('name')) $user->name = trim((string) $request->input('name'));
-        if ($request->has('nip')) $user->nip = $this->normalizeNip($request->input('nip'));
-        if ($request->filled('password')) $user->password = Hash::make($request->password);
+        $passwordChanged = $request->filled('password');
+        if ($passwordChanged) {
+            $this->passwordCredentials->fill(
+                $user,
+                (string) $request->input('password'),
+                PasswordSetMethod::SelfServiceChange,
+                $user->id,
+            );
+        }
 
         $replacedFiles = [];
         $newFiles = [];
@@ -576,8 +586,11 @@ class ProfileController extends Controller
                 $user->signature_path = Storage::url($path);
             }
 
-            DB::transaction(function () use ($user) {
+            DB::transaction(function () use ($user, $passwordChanged) {
                 $user->save();
+                if ($passwordChanged) {
+                    $this->passwordCredentials->revokeAccess($user);
+                }
             });
 
             foreach ($replacedFiles as $replacement) {
@@ -616,13 +629,4 @@ class ProfileController extends Controller
         ]);
     }
 
-    /**
-     * Trim NIP and convert blank to null, matching SuperAdmin\UserController.
-     */
-    private function normalizeNip(?string $nip): ?string
-    {
-        $nip = trim((string) $nip);
-
-        return $nip !== '' ? $nip : null;
-    }
 }

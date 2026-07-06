@@ -6,6 +6,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\SuperAdmin\UserController as SuperAdminUserController;
 use App\Http\Controllers\FacultyController;
 use App\Http\Controllers\DepartmentController;
+use App\Http\Controllers\PasswordRotationController;
 use App\Http\Controllers\StudyProgramController;
 
 use App\Http\Controllers\ProfileController;
@@ -25,7 +26,29 @@ Route::middleware('throttle:api')->group(function () {
     // Public proxy for Google Docs to allow PDF.js to fetch without headers
     Route::get('/templates/proxy-google-doc/{id}', [\App\Http\Controllers\SuperAdmin\TemplateController::class, 'proxyGoogleDoc']);
 
-    Route::middleware(['auth:sanctum', 'check_status', 'profile_complete'])->group(function () {
+    Route::middleware(['auth:sanctum', 'check_status'])->group(function () {
+        Route::post('/logout', [AuthController::class, 'logout']);
+
+        Route::get(
+            '/auth/profile-completion',
+            [\App\Http\Controllers\GoogleAuthController::class, 'profileCompletionStatus']
+        )->middleware('password_rotation_satisfied');
+
+        Route::middleware('password_rotation_token')
+            ->prefix('auth/password-rotation')
+            ->group(function () {
+                Route::get('/', [PasswordRotationController::class, 'status']);
+                Route::post('/', [PasswordRotationController::class, 'update'])
+                    ->middleware('throttle:password-rotation');
+            });
+    });
+
+    Route::middleware([
+        'auth:sanctum',
+        'check_status',
+        'password_rotation_satisfied',
+        'profile_complete',
+    ])->group(function () {
 
         Route::get('/storage/{folder}/{filename}', function ($folder, $filename) {
             $user = auth()->user();
@@ -98,7 +121,6 @@ Route::middleware('throttle:api')->group(function () {
             );
         })->where('filename', '.*');
 
-        Route::post('/logout', [AuthController::class, 'logout']);
         Route::post('/auth/complete-profile', [\App\Http\Controllers\GoogleAuthController::class, 'completeProfile']);
 
         // Surat Analytics (accessible by all authenticated users)

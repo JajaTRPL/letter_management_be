@@ -5,36 +5,34 @@ namespace App\Http\Controllers\SuperAdmin;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Models\ActivityLog;
+use App\Models\Department;
 use App\Models\ImportBatch;
 use App\Models\ImportBatchRow;
 use App\Models\StudyProgram;
 use App\Helpers\NimHelper;
-use App\Helpers\DateHelper;
 use App\Services\ActivityLogService;
 use App\Services\MahasiswaImportException;
 use App\Services\MahasiswaImportService;
+use App\Services\PasswordCredentialService;
+use App\Enums\PasswordSetMethod;
 use App\Enums\UserStatus;
 use App\Support\LetterTypeRegistry;
 use App\Support\SpreadsheetSafety;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Str;
-use Illuminate\Support\Facades\Validator;
-use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
-use Symfony\Component\HttpFoundation\StreamedResponse;
+use Illuminate\Validation\Rule;
 use Maatwebsite\Excel\Facades\Excel;
 use App\Exports\ArraySheetExport;
 use App\Exports\MahasiswaImportTemplateExport;
 use App\Exports\UsersExport;
 use App\Exports\UsersExportBundle;
-use App\Exports\MultiUsersExport;
-use Maatwebsite\Excel\Excel as ExcelFormat;
 
 class UserController extends Controller
 {
     public function __construct(
+        private PasswordCredentialService $passwordCredentials,
         private MahasiswaImportService $mahasiswaImporter,
     ) {
     }
@@ -131,7 +129,9 @@ class UserController extends Controller
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email',
             'nip' => ['nullable', 'string', 'max:50', Rule::unique('users', 'nip')],
-            'password' => 'required|string|min:8',
+            'password' => $request->input('role') === 'mahasiswa'
+                ? 'prohibited'
+                : 'required|string|min:8',
             'role' => 'required|in:mahasiswa,tendik,akademik,super_admin',
             'sub_role' => 'nullable|in:kadep,kaprodi,sekprodi,sekdep',
             'tendik_role' => 'nullable|in:persuratan,sarpras,kepala_lab,laboran',
@@ -146,6 +146,7 @@ class UserController extends Controller
         ];
 
         $validated = $request->validate($rules);
+        $this->validateRuntimeAcademicScope($validated);
         $validated['nip'] = $this->normalizeNip($validated['nip'] ?? null);
 
         // Enforce akademik-specific validation
@@ -204,11 +205,18 @@ class UserController extends Controller
             }
         }
 
-        $user = User::create([
+        $passwordAttributes = $validated['role'] === 'mahasiswa'
+            ? ['password' => null]
+            : $this->passwordCredentials->attributes(
+                $validated['password'],
+                PasswordSetMethod::SuperAdminSet,
+                Auth::id(),
+            );
+
+        $user = User::create(array_merge([
             'name' => $validated['name'],
             'email' => $validated['email'],
             'nip' => $validated['nip'],
-            'password' => Hash::make($validated['password']),
             'role' => $validated['role'],
             'sub_role' => $validated['role'] === 'akademik' ? ($validated['sub_role'] ?? null) : null,
             'tendik_role' => $validated['tendik_role'] ?? null,
@@ -218,7 +226,7 @@ class UserController extends Controller
             'role_level' => $validated['role'] === 'super_admin' ? ($validated['role_level'] ?? 'secondary') : null,
             'assigned_tasks' => $validated['assigned_tasks'] ?? null,
             'status' => UserStatus::Active
-        ]);
+        ], $passwordAttributes));
 
         // Create Profile if Mahasiswa
         if ($user->role === 'mahasiswa') {
@@ -293,11 +301,15 @@ class UserController extends Controller
         $oldRoleLevel = $user->role_level;
         $currentUser = Auth::user();
 
+        $targetRoleForPasswordRule = $request->input('role', $user->role);
+
         $validated = $request->validate([
             'name' => 'nullable|string|max:255',
             'email' => 'nullable|email|max:255|unique:users,email,' . $user->id,
             'nip' => ['nullable', 'string', 'max:50', Rule::unique('users', 'nip')->ignore($user->id)],
-            'password' => 'nullable|string|min:8',
+            'password' => $targetRoleForPasswordRule === 'mahasiswa'
+                ? 'prohibited'
+                : 'nullable|string|min:8',
             'role' => 'nullable|in:mahasiswa,tendik,akademik,super_admin',
             'sub_role' => 'nullable|in:kadep,kaprodi,sekprodi,sekdep',
             'tendik_role' => 'nullable|in:persuratan,sarpras,kepala_lab,laboran',
@@ -312,6 +324,7 @@ class UserController extends Controller
             'nim' => 'sometimes|nullable|string|unique:mahasiswa_profiles,nim,' . ($user->mahasiswaProfile->id ?? 'NULL'),
             'tanggal_lahir' => 'sometimes|nullable|date',
         ]);
+        $this->validateRuntimeAcademicScope($validated);
         if (array_key_exists('nip', $validated)) {
             $validated['nip'] = $this->normalizeNip($validated['nip']);
         }
@@ -392,8 +405,18 @@ class UserController extends Controller
             }
         }
 
-        if (isset($validated['password'])) {
-            $validated['password'] = Hash::make($validated['password']);
+        $passwordChanged = isset($validated['password']);
+        if ($passwordChanged) {
+            $plainPassword = $validated['password'];
+            unset($validated['password']);
+            $validated = array_merge(
+                $validated,
+                $this->passwordCredentials->attributes(
+                    $plainPassword,
+                    PasswordSetMethod::SuperAdminSet,
+                    Auth::id(),
+                )
+            );
         }
 
         if (
@@ -409,6 +432,9 @@ class UserController extends Controller
         }
 
         $user->update($validated);
+        if ($passwordChanged) {
+            $this->passwordCredentials->revokeAccess($user);
+        }
 
         // Update Profile if Mahasiswa
         if ($user->role === 'mahasiswa') {
@@ -1097,5 +1123,28 @@ class UserController extends Controller
         $nip = trim((string) $nip);
 
         return $nip !== '' ? $nip : null;
+    }
+
+    private function validateRuntimeAcademicScope(array $validated): void
+    {
+        $errors = [];
+
+        if (
+            !empty($validated['study_program_id'])
+            && !StudyProgram::runtimeVisible()->whereKey($validated['study_program_id'])->exists()
+        ) {
+            $errors['study_program_id'] = ['Program Studi tidak tersedia untuk penggunaan runtime.'];
+        }
+
+        if (
+            !empty($validated['department_id'])
+            && !Department::runtimeVisible()->whereKey($validated['department_id'])->exists()
+        ) {
+            $errors['department_id'] = ['Departemen tidak tersedia untuk penggunaan runtime.'];
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
     }
 }

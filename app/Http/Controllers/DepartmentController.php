@@ -9,7 +9,8 @@ class DepartmentController extends Controller
 {
     public function index(Request $request)
     {
-        $query = Department::select('id', 'name', 'code', 'faculty_id')
+        $query = Department::runtimeVisible()
+            ->select('id', 'name', 'code', 'faculty_id')
             ->orderBy('code');
 
         if ($request->has('faculty_id')) {
@@ -21,6 +22,8 @@ class DepartmentController extends Controller
 
     public function basicList()
     {
-        return response()->json(Department::orderBy('code')->get(['id', 'code', 'name']));
+        return response()->json(
+            Department::runtimeVisible()->orderBy('code')->get(['id', 'code', 'name'])
+        );
     }
 }

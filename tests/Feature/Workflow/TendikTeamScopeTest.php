@@ -3,6 +3,7 @@
 namespace Tests\Feature\Workflow;
 
 use App\Enums\UserStatus;
+use App\Models\Laboratory;
 use App\Models\ProsesLuarNegeriApplication;
 use App\Models\ScholarshipApplication;
 use App\Models\SuratKeteranganAktifApplication;
@@ -381,12 +382,22 @@ class TendikTeamScopeTest extends TestCase
 
     private function makeTendikSubrole(string $subRole): User
     {
+        $laboratoryId = null;
+        if (in_array($subRole, ['kepala_lab', 'laboran'], true)) {
+            $laboratoryId = Laboratory::create([
+                'name' => "Laboratorium {$subRole} " . uniqid(),
+                'code' => strtoupper($subRole) . '-' . uniqid(),
+            ])->id;
+        }
+
         return User::create([
             'name' => "Tendik {$subRole} " . uniqid(),
             'email' => $subRole . '-' . uniqid() . '@example.test',
             'password' => 'password',
             'role' => 'tendik',
             'tendik_role' => $subRole,
+            'laboratory_id' => $laboratoryId,
+            'nip' => 'TEST-' . uniqid(),
             'status' => UserStatus::Active,
             'assigned_tasks' => null,
         ]);

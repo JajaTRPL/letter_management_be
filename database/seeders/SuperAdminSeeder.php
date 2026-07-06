@@ -3,19 +3,22 @@
 namespace Database\Seeders;
 
 use Illuminate\Database\Seeder;
+use App\Enums\PasswordSetMethod;
 use App\Models\User;
-use Illuminate\Support\Facades\Hash;
+use App\Services\PasswordCredentialService;
 
 class SuperAdminSeeder extends Seeder
 {
     public function run(): void
     {
-        User::create([
+        User::create(array_merge([
             'name' => 'Super Admin',
             'email' => 'superadmin@mail.com',
-            'password' => Hash::make('password123'),
             'role' => 'super_admin',
             'role_level' => 'primary',
-        ]);
+        ], app(PasswordCredentialService::class)->attributes(
+            'password123',
+            PasswordSetMethod::SystemSeed,
+        )));
     }
 }

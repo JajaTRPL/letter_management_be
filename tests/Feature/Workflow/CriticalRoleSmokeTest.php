@@ -4,6 +4,7 @@ namespace Tests\Feature\Workflow;
 
 use App\Enums\UserStatus;
 use App\Models\Department;
+use App\Models\Laboratory;
 use App\Models\MahasiswaProfile;
 use App\Models\ProsesLuarNegeriApplication;
 use App\Models\ScholarshipApplication;
@@ -302,25 +303,33 @@ class CriticalRoleSmokeTest extends TestCase
     {
         $scope = $this->smokeAcademicScope();
         $accounts = $this->seedLocalSmokeAccounts($scope['trpl'], $scope['dtedi']);
+        $originalTendikNip = $accounts['tendikBeasiswa']->nip;
+        $originalKaprodiNip = $accounts['kaprodiTrpl']->nip;
+
+        $this->actingAs($accounts['tendikBeasiswa'], 'sanctum')
+            ->postJson('/api/profile', [
+                'nip' => '199001012025011001',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('nip');
 
         $this->actingAs($accounts['tendikBeasiswa'], 'sanctum')
             ->postJson('/api/profile', [
                 'name' => 'Smoke Tendik Updated',
-                'nip' => '199001012025011001',
                 'email' => 'changed.tendik@example.test',
             ])
             ->assertOk()
             ->assertJsonPath('user.name', 'Smoke Tendik Updated')
-            ->assertJsonPath('user.nip', '199001012025011001');
+            ->assertJsonPath('user.nip', $originalTendikNip);
 
         $accounts['tendikBeasiswa']->refresh();
         $this->assertSame('Smoke Tendik Updated', $accounts['tendikBeasiswa']->name);
-        $this->assertSame('199001012025011001', $accounts['tendikBeasiswa']->nip);
+        $this->assertSame($originalTendikNip, $accounts['tendikBeasiswa']->nip);
         $this->assertSame('smoke.tendik.beasiswa@example.test', $accounts['tendikBeasiswa']->email);
 
         $this->actingAs($accounts['kaprodiTrpl'], 'sanctum')
             ->postJson('/api/profile', [
-                'nip' => '199001012025011001',
+                'nip' => '197512122005011002',
             ])
             ->assertUnprocessable()
             ->assertJsonValidationErrors('nip');
@@ -328,16 +337,15 @@ class CriticalRoleSmokeTest extends TestCase
         $this->actingAs($accounts['kaprodiTrpl'], 'sanctum')
             ->postJson('/api/profile', [
                 'name' => 'Smoke Kaprodi Updated',
-                'nip' => '197512122005011002',
                 'email' => 'changed.kaprodi@example.test',
             ])
             ->assertOk()
             ->assertJsonPath('user.name', 'Smoke Kaprodi Updated')
-            ->assertJsonPath('user.nip', '197512122005011002');
+            ->assertJsonPath('user.nip', $originalKaprodiNip);
 
         $accounts['kaprodiTrpl']->refresh();
         $this->assertSame('Smoke Kaprodi Updated', $accounts['kaprodiTrpl']->name);
-        $this->assertSame('197512122005011002', $accounts['kaprodiTrpl']->nip);
+        $this->assertSame($originalKaprodiNip, $accounts['kaprodiTrpl']->nip);
         $this->assertSame('smoke.kaprodi.trpl@example.test', $accounts['kaprodiTrpl']->email);
     }
 
@@ -378,6 +386,11 @@ class CriticalRoleSmokeTest extends TestCase
      */
     private function seedLocalSmokeAccounts(StudyProgram $trpl, Department $dtedi): array
     {
+        $laboratory = Laboratory::firstOrCreate(
+            ['code' => 'SMOKE-LAB'],
+            ['name' => 'Smoke Laboratory', 'department_id' => $dtedi->id]
+        );
+
         $accounts = [
             'tendikBeasiswa' => $this->smokeUser('smoke.tendik.beasiswa@example.test', [
                 'name' => 'Smoke Tendik Beasiswa',
@@ -401,12 +414,14 @@ class CriticalRoleSmokeTest extends TestCase
                 'name' => 'Smoke Tendik Kepala Lab',
                 'role' => 'tendik',
                 'tendik_role' => 'kepala_lab',
+                'laboratory_id' => $laboratory->id,
                 'assigned_tasks' => null,
             ]),
             'tendikLaboran' => $this->smokeUser('smoke.tendik.laboran@example.test', [
                 'name' => 'Smoke Tendik Laboran',
                 'role' => 'tendik',
                 'tendik_role' => 'laboran',
+                'laboratory_id' => $laboratory->id,
                 'assigned_tasks' => null,
             ]),
             'kaprodiTrpl' => $this->smokeUser('smoke.kaprodi.trpl@example.test', [
@@ -466,12 +481,16 @@ class CriticalRoleSmokeTest extends TestCase
 
     private function smokeUser(string $email, array $attributes): User
     {
+        $nip = in_array($attributes['role'] ?? null, ['tendik', 'akademik'], true)
+            ? 'SMOKE-' . strtoupper(substr(hash('sha256', $email), 0, 18))
+            : null;
+
         return User::updateOrCreate(
             ['email' => $email],
             array_merge([
                 'password' => self::SMOKE_PASSWORD,
                 'status' => UserStatus::Active,
-                'nip' => null,
+                'nip' => $nip,
                 'sub_role' => null,
                 'tendik_role' => null,
                 'role_level' => null,
