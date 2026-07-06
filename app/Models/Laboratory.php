@@ -22,4 +22,9 @@ class Laboratory extends Model
     {
         return $this->hasMany(Room::class, 'owning_laboratory_id');
     }
+
+    public function roomDocumentTemplates()
+    {
+        return $this->hasMany(RoomDocumentTemplate::class);
+    }
 }

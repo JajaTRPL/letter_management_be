@@ -18,6 +18,7 @@ class Room extends Model
         'capacity',
         'location',
         'description',
+        'rules',
         'is_active',
         'owning_laboratory_id',
     ];
@@ -54,5 +55,41 @@ class Room extends Model
     public function roomBookingRequests()
     {
         return $this->hasMany(RoomBookingRequest::class);
+    }
+
+    public function photos()
+    {
+        return $this->hasMany(RoomPhoto::class)->orderBy('sort_order')->orderBy('id');
+    }
+
+    public function coverPhoto()
+    {
+        return $this->hasOne(RoomPhoto::class)->where('is_cover', true);
+    }
+
+    public function facilityItems()
+    {
+        return $this->hasMany(RoomFacility::class);
+    }
+
+    public function facilities()
+    {
+        return $this->belongsToMany(FacilityType::class, 'room_facilities')
+            ->withPivot(['quantity', 'condition', 'notes'])
+            ->withTimestamps();
+    }
+
+    public function auditLogs()
+    {
+        return $this->hasMany(RoomAuditLog::class)->latest('created_at');
+    }
+
+    /**
+     * Templates are scoped by room type + owning lab, not by room id;
+     * this resolves the one a mahasiswa should download for this room.
+     */
+    public function activeDocumentTemplate(): ?RoomDocumentTemplate
+    {
+        return RoomDocumentTemplate::activeForRoom($this);
     }
 }
