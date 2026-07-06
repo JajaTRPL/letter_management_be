@@ -5,25 +5,40 @@ namespace App\Http\Controllers\SuperAdmin;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Models\ActivityLog;
+use App\Models\ImportBatch;
+use App\Models\ImportBatchRow;
 use App\Models\StudyProgram;
 use App\Helpers\NimHelper;
 use App\Helpers\DateHelper;
 use App\Services\ActivityLogService;
+use App\Services\MahasiswaImportException;
+use App\Services\MahasiswaImportService;
 use App\Enums\UserStatus;
 use App\Support\LetterTypeRegistry;
+use App\Support\SpreadsheetSafety;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Maatwebsite\Excel\Facades\Excel;
+use App\Exports\ArraySheetExport;
+use App\Exports\MahasiswaImportTemplateExport;
 use App\Exports\UsersExport;
+use App\Exports\UsersExportBundle;
 use App\Exports\MultiUsersExport;
 use Maatwebsite\Excel\Excel as ExcelFormat;
 
 class UserController extends Controller
 {
+    public function __construct(
+        private MahasiswaImportService $mahasiswaImporter,
+    ) {
+    }
+
     /**
      * Mengambil daftar user dengan pagination, search, dan filter.
      *
@@ -591,33 +606,72 @@ class UserController extends Controller
 
     /**
      * Export data user ke CSV atau XLSX (Hanya Super Admin).
+     *
+     * Privacy-safe by default: tanggal_lahir (PII) only with include_pii=1.
+     * Password/token/google_id are never part of the export contract.
+     * Every export is recorded in the activity log.
      */
     public function export(Request $request)
     {
+        $request->validate([
+            'format' => 'nullable|in:csv,xlsx',
+            'role' => 'nullable|in:mahasiswa,tendik,akademik',
+            'include_pii' => 'nullable|boolean',
+            'export_reason' => 'nullable|string|max:500',
+        ]);
+
         $format = $request->query('format', 'csv');
         $role = $request->query('role');
+        $includePii = $request->boolean('include_pii');
 
-        $fileName = 'users_export_' . now()->format('Ymd_His');
-        $export = new UsersExport($role);
-
-        if ($format === 'xlsx') {
-            if (!$role) {
-                return Excel::download(new MultiUsersExport, $fileName . '.xlsx');
-            }
-            return Excel::download($export, $fileName . '.xlsx');
+        // Governance: exporting PII requires a stated, audited reason.
+        if ($includePii) {
+            $request->validate(
+                ['export_reason' => 'required|string|min:5|max:500'],
+                [
+                    'export_reason.required' => 'Alasan ekspor data pribadi wajib diisi.',
+                    'export_reason.min' => 'Alasan ekspor data pribadi minimal 5 karakter.',
+                ]
+            );
         }
 
-        // Manual CSV Export for better reliability
+        $fileName = 'users_export_' . now()->format('Ymd_His');
+        $export = new UsersExport($role, $includePii);
+        $rowCount = $export->query()->count();
+
+        ActivityLogService::log(
+            'Export Users',
+            $role ?: 'semua-role',
+            sprintf(
+                'Ekspor data user. Format: %s. Role: %s. Data pribadi: %s. Baris: %d.',
+                $format,
+                $role ?: 'semua',
+                $includePii ? 'ya' : 'tidak',
+                $rowCount
+            ) . ($includePii ? ' Alasan: ' . $request->input('export_reason') : '')
+        );
+
+        if ($format === 'xlsx') {
+            // Bundle appends an "Info Ekspor" provenance sheet (who/when/
+            // filters/PII flag/classification) after the data sheet(s).
+            return Excel::download(
+                new UsersExportBundle($role, $includePii, Auth::user()->name, $rowCount),
+                $fileName . '.xlsx'
+            );
+        }
+
+        // Manual CSV export: streams row-by-row via cursor (memory-safe).
         $headers = [
-            'Content-type' => 'text/csv',
+            'Content-type' => 'text/csv; charset=UTF-8',
             'Content-Disposition' => "attachment; filename=$fileName.csv",
         ];
 
         return response()->stream(function () use ($export) {
             $file = fopen('php://output', 'w');
+            fwrite($file, "\xEF\xBB\xBF"); // UTF-8 BOM for Excel
             fputcsv($file, $export->headings());
 
-            foreach ($export->collection() as $user) {
+            foreach ($export->query()->cursor() as $user) {
                 fputcsv($file, $export->map($user));
             }
             fclose($file);
@@ -627,371 +681,406 @@ class UserController extends Controller
 
 
     /**
-     * Validate a CSV file for mahasiswa import WITHOUT writing to DB.
-     * Returns a preview with file_hash for consistency check on confirm.
+     * Dry-run: validate a CSV/XLSX file for mahasiswa import WITHOUT
+     * touching users/profiles. Persists an ImportBatch (+ row plan) for
+     * audit and the server-side error report, and returns the plan
+     * summary (create/update/skip/fail) for the confirmation UI.
      */
     public function validateImport(Request $request)
     {
-        $request->validate([
-            'file' => 'required|mimes:csv,txt|max:2048',
-        ]);
+        $this->validateUploadedImportFile($request);
 
         $file = $request->file('file');
+        $override = $request->boolean('override_existing_active');
 
-        // Generate SHA-256 hash for file consistency check
+        // Governance: overriding active-student data is the riskiest path —
+        // Primary Super Admin only, and a stated reason is mandatory.
+        if ($override) {
+            if (!Auth::user()->isPrimarySuperAdmin()) {
+                return response()->json([
+                    'message' => 'Hanya Primary Super Admin yang dapat menggunakan mode perbarui data mahasiswa aktif.',
+                ], 403);
+            }
+
+            $request->validate(
+                ['override_reason' => 'required|string|min:5|max:500'],
+                [
+                    'override_reason.required' => 'Alasan penggunaan mode perbarui data wajib diisi.',
+                    'override_reason.min' => 'Alasan penggunaan mode perbarui data minimal 5 karakter.',
+                ]
+            );
+        }
+
         $fileHash = hash_file('sha256', $file->getRealPath());
 
-        $handle = fopen($file->getRealPath(), 'r');
+        try {
+            $parsed = $this->mahasiswaImporter->parse($file);
+            $plan = $this->mahasiswaImporter->plan($parsed['rows'], $override);
+        } catch (MahasiswaImportException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
 
-        // Read and validate header row
-        $header = fgetcsv($handle);
-        if (!$header || count($header) < 4) {
-            fclose($handle);
+        if ($plan['summary']['total'] === 0) {
             return response()->json([
-                'message' => 'Format header CSV tidak valid. Kolom wajib: name, email, nim, study_program_code',
+                'message' => 'File tidak berisi baris data. Isi data pada template lalu unggah ulang.',
             ], 422);
         }
 
-        // Performance guard: count rows first
-        $rowCount = 0;
-        $startPos = ftell($handle);
-        while (fgetcsv($handle, 1000, ',') !== false) $rowCount++;
-        if ($rowCount > 5000) {
-            fclose($handle);
-            return response()->json([
-                'message' => "File terlalu besar ({$rowCount} baris). Maksimal 5000 baris per import.",
-            ], 422);
-        }
-        fseek($handle, $startPos); // reset to after header
+        $batch = ImportBatch::create([
+            'uuid' => (string) Str::uuid(),
+            'kind' => ImportBatch::KIND_VERIFIED_MAHASISWA,
+            'template_version' => MahasiswaImportService::TEMPLATE_VERSION,
+            'source_format' => $parsed['source_format'],
+            'original_filename' => mb_substr($file->getClientOriginalName(), 0, 255),
+            'file_hash' => $fileHash,
+            'uploaded_by_user_id' => Auth::id(),
+            'status' => ImportBatch::STATUS_VALIDATED,
+            'override_existing_active' => $override,
+            'override_reason' => $override ? $request->input('override_reason') : null,
+            'total_rows' => $plan['summary']['total'],
+            'valid_rows' => $plan['summary']['valid'],
+            'invalid_rows' => $plan['summary']['invalid'],
+            'expires_at' => now()->addDays(90),
+        ]);
 
-        // Pre-load lookup data
-        $studyProgramMap = StudyProgram::pluck('id', 'code')->toArray();
-        $existingEmails = User::pluck('email')->map(fn($e) => strtolower($e))->toArray();
-        $existingNims = \App\Models\MahasiswaProfile::pluck('nim')->toArray();
+        $this->mahasiswaImporter->persistRows($batch, $plan['rows']);
 
-        $validRows = [];
+        $validPreview = [];
         $invalidRows = [];
-        $rowNumber = 1;
-        $seenEmails = [];
-        $seenNims = [];
-
-        while (($data = fgetcsv($handle, 1000, ',')) !== false) {
-            $rowNumber++;
-
-            if (count($data) < 4) {
-                $invalidRows[] = [
-                    'row' => $rowNumber,
-                    'data' => ['name' => $data[0] ?? '', 'email' => $data[1] ?? '', 'nim' => $data[2] ?? '', 'study_program_code' => '', 'tanggal_lahir' => ''],
-                    'errors' => ['Format kolom tidak lengkap (minimal: name, email, nim, study_program_code).'],
-                ];
-                continue;
-            }
-
-            // Normalize date before building row
-            $normalizedDate = DateHelper::normalizeDate(isset($data[4]) ? $data[4] : null);
-
-            $row = [
-                'name'                => trim($data[0]),
-                'email'               => trim($data[1]),
-                'nim'                 => NimHelper::normalize(trim($data[2])),
-                'study_program_code'  => strtoupper(trim($data[3])),
-                'tanggal_lahir'       => $normalizedDate,
+        foreach ($plan['rows'] as $entry) {
+            $rowData = [
+                'name' => $entry['data']['name'],
+                'email' => $entry['data']['email'],
+                'nim' => $entry['data']['nim'],
+                'study_program_code' => $entry['data']['study_program_code'],
             ];
 
-            $errors = [];
-
-            if (empty($row['name'])) $errors[] = 'Nama wajib diisi.';
-            if (empty($row['email'])) $errors[] = 'Email wajib diisi.';
-            if (empty($row['nim'])) $errors[] = 'NIM wajib diisi.';
-
-            if ($row['email'] && !filter_var($row['email'], FILTER_VALIDATE_EMAIL)) {
-                $errors[] = 'Format email tidak valid.';
-            }
-            if ($row['email'] && in_array(strtolower($row['email']), $existingEmails)) {
-                // Not an error — will be merged during import
-                // Only flag if the existing user is NOT mahasiswa (safety)
-                $existingUser = User::where('email', strtolower($row['email']))->first();
-                if ($existingUser && $existingUser->role !== 'mahasiswa') {
-                    $errors[] = 'Email milik user non-mahasiswa. Tidak dapat di-merge.';
+            if ($entry['status'] === ImportBatchRow::STATUS_INVALID) {
+                if (count($invalidRows) < 100) {
+                    $invalidRows[] = [
+                        'row' => $entry['row_number'],
+                        'data' => $rowData,
+                        'errors' => $entry['errors'],
+                    ];
                 }
-            }
-            if ($row['email'] && in_array(strtolower($row['email']), $seenEmails)) {
-                $errors[] = 'Email duplikat dalam file CSV.';
-            }
-            if ($row['nim'] && in_array($row['nim'], $existingNims)) {
-                // Check if this NIM belongs to the same user being merged
-                $nimOwner = \App\Models\MahasiswaProfile::where('nim', $row['nim'])->first();
-                $emailOwner = $row['email'] ? User::where('email', strtolower($row['email']))->first() : null;
-                if (!$nimOwner || !$emailOwner || $nimOwner->user_id !== $emailOwner->id) {
-                    $errors[] = 'NIM sudah terdaftar di sistem.';
-                }
-            }
-            if ($row['nim'] && in_array($row['nim'], $seenNims)) {
-                $errors[] = 'NIM duplikat dalam file CSV.';
-            }
-
-            $resolvedProgram = null;
-            if (empty($row['study_program_code'])) {
-                $errors[] = 'Kode Program Studi wajib diisi.';
-            } elseif (!isset($studyProgramMap[$row['study_program_code']])) {
-                $errors[] = "Kode Program Studi '{$row['study_program_code']}' tidak ditemukan.";
-            } else {
-                $resolvedProgram = $row['study_program_code'];
-            }
-
-            // Validate normalized date (null = not provided OR unrecognized format)
-            if (isset($data[4]) && trim($data[4]) !== '' && $normalizedDate === null) {
-                $errors[] = 'Format tanggal lahir tidak dikenali. Gunakan YYYY-MM-DD atau DD/MM/YYYY.';
-            }
-
-            if ($row['email']) $seenEmails[] = strtolower($row['email']);
-            if ($row['nim']) $seenNims[] = $row['nim'];
-
-            if (count($errors) > 0) {
-                $invalidRows[] = ['row' => $rowNumber, 'data' => $row, 'errors' => $errors];
-            } else {
-                $validRows[] = ['row' => $rowNumber, 'data' => $row, 'resolved_program' => $resolvedProgram];
+            } elseif (count($validPreview) < 10) {
+                $validPreview[] = [
+                    'row' => $entry['row_number'],
+                    'action' => $entry['action'],
+                    'data' => $rowData,
+                    'note' => $entry['note'],
+                ];
             }
         }
 
-        fclose($handle);
-
         return response()->json([
-            'message'      => 'Validasi selesai',
-            'file_hash'    => $fileHash,
-            'summary'      => [
-                'total'   => count($validRows) + count($invalidRows),
-                'valid'   => count($validRows),
-                'invalid' => count($invalidRows),
-            ],
-            'valid_rows'   => $validRows,
+            'message' => 'Validasi selesai',
+            'batch_id' => $batch->uuid,
+            'file_hash' => $fileHash,
+            'template_version' => MahasiswaImportService::TEMPLATE_VERSION,
+            'source_format' => $parsed['source_format'],
+            'summary' => $plan['summary'],
+            'valid_rows' => $validPreview,
             'invalid_rows' => $invalidRows,
+            'invalid_rows_truncated' => $plan['summary']['invalid'] > count($invalidRows),
         ]);
     }
 
     /**
-     * Import data mahasiswa dari CSV (Hanya Super Admin).
-     * Accepts optional file_hash param for consistency check with validateImport.
+     * Confirm import (Hanya Super Admin).
+     *
+     * Requires the batch_id + file_hash issued by validateImport and the
+     * same file; the plan is recomputed against current DB state (using the
+     * override flag stored on the batch) and committed in one transaction.
      */
     public function bulkImport(Request $request)
     {
+        $this->validateUploadedImportFile($request);
         $request->validate([
-            'file' => 'required|mimes:csv,txt|max:2048',
-            'file_hash' => 'nullable|string',
+            'batch_id' => 'required|string',
+            'file_hash' => 'required|string',
         ]);
 
+        $batch = ImportBatch::where('uuid', $request->input('batch_id'))->first();
+        if (!$batch) {
+            return response()->json([
+                'message' => 'Sesi validasi tidak ditemukan. Silakan validasi ulang file.',
+            ], 422);
+        }
+        if ($batch->status !== ImportBatch::STATUS_VALIDATED) {
+            return response()->json([
+                'message' => 'Batch impor ini sudah diproses. Silakan validasi ulang file.',
+            ], 422);
+        }
+
+        if ($batch->override_existing_active && !Auth::user()->isPrimarySuperAdmin()) {
+            return response()->json([
+                'message' => 'Hanya Primary Super Admin yang dapat mengonfirmasi impor dengan mode perbarui data.',
+            ], 403);
+        }
+
         $file = $request->file('file');
-
-        // File consistency check: verify hash matches validation step
-        if ($request->file_hash) {
-            $currentHash = hash_file('sha256', $file->getRealPath());
-            if ($currentHash !== $request->file_hash) {
-                return response()->json([
-                    'message' => 'File telah berubah sejak validasi. Silakan validasi ulang.',
-                ], 422);
-            }
+        $currentHash = hash_file('sha256', $file->getRealPath());
+        if ($currentHash !== $batch->file_hash || $request->input('file_hash') !== $batch->file_hash) {
+            return response()->json([
+                'message' => 'File telah berubah sejak validasi. Silakan validasi ulang.',
+            ], 422);
         }
 
-        $handle = fopen($file->getRealPath(), 'r');
-        fgetcsv($handle); // Skip header
+        // Snapshot the dry-run counts before commit() overwrites them, so we
+        // can tell the operator when results drifted since validation.
+        $validatedValid = $batch->valid_rows;
+        $validatedInvalid = $batch->invalid_rows;
 
-        $studyProgramMap = StudyProgram::pluck('id', 'code')->toArray();
-        $batchId = (string) \Illuminate\Support\Str::uuid();
+        try {
+            $parsed = $this->mahasiswaImporter->parse($file);
+            $plan = $this->mahasiswaImporter->plan($parsed['rows'], $batch->override_existing_active);
+            $counts = $this->mahasiswaImporter->commit($batch, $plan, Auth::id());
+        } catch (MahasiswaImportException $e) {
+            $batch->update(['status' => ImportBatch::STATUS_FAILED]);
 
-        $successCount = 0;
-        $failedCount = 0;
-        $errors = [];
-        $rowNumber = 1;
+            return response()->json(['message' => $e->getMessage()], 422);
+        } catch (\Throwable $e) {
+            $batch->update(['status' => ImportBatch::STATUS_FAILED]);
 
-        while (($data = fgetcsv($handle, 1000, ',')) !== false) {
-            $rowNumber++;
-
-            if (count($data) < 4) {
-                $errors[] = "Baris {$rowNumber}: Format kolom tidak lengkap.";
-                $failedCount++;
-                continue;
-            }
-
-            $normalizedDate = DateHelper::normalizeDate(isset($data[4]) ? $data[4] : null);
-
-            $input = [
-                'name'                => trim($data[0]),
-                'email'               => trim($data[1]),
-                'nim'                 => NimHelper::normalize(trim($data[2])),
-                'study_program_code'  => strtoupper(trim($data[3])),
-                'tanggal_lahir'       => $normalizedDate,
-            ];
-
-            // Check if user already exists (merge scenario: Google SSO user)
-            $existingUser = User::where('email', $input['email'])->first();
-
-            // Validate (skip email unique check if merging existing user)
-            $emailRule = $existingUser ? 'required|email' : 'required|email|unique:users,email';
-            $nimRule = 'required|string';
-            // Check NIM uniqueness (skip if merging and profile already has this NIM)
-            $existingProfile = $existingUser ? \App\Models\MahasiswaProfile::where('user_id', $existingUser->id)->first() : null;
-            if (!$existingProfile || $existingProfile->nim !== $input['nim']) {
-                $nimRule .= '|unique:mahasiswa_profiles,nim';
-            }
-
-            $validator = Validator::make($input, [
-                'name'                => 'required|string|max:255',
-                'email'               => $emailRule,
-                'nim'                 => $nimRule,
-                'study_program_code'  => 'required|string',
-            ]);
-
-            if ($validator->fails()) {
-                $errors[] = "Baris {$rowNumber} ({$input['email']}): " . implode(', ', $validator->errors()->all());
-                $failedCount++;
-                continue;
-            }
-
-            $studyProgramId = $studyProgramMap[$input['study_program_code']] ?? null;
-            if (!$studyProgramId) {
-                $errors[] = "Baris {$rowNumber} ({$input['email']}): Kode Prodi '{$input['study_program_code']}' tidak ditemukan.";
-                $failedCount++;
-                continue;
-            }
-
-            $nimClean = preg_replace('/[^a-zA-Z0-9]/', '', $input['nim']);
-            $dobFormatted = '';
-            if ($input['tanggal_lahir']) {
-                $parts = explode('-', $input['tanggal_lahir']);
-                if (count($parts) === 3) {
-                    $dobFormatted = $parts[2] . $parts[1] . $parts[0];
-                }
-            }
-
-            if ($existingUser) {
-                // Safety: only merge with mahasiswa users
-                if ($existingUser->role !== 'mahasiswa') {
-                    $errors[] = "Baris {$rowNumber} ({$input['email']}): Email milik user non-mahasiswa. Tidak dapat di-merge.";
-                    $failedCount++;
-                    continue;
-                }
-
-                // MERGE: update existing user (e.g., Google-created pending_profile)
-                $existingUser->update([
-                    'name'             => $input['name'],
-                    'study_program_id' => $studyProgramId,
-                    'status'           => UserStatus::Active,
-                ]);
-                // Set password if they don't have one (Google-only users)
-                if (!$existingUser->password) {
-                    $existingUser->update(['password' => Hash::make($nimClean . $dobFormatted)]);
-                }
-
-                \App\Models\MahasiswaProfile::updateOrCreate(
-                    ['user_id' => $existingUser->id],
-                    [
-                        'nim'             => $input['nim'],
-                        'tanggal_lahir'   => $input['tanggal_lahir'],
-                        'import_batch_id' => $batchId,
-                        'data_source'     => 'import_manual',
-                    ]
-                );
-            } else {
-                // CREATE: new user
-                $user = User::create([
-                    'name'             => $input['name'],
-                    'email'            => $input['email'],
-                    'password'         => Hash::make($nimClean . $dobFormatted),
-                    'role'             => 'mahasiswa',
-                    'study_program_id' => $studyProgramId,
-                    'status'           => UserStatus::Active,
-                ]);
-
-                \App\Models\MahasiswaProfile::create([
-                    'user_id'         => $user->id,
-                    'nim'             => $input['nim'],
-                    'tanggal_lahir'   => $input['tanggal_lahir'],
-                    'import_batch_id' => $batchId,
-                    'data_source'     => 'import_manual',
-                ]);
-            }
-
-            $successCount++;
+            throw $e;
         }
 
-        fclose($handle);
-
+        // Summary only — never row-level PII in the activity log. The
+        // override reason is admin-authored text, part of the audit trail.
         ActivityLogService::log(
             'Bulk Import Mahasiswa',
             'Multiple Mahasiswa',
-            "Batch: {$batchId}. Berhasil: {$successCount}. Gagal: {$failedCount}."
+            "Batch: {$batch->uuid}. Dibuat: {$counts['created']}. Diperbarui: {$counts['updated']}. "
+                . "Dilewati: {$counts['skipped']}. Gagal: {$counts['failed']}."
+                . ($batch->override_existing_active ? " Mode perbarui aktif. Alasan: {$batch->override_reason}" : '')
         );
 
+        $processed = $counts['created'] + $counts['updated'] + $counts['skipped'];
+
+        $driftNote = null;
+        if (
+            $counts['failed'] !== $validatedInvalid
+            || ($counts['created'] + $counts['updated'] + $counts['skipped']) !== $validatedValid
+        ) {
+            $driftNote = 'Sebagian hasil berbeda dari pratinjau validasi karena data di sistem berubah '
+                . 'sejak file divalidasi. Periksa riwayat impor untuk detailnya.';
+        }
+
         return response()->json([
-            'message'  => 'Proses import mahasiswa selesai',
-            'batch_id' => $batchId,
-            'summary'  => [
-                'success' => $successCount,
-                'failed'  => $failedCount,
+            'message' => 'Proses impor mahasiswa selesai',
+            'batch_id' => $batch->uuid,
+            'drift_note' => $driftNote,
+            'summary' => [
+                'total' => array_sum($counts),
+                'created' => $counts['created'],
+                'updated' => $counts['updated'],
+                'skipped' => $counts['skipped'],
+                'failed' => $counts['failed'],
             ],
-            'errors' => $errors,
-        ], $successCount > 0 ? 200 : 422);
+        ], $processed > 0 ? 200 : 422);
     }
 
     /**
-     * Generate downloadable CSV of invalid rows from validation step.
+     * Riwayat batch impor (Hanya Super Admin).
      */
-    public function importErrors(Request $request)
+    public function importBatches(Request $request)
     {
         $request->validate([
-            'invalid_rows' => 'required|array',
+            'status' => 'nullable|in:validated,completed,failed,cancelled',
+            'source_format' => 'nullable|in:csv,xlsx',
+            'date_from' => 'nullable|date',
+            'date_to' => 'nullable|date',
+            'per_page' => 'nullable|integer|min:1|max:50',
         ]);
 
-        $invalidRows = $request->invalid_rows;
-        $fileName = 'import_errors_' . now()->format('Ymd_His') . '.csv';
+        $query = ImportBatch::with('uploader:id,name,email')
+            ->withCount('errorRows')
+            ->orderByDesc('created_at');
 
-        $headers = [
-            'Content-type'        => 'text/csv',
-            'Content-Disposition' => "attachment; filename=$fileName",
-        ];
+        if ($request->query('status')) {
+            $query->where('status', $request->query('status'));
+        }
+        if ($request->query('source_format')) {
+            $query->where('source_format', $request->query('source_format'));
+        }
+        if ($request->query('date_from')) {
+            $query->whereDate('created_at', '>=', $request->query('date_from'));
+        }
+        if ($request->query('date_to')) {
+            $query->whereDate('created_at', '<=', $request->query('date_to'));
+        }
 
-        return response()->stream(function () use ($invalidRows) {
-            $file = fopen('php://output', 'w');
-            fputcsv($file, ['Baris', 'Nama', 'Email', 'NIM', 'Kode Prodi', 'Tanggal Lahir', 'Error']);
+        $paginated = $query->paginate((int) $request->query('per_page', 10));
 
-            foreach ($invalidRows as $row) {
-                $data = $row['data'] ?? [];
-                fputcsv($file, [
-                    $row['row'] ?? '-',
-                    $data['name'] ?? '-',
-                    $data['email'] ?? '-',
-                    $data['nim'] ?? '-',
-                    $data['study_program_code'] ?? '-',
-                    $data['tanggal_lahir'] ?? '-',
-                    implode('; ', $row['errors'] ?? []),
-                ]);
-            }
-
-            fclose($file);
-        }, 200, $headers);
+        return response()->json([
+            'message' => 'Riwayat impor berhasil diambil',
+            'data' => collect($paginated->items())->map(fn (ImportBatch $batch) => [
+                'batch_id' => $batch->uuid,
+                'kind' => $batch->kind,
+                'status' => $batch->status,
+                'source_format' => $batch->source_format,
+                'template_version' => $batch->template_version,
+                'original_filename' => $batch->original_filename,
+                'override_existing_active' => $batch->override_existing_active,
+                'override_reason' => $batch->override_reason,
+                'uploaded_by' => $batch->uploader?->name,
+                'total_rows' => $batch->total_rows,
+                'valid_rows' => $batch->valid_rows,
+                'invalid_rows' => $batch->invalid_rows,
+                'created_count' => $batch->created_count,
+                'updated_count' => $batch->updated_count,
+                'skipped_count' => $batch->skipped_count,
+                'failed_count' => $batch->failed_count,
+                'has_error_report' => $batch->error_rows_count > 0,
+                'error_report_expired' => $batch->error_rows_count === 0
+                    && ($batch->invalid_rows > 0 || $batch->failed_count > 0),
+                'created_at' => $batch->created_at?->toIso8601String(),
+                'completed_at' => $batch->completed_at?->toIso8601String(),
+            ])->all(),
+            'meta' => [
+                'current_page' => $paginated->currentPage(),
+                'per_page' => $paginated->perPage(),
+                'total' => $paginated->total(),
+                'last_page' => $paginated->lastPage(),
+            ],
+        ]);
     }
 
     /**
-     * Download template CSV untuk import mahasiswa (Hanya Super Admin).
+     * Laporan error batch impor dari data server (CSV/XLSX), bukan
+     * echo dari payload klien.
      */
-    public function importTemplate()
+    public function importBatchErrors(Request $request, ImportBatch $importBatch)
     {
-        $fileName = 'template_import_mahasiswa.csv';
+        $request->validate(['format' => 'nullable|in:csv,xlsx']);
+        $format = $request->query('format', 'csv');
+
+        $rows = $importBatch->errorRows()->orderBy('row_number')->get();
+        if ($rows->isEmpty()) {
+            $hadErrors = $importBatch->invalid_rows > 0 || $importBatch->failed_count > 0;
+            if ($hadErrors && $importBatch->expires_at?->isPast()) {
+                return response()->json([
+                    'message' => 'Laporan error batch ini sudah melewati masa penyimpanan dan telah dihapus.',
+                ], 410);
+            }
+
+            return response()->json([
+                'message' => 'Tidak ada baris error pada batch impor ini.',
+            ], 404);
+        }
+
+        $header = ['Baris', 'Nama', 'Email', 'NIM', 'Error'];
+        $data = $rows->map(fn (ImportBatchRow $row) => SpreadsheetSafety::escapeRow([
+            $row->row_number,
+            $row->display_name ?? '-',
+            $row->email ?? '-',
+            $row->nim ?? '-',
+            implode('; ', $row->errors_json ?? []),
+        ]))->all();
+
+        $fileName = 'laporan_error_import_' . substr($importBatch->uuid, 0, 8) . '_' . now()->format('Ymd_His');
+
+        if ($format === 'xlsx') {
+            return Excel::download(
+                new ArraySheetExport(
+                    'Error Impor',
+                    array_merge([$header], $data),
+                    ['A' => 8, 'B' => 28, 'C' => 34, 'D' => 24, 'E' => 80],
+                    freezeHeader: true,
+                    boldFirstRow: true,
+                ),
+                $fileName . '.xlsx'
+            );
+        }
+
+        return response()->stream(function () use ($header, $data) {
+            $file = fopen('php://output', 'w');
+            fwrite($file, "\xEF\xBB\xBF");
+            fputcsv($file, $header);
+            foreach ($data as $row) {
+                fputcsv($file, $row);
+            }
+            fclose($file);
+        }, 200, [
+            'Content-type' => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => "attachment; filename={$fileName}.csv",
+        ]);
+    }
+
+    /**
+     * Download template import mahasiswa v2, CSV atau XLSX (Hanya Super Admin).
+     * Backend-generated + authenticated; there is no public template path.
+     */
+    public function importTemplate(Request $request)
+    {
+        $request->validate(['format' => 'nullable|in:csv,xlsx']);
+        $format = $request->query('format', 'csv');
+        $version = MahasiswaImportService::TEMPLATE_VERSION;
+
+        if ($format === 'xlsx') {
+            return Excel::download(
+                new MahasiswaImportTemplateExport(),
+                "template_import_mahasiswa_verified_{$version}.xlsx"
+            );
+        }
+
+        $fileName = "template_import_mahasiswa_verified_{$version}.csv";
         $headers = [
-            'Content-type'        => 'text/csv',
+            'Content-type'        => 'text/csv; charset=UTF-8',
             'Content-Disposition' => "attachment; filename=$fileName",
             'Pragma'              => 'no-cache',
             'Cache-Control'       => 'must-revalidate, post-check=0, pre-check=0',
             'Expires'             => '0',
         ];
 
+        // Sample rows use the reserved CONTOH prodi code: they demonstrate
+        // the format but can never be imported as real students.
         return response()->stream(function () {
+            $sampleCode = MahasiswaImportService::SAMPLE_PROGRAM_CODE;
             $file = fopen('php://output', 'w');
-            fputcsv($file, ['name', 'email', 'nim', 'study_program_code', 'tanggal_lahir']);
-            fputcsv($file, ['John Doe', 'john.doe@mail.ugm.ac.id', '24/535278/SV/12345', 'TRPL', '2004-05-15']);
-            fputcsv($file, ['Jane Smith', 'jane.smith@mail.ugm.ac.id', '24/535279/SV/12346', 'TRI', '2004-08-22']);
+            fwrite($file, "\xEF\xBB\xBF"); // UTF-8 BOM for Excel
+            fputcsv($file, MahasiswaImportService::HEADERS);
+            fputcsv($file, SpreadsheetSafety::escapeRow([
+                'Contoh: Budi Santoso', 'budi.contoh@mail.ugm.ac.id', '24/535278/SV/12345', $sampleCode, '2004-05-15',
+            ]));
+            fputcsv($file, SpreadsheetSafety::escapeRow([
+                'Contoh: Siti Rahma', 'siti.contoh@mail.ugm.ac.id', '24/535279/SV/12346', $sampleCode, '',
+            ]));
             fclose($file);
         }, 200, $headers);
+    }
+
+    /**
+     * Shared upload validation for validate-import and bulk-import.
+     * CSV ≤ 2 MB, XLSX ≤ 5 MB, .xls rejected outright.
+     */
+    private function validateUploadedImportFile(Request $request): void
+    {
+        $request->validate(
+            [
+                'file' => 'required|file|mimes:csv,txt,xlsx|max:5120',
+            ],
+            [
+                'file.mimes' => 'Format file harus CSV atau XLSX. File .xls tidak didukung.',
+                'file.max' => 'Ukuran file maksimal 5 MB.',
+            ]
+        );
+
+        $file = $request->file('file');
+        $extension = strtolower($file->getClientOriginalExtension());
+
+        if ($extension === 'xls') {
+            throw ValidationException::withMessages([
+                'file' => ['File .xls tidak didukung. Gunakan CSV atau XLSX.'],
+            ]);
+        }
+
+        if (in_array($extension, ['csv', 'txt'], true) && $file->getSize() > 2 * 1024 * 1024) {
+            throw ValidationException::withMessages([
+                'file' => ['Ukuran file CSV maksimal 2 MB.'],
+            ]);
+        }
     }
 
     private function assignedTasksForRole(string $role, ?string $tendikRole, ?array $assignedTasks): ?array

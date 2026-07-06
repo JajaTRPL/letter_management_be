@@ -181,12 +181,20 @@ Route::middleware('throttle:api')->group(function () {
             Route::post('/templates/{key}/refresh', [\App\Http\Controllers\SuperAdmin\TemplateManagementController::class, 'refresh'])
                 ->where('key', '[a-z0-9\-]+');
 
-            // Bulk Operations & Export (Place above /{user} wildcard)
-            Route::post('/users/validate-import', [\App\Http\Controllers\SuperAdmin\UserController::class, 'validateImport']);
-            Route::post('/users/bulk-import', [\App\Http\Controllers\SuperAdmin\UserController::class, 'bulkImport']);
-            Route::post('/users/import-errors', [\App\Http\Controllers\SuperAdmin\UserController::class, 'importErrors']);
-            Route::get('/users/import-template', [\App\Http\Controllers\SuperAdmin\UserController::class, 'importTemplate']);
-            Route::get('/users/export', [\App\Http\Controllers\SuperAdmin\UserController::class, 'export']);
+            // Bulk Operations & Export (Place above /{user} wildcard).
+            // Rate-limited: uploads/exports 10/min, template & history 30/min.
+            Route::post('/users/validate-import', [\App\Http\Controllers\SuperAdmin\UserController::class, 'validateImport'])
+                ->middleware('throttle:10,1,import-upload');
+            Route::post('/users/bulk-import', [\App\Http\Controllers\SuperAdmin\UserController::class, 'bulkImport'])
+                ->middleware('throttle:10,1,import-upload');
+            Route::get('/users/import-template', [\App\Http\Controllers\SuperAdmin\UserController::class, 'importTemplate'])
+                ->middleware('throttle:30,1,import-template');
+            Route::get('/users/import-batches', [\App\Http\Controllers\SuperAdmin\UserController::class, 'importBatches'])
+                ->middleware('throttle:30,1,import-history');
+            Route::get('/users/import-batches/{importBatch}/errors', [\App\Http\Controllers\SuperAdmin\UserController::class, 'importBatchErrors'])
+                ->middleware('throttle:10,1,import-errors');
+            Route::get('/users/export', [\App\Http\Controllers\SuperAdmin\UserController::class, 'export'])
+                ->middleware('throttle:10,1,users-export');
 
             Route::get('/departments', [DepartmentController::class, 'basicList']);
 
