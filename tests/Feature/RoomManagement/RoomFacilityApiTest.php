@@ -41,6 +41,168 @@ class RoomFacilityApiTest extends TestCase
             ->assertJsonPath('message', 'Fasilitas dengan nama serupa sudah ada.');
     }
 
+    public function test_master_list_includes_is_active_and_usage_count(): void
+    {
+        $this->actingAsSuperAdmin();
+        $proyektor = FacilityType::where('slug', 'proyektor')->firstOrFail();
+
+        // Assign proyektor to two rooms → usage_count = 2.
+        foreach ([$this->classroom, $this->labARoom] as $room) {
+            \App\Models\RoomFacility::create([
+                'room_id' => $room->id,
+                'facility_type_id' => $proyektor->id,
+                'quantity' => 1,
+            ]);
+        }
+
+        $types = $this->getJson('/api/room-management/facility-types')->assertOk()->json('data');
+        $row = collect($types)->firstWhere('id', $proyektor->id);
+
+        $this->assertSame(2, $row['usage_count']);
+        $this->assertTrue($row['is_active']);
+    }
+
+    public function test_active_filter_hides_deactivated_types(): void
+    {
+        $this->actingAsSuperAdmin();
+        $kursi = FacilityType::where('slug', 'kursi')->firstOrFail();
+
+        $this->patchJson("/api/room-management/facility-types/{$kursi->id}", ['is_active' => false])
+            ->assertOk()
+            ->assertJsonPath('data.is_active', false);
+
+        // Master list still shows it; the assignment (?active=1) list hides it.
+        $all = collect($this->getJson('/api/room-management/facility-types')->json('data'));
+        $active = collect($this->getJson('/api/room-management/facility-types?active=1')->json('data'));
+
+        $this->assertTrue($all->contains('id', $kursi->id));
+        $this->assertFalse($active->contains('id', $kursi->id));
+    }
+
+    public function test_rename_facility_type_and_reject_duplicate(): void
+    {
+        $this->actingAsSuperAdmin();
+        $meja = FacilityType::where('slug', 'meja')->firstOrFail();
+
+        $this->patchJson("/api/room-management/facility-types/{$meja->id}", ['name' => 'Meja Lipat'])
+            ->assertOk()
+            ->assertJsonPath('data.name', 'Meja Lipat')
+            ->assertJsonPath('data.slug', 'meja_lipat');
+
+        // Renaming to an existing name/slug is rejected.
+        $this->patchJson("/api/room-management/facility-types/{$meja->id}", ['name' => 'Kursi'])
+            ->assertUnprocessable()
+            ->assertJsonPath('message', 'Fasilitas dengan nama serupa sudah ada.');
+
+        $this->assertDatabaseHas('room_audit_logs', [
+            'subject_type' => 'facility',
+            'action' => 'type_updated',
+        ]);
+    }
+
+    public function test_facility_type_in_use_cannot_be_hard_deleted_but_can_be_deactivated(): void
+    {
+        $this->actingAsSuperAdmin();
+        $ac = FacilityType::where('slug', 'ac')->firstOrFail();
+        \App\Models\RoomFacility::create([
+            'room_id' => $this->classroom->id,
+            'facility_type_id' => $ac->id,
+            'quantity' => 1,
+        ]);
+
+        // Deactivation is the safe soft-remove; the assignment stays on the room.
+        $this->patchJson("/api/room-management/facility-types/{$ac->id}", ['is_active' => false])->assertOk();
+        $this->assertDatabaseHas('room_facilities', [
+            'room_id' => $this->classroom->id,
+            'facility_type_id' => $ac->id,
+        ]);
+
+        // The DB restrictOnDelete guards against a hard delete while in use.
+        $this->expectException(\Illuminate\Database\QueryException::class);
+        $ac->delete();
+    }
+
+    public function test_facility_master_endpoints_deny_mahasiswa(): void
+    {
+        $this->actingAsMahasiswa();
+        $meja = FacilityType::where('slug', 'meja')->firstOrFail();
+        $this->getJson('/api/room-management/facility-types')->assertForbidden();
+        $this->patchJson("/api/room-management/facility-types/{$meja->id}", ['is_active' => false])->assertForbidden();
+    }
+
+    public function test_super_admin_hard_deletes_an_unused_custom_facility(): void
+    {
+        $this->actingAsSuperAdmin();
+        $custom = FacilityType::create(['name' => 'Kamera CCTV', 'slug' => 'kamera_cctv', 'is_predefined' => false]);
+
+        $this->deleteJson("/api/room-management/facility-types/{$custom->id}")
+            ->assertOk()
+            ->assertJsonPath('message', 'Jenis fasilitas berhasil dihapus');
+
+        $this->assertDatabaseMissing('facility_types', ['id' => $custom->id]);
+        $this->assertDatabaseHas('room_audit_logs', ['subject_type' => 'facility', 'action' => 'type_deleted']);
+    }
+
+    public function test_super_admin_can_hard_delete_an_unused_predefined_facility(): void
+    {
+        // Primary/bawaan facilities are not untouchable when unused.
+        $this->actingAsSuperAdmin();
+        $speaker = FacilityType::where('slug', 'speaker')->firstOrFail();
+        $this->assertTrue($speaker->is_predefined);
+
+        $this->deleteJson("/api/room-management/facility-types/{$speaker->id}")->assertOk();
+        $this->assertDatabaseMissing('facility_types', ['id' => $speaker->id]);
+    }
+
+    public function test_used_facility_cannot_be_hard_deleted_and_room_data_is_preserved(): void
+    {
+        $this->actingAsSuperAdmin();
+        $proyektor = FacilityType::where('slug', 'proyektor')->firstOrFail();
+        \App\Models\RoomFacility::create([
+            'room_id' => $this->classroom->id,
+            'facility_type_id' => $proyektor->id,
+            'quantity' => 1,
+        ]);
+
+        $this->deleteJson("/api/room-management/facility-types/{$proyektor->id}")
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'facility_in_use');
+
+        // Type and the room assignment both survive.
+        $this->assertDatabaseHas('facility_types', ['id' => $proyektor->id]);
+        $this->assertDatabaseHas('room_facilities', [
+            'room_id' => $this->classroom->id,
+            'facility_type_id' => $proyektor->id,
+        ]);
+
+        // Archiving (deactivate) is the safe path for a used facility.
+        $this->patchJson("/api/room-management/facility-types/{$proyektor->id}", ['is_active' => false])
+            ->assertOk()
+            ->assertJsonPath('data.is_active', false);
+        $this->assertDatabaseHas('room_facilities', [
+            'room_id' => $this->classroom->id,
+            'facility_type_id' => $proyektor->id,
+        ]);
+    }
+
+    public function test_facility_dictionary_mutations_are_super_admin_only(): void
+    {
+        $meja = FacilityType::where('slug', 'meja')->firstOrFail();
+
+        // No created_by/scope ownership exists, so Tendik cannot rename,
+        // archive, or delete global facility types.
+        foreach ([$this->actingAsSarpras(), $this->actingAsKalab(), $this->actingAsLaboran()] as $_tendik) {
+            $this->patchJson("/api/room-management/facility-types/{$meja->id}", ['name' => 'Meja X'])
+                ->assertForbidden()
+                ->assertJsonPath('message', 'Hanya Super Admin yang dapat mengubah, mengarsipkan, atau menghapus jenis fasilitas.');
+            $this->deleteJson("/api/room-management/facility-types/{$meja->id}")->assertForbidden();
+        }
+
+        // Tendik may still create a facility type while managing rooms.
+        $this->actingAsSarpras();
+        $this->postJson('/api/room-management/facility-types', ['name' => 'Layar Sentuh'])->assertCreated();
+    }
+
     public function test_sync_creates_updates_and_removes_facilities(): void
     {
         $this->actingAsSarpras();
