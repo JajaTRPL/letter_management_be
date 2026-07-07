@@ -204,6 +204,7 @@ Route::middleware('throttle:api')->group(function () {
                 Route::post('/facility-types', [\App\Http\Controllers\RoomManagement\RoomFacilityController::class, 'storeFacilityType']);
                 Route::patch('/facility-types/{facilityType}', [\App\Http\Controllers\RoomManagement\RoomFacilityController::class, 'updateFacilityType']);
                 Route::delete('/facility-types/{facilityType}', [\App\Http\Controllers\RoomManagement\RoomFacilityController::class, 'destroyFacilityType']);
+                Route::get('/facility-types/{facilityType}/rooms', [\App\Http\Controllers\RoomManagement\RoomFacilityController::class, 'rooms']);
                 Route::get('/rooms/{room}/facilities', [\App\Http\Controllers\RoomManagement\RoomFacilityController::class, 'index']);
                 Route::put('/rooms/{room}/facilities', [\App\Http\Controllers\RoomManagement\RoomFacilityController::class, 'sync']);
 

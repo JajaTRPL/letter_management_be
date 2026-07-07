@@ -193,6 +193,65 @@ class RoomFacilityController extends Controller
     }
 
     /**
+     * Rooms currently using a facility type — powers the Master Fasilitas
+     * "Lihat Penggunaan" drawer so SuperAdmin can see exactly which rooms
+     * depend on a type before archiving/deleting it. Returns only the fields
+     * the drawer needs plus counts by room type. SuperAdmin-only, matching the
+     * facility-dictionary surface (the room list payload carries a truncated,
+     * name-only facilities summary, so this cannot be derived client-side).
+     */
+    public function rooms(Request $request, FacilityType $facilityType): JsonResponse
+    {
+        if (($response = $this->assertFacilityDictionaryManager($request)) !== null) {
+            return $response;
+        }
+
+        $rooms = Room::query()
+            ->whereHas('facilityItems', fn ($query) => $query->where('facility_type_id', $facilityType->id))
+            ->with([
+                'owningLaboratory:id,code,name',
+                'facilityItems' => fn ($query) => $query->where('facility_type_id', $facilityType->id),
+            ])
+            ->orderBy('code')
+            ->get();
+
+        $classroom = $rooms->filter(fn (Room $room) => $room->type->value === 'classroom')->count();
+        $laboratory = $rooms->filter(fn (Room $room) => $room->type->value === 'laboratory')->count();
+        $total = $rooms->count();
+
+        return response()->json([
+            'message' => 'Penggunaan fasilitas berhasil diambil',
+            'data' => [
+                'facility_type' => $this->facilityTypePayload($facilityType->loadCount('roomFacilities')),
+                'summary' => [
+                    'total' => $total,
+                    'classroom' => $classroom,
+                    'laboratory' => $laboratory,
+                    'other' => max(0, $total - $classroom - $laboratory),
+                ],
+                'rooms' => $rooms->map(function (Room $room) {
+                    $assignment = $room->facilityItems->first();
+
+                    return [
+                        'id' => (int) $room->id,
+                        'code' => $room->code,
+                        'name' => $room->name,
+                        'type' => $room->type->value,
+                        'is_active' => (bool) $room->is_active,
+                        'owning_laboratory' => $room->owningLaboratory ? [
+                            'id' => (int) $room->owningLaboratory->id,
+                            'code' => $room->owningLaboratory->code,
+                            'name' => $room->owningLaboratory->name,
+                        ] : null,
+                        'quantity' => $assignment && $assignment->quantity !== null ? (int) $assignment->quantity : null,
+                        'condition' => $assignment?->condition,
+                    ];
+                })->values()->all(),
+            ],
+        ]);
+    }
+
+    /**
      * Managing the global facility dictionary (rename/archive/delete) is
      * SuperAdmin-only. The route group also admits Tendik (for assigning +
      * creating types during room management), so the restriction is enforced

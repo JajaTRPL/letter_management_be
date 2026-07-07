@@ -203,6 +203,66 @@ class RoomFacilityApiTest extends TestCase
         $this->postJson('/api/room-management/facility-types', ['name' => 'Layar Sentuh'])->assertCreated();
     }
 
+    public function test_facility_usage_lists_rooms_with_counts_by_type(): void
+    {
+        $this->actingAsSuperAdmin();
+        $proyektor = FacilityType::where('slug', 'proyektor')->firstOrFail();
+
+        \App\Models\RoomFacility::create([
+            'room_id' => $this->classroom->id,
+            'facility_type_id' => $proyektor->id,
+            'quantity' => 2,
+            'condition' => 'baik',
+        ]);
+        \App\Models\RoomFacility::create([
+            'room_id' => $this->labARoom->id,
+            'facility_type_id' => $proyektor->id,
+            'quantity' => 1,
+        ]);
+
+        $data = $this->getJson("/api/room-management/facility-types/{$proyektor->id}/rooms")
+            ->assertOk()
+            ->assertJsonPath('data.facility_type.slug', 'proyektor')
+            ->json('data');
+
+        $this->assertSame(2, $data['summary']['total']);
+        $this->assertSame(1, $data['summary']['classroom']);
+        $this->assertSame(1, $data['summary']['laboratory']);
+        $this->assertSame(0, $data['summary']['other']);
+        $this->assertCount(2, $data['rooms']);
+
+        $codes = collect($data['rooms'])->pluck('code');
+        $this->assertTrue($codes->contains($this->classroom->code));
+        $this->assertTrue($codes->contains($this->labARoom->code));
+
+        $classroomRow = collect($data['rooms'])->firstWhere('code', $this->classroom->code);
+        $this->assertSame('classroom', $classroomRow['type']);
+        $this->assertSame(2, $classroomRow['quantity']);
+        $this->assertSame('baik', $classroomRow['condition']);
+    }
+
+    public function test_facility_usage_is_empty_for_unused_type(): void
+    {
+        $this->actingAsSuperAdmin();
+        $unused = FacilityType::create(['name' => 'Papan Interaktif', 'slug' => 'papan_interaktif', 'is_predefined' => false]);
+
+        $data = $this->getJson("/api/room-management/facility-types/{$unused->id}/rooms")
+            ->assertOk()
+            ->json('data');
+
+        $this->assertSame(0, $data['summary']['total']);
+        $this->assertSame([], $data['rooms']);
+    }
+
+    public function test_facility_usage_detail_is_super_admin_only(): void
+    {
+        $proyektor = FacilityType::where('slug', 'proyektor')->firstOrFail();
+        $this->actingAsSarpras();
+        $this->getJson("/api/room-management/facility-types/{$proyektor->id}/rooms")->assertForbidden();
+        $this->actingAsMahasiswa();
+        $this->getJson("/api/room-management/facility-types/{$proyektor->id}/rooms")->assertForbidden();
+    }
+
     public function test_sync_creates_updates_and_removes_facilities(): void
     {
         $this->actingAsSarpras();
