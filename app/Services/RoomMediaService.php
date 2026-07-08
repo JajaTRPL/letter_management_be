@@ -195,6 +195,17 @@ class RoomMediaService
         ]);
     }
 
+    /**
+     * Remove ALL stored photo files for a room (every variant of every photo)
+     * by dropping the room's photo directory. Used by bulk room hard-delete:
+     * the DB cascade removes room_photos rows, but the files on disk must be
+     * purged here to avoid orphans. Call AFTER the delete transaction commits.
+     */
+    public function purgeRoomPhotoStorage(int $roomId): void
+    {
+        Storage::disk(self::DISK)->deleteDirectory(self::PATH_PREFIX . $roomId);
+    }
+
     /** @param list<string> $paths */
     private function deleteFiles(array $paths): void
     {

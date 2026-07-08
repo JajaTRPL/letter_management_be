@@ -199,6 +199,7 @@ Route::middleware('throttle:api')->group(function () {
                 Route::patch('/rooms/{room}', [\App\Http\Controllers\RoomManagement\RoomController::class, 'update']);
                 Route::post('/rooms/{room}/activate', [\App\Http\Controllers\RoomManagement\RoomController::class, 'activate']);
                 Route::post('/rooms/{room}/deactivate', [\App\Http\Controllers\RoomManagement\RoomController::class, 'deactivate']);
+                Route::delete('/rooms/bulk', [\App\Http\Controllers\RoomManagement\RoomController::class, 'bulkDestroy']);
 
                 Route::get('/facility-types', [\App\Http\Controllers\RoomManagement\RoomFacilityController::class, 'facilityTypes']);
                 Route::post('/facility-types', [\App\Http\Controllers\RoomManagement\RoomFacilityController::class, 'storeFacilityType']);

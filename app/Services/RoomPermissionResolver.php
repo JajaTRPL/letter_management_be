@@ -15,7 +15,7 @@ use Illuminate\Database\Eloquent\Builder;
  * data and approving bookings are different authorities —
  *   SuperAdmin  : manages everything, approves nothing.
  *   Sarpras     : manages classrooms (incl. create/deactivate).
- *   Kepala Lab  : edits own-lab rooms; no create/deactivate.
+ *   Kepala Lab  : manages own-lab rooms incl. deactivate/remove; no create.
  *   Laboran     : edits ALL laboratory rooms' data; no create/deactivate,
  *                 and (unchanged) no booking approval.
  *   Mahasiswa   : reads the active catalog only.
@@ -76,7 +76,17 @@ class RoomPermissionResolver
             return true;
         }
 
-        return $room->type === RoomType::Classroom && $this->canManageClassroom($user);
+        // Sarpras retires classrooms.
+        if ($room->type === RoomType::Classroom) {
+            return $this->canManageClassroom($user);
+        }
+
+        // Kepala Lab retires laboratory rooms within their OWN laboratory only.
+        // Laboran maintains lab data but has no room-removal authority.
+        return $this->isActive($user)
+            && $user->isKalab()
+            && $user->laboratory_id !== null
+            && (int) $room->owning_laboratory_id === (int) $user->laboratory_id;
     }
 
     public function canReadRoomManagement(User $user, Room $room): bool
