@@ -341,36 +341,32 @@ class TendikProfileContractTest extends TestCase
         $this->assertArrayNotHasKey('assigned_tasks', $payload['user']);
     }
 
-    public function test_tendik_can_set_nip_via_self_profile_when_empty(): void
+    public function test_tendik_nip_is_immutable_via_self_profile_but_name_remains_editable(): void
     {
-        $tendik = $this->tendikPersuratan([], ['nip' => null]);
+        $tendik = $this->tendikPersuratan([], [
+            'name' => 'Original Tendik',
+            'nip' => '198501012010011001',
+        ]);
 
         $this->actingAs($tendik, 'sanctum')
             ->postJson('/api/profile', [
-                'nip' => '199001012025011001',
+                'name' => 'Rejected Combined Update',
+                'nip' => '199512122019011002',
             ])
-            ->assertOk()
-            ->assertJsonPath('user.nip', '199001012025011001');
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('nip');
 
-        $this->assertSame('199001012025011001', $tendik->fresh()->nip);
-    }
-
-    public function test_tendik_can_change_existing_nip_via_self_profile(): void
-    {
-        $tendik = $this->tendikPersuratan([], ['nip' => '198501012010011001']);
+        $tendik->refresh();
+        $this->assertSame('Original Tendik', $tendik->name);
+        $this->assertSame('198501012010011001', $tendik->nip);
 
         $this->actingAs($tendik, 'sanctum')
             ->postJson('/api/profile', [
                 'name' => 'Updated Tendik',
-                'nip' => '199512122019011002',
             ])
             ->assertOk()
             ->assertJsonPath('user.name', 'Updated Tendik')
-            ->assertJsonPath('user.nip', '199512122019011002');
-
-        $tendik->refresh();
-        $this->assertSame('Updated Tendik', $tendik->name);
-        $this->assertSame('199512122019011002', $tendik->nip);
+            ->assertJsonPath('user.nip', '198501012010011001');
     }
 
     public function test_akademik_can_update_name_via_self_profile(): void
@@ -387,21 +383,7 @@ class TendikProfileContractTest extends TestCase
         $this->assertSame('Updated Kaprodi', $akademik->fresh()->name);
     }
 
-    public function test_akademik_can_set_nip_via_self_profile_when_empty(): void
-    {
-        $akademik = $this->akademik('kadep', ['nip' => null]);
-
-        $this->actingAs($akademik, 'sanctum')
-            ->postJson('/api/profile', [
-                'nip' => '198001012006041001',
-            ])
-            ->assertOk()
-            ->assertJsonPath('user.nip', '198001012006041001');
-
-        $this->assertSame('198001012006041001', $akademik->fresh()->nip);
-    }
-
-    public function test_akademik_can_change_existing_nip_via_self_profile(): void
+    public function test_akademik_nip_is_immutable_via_self_profile(): void
     {
         $akademik = $this->akademik('sekdep', ['nip' => '197001012000041001']);
 
@@ -409,15 +391,14 @@ class TendikProfileContractTest extends TestCase
             ->postJson('/api/profile', [
                 'nip' => '197512122005011002',
             ])
-            ->assertOk()
-            ->assertJsonPath('user.nip', '197512122005011002');
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('nip');
 
-        $this->assertSame('197512122005011002', $akademik->fresh()->nip);
+        $this->assertSame('197001012000041001', $akademik->fresh()->nip);
     }
 
-    public function test_self_profile_rejects_nip_already_used_by_another_user(): void
+    public function test_staff_with_empty_nip_must_use_completion_endpoint(): void
     {
-        $existing = $this->tendikPersuratan([], ['nip' => '199001012025011001']);
         $tendik = $this->tendikPersuratan([], ['nip' => null]);
 
         $this->actingAs($tendik, 'sanctum')
@@ -426,34 +407,6 @@ class TendikProfileContractTest extends TestCase
             ])
             ->assertUnprocessable()
             ->assertJsonValidationErrors('nip');
-
-        $this->assertNull($tendik->fresh()->nip);
-        $this->assertSame('199001012025011001', $existing->fresh()->nip);
-    }
-
-    public function test_self_profile_allows_keeping_own_nip_unchanged(): void
-    {
-        $tendik = $this->tendikPersuratan([], ['nip' => '199001012025011001']);
-
-        $this->actingAs($tendik, 'sanctum')
-            ->postJson('/api/profile', [
-                'name' => 'Same NIP Update',
-                'nip' => '199001012025011001',
-            ])
-            ->assertOk()
-            ->assertJsonPath('user.nip', '199001012025011001');
-    }
-
-    public function test_self_profile_clears_nip_when_blank_string_submitted(): void
-    {
-        $tendik = $this->tendikPersuratan([], ['nip' => '199001012025011001']);
-
-        $this->actingAs($tendik, 'sanctum')
-            ->postJson('/api/profile', [
-                'nip' => '   ',
-            ])
-            ->assertOk()
-            ->assertJsonPath('user.nip', null);
 
         $this->assertNull($tendik->fresh()->nip);
     }

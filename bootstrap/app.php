@@ -18,6 +18,8 @@ return Application::configure(basePath: dirname(__DIR__))
             'role' => CheckRole::class,
             'primary_admin' => \App\Http\Middleware\CheckPrimarySuperAdmin::class,
             'check_status' => \App\Http\Middleware\CheckUserStatus::class,
+            'password_rotation_satisfied' => \App\Http\Middleware\EnsurePasswordRotationSatisfied::class,
+            'password_rotation_token' => \App\Http\Middleware\EnsurePasswordRotationToken::class,
             'profile_complete' => \App\Http\Middleware\EnsureProfileComplete::class,
         ]);
 

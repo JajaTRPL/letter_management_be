@@ -76,7 +76,10 @@ class BeasiswaApproverTrackingTest extends TestCase
         [$student] = $this->completeMahasiswa([], [], $program);
         $application = $this->scholarshipApplication($student);
 
-        $kaprodi = $this->akademik('kaprodi', ['study_program_id' => $program->id]);
+        $kaprodi = $this->akademik('kaprodi', [
+            'study_program_id' => $program->id,
+            'nip' => null,
+        ]);
         $sekprodi = $this->akademik('sekprodi', ['study_program_id' => $program->id]);
         $kadep = $this->akademik('kadep', [
             'department_id' => $department->id,

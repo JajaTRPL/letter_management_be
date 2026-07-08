@@ -9,7 +9,8 @@ class StudyProgramController extends Controller
 {
     public function index(Request $request)
     {
-        $query = StudyProgram::select('id', 'name', 'code', 'department_id')
+        $query = StudyProgram::runtimeVisible()
+            ->select('id', 'name', 'code', 'department_id')
             ->with('department:id,code,name')
             ->orderBy('code');
 
@@ -22,9 +23,15 @@ class StudyProgramController extends Controller
 
     public function grouped()
     {
-        $departments = \App\Models\Department::with(['studyPrograms' => function ($q) {
-            $q->orderBy('code')->select('id', 'code', 'name', 'department_id');
-        }])->orderBy('code')->get(['id', 'code', 'name']);
+        $departments = \App\Models\Department::runtimeVisible()
+            ->whereHas('studyPrograms', fn ($query) => $query->runtimeVisible())
+            ->with(['studyPrograms' => function ($query) {
+                $query->runtimeVisible()
+                    ->orderBy('code')
+                    ->select('id', 'code', 'name', 'department_id');
+            }])
+            ->orderBy('code')
+            ->get(['id', 'code', 'name']);
 
         $grouped = $departments->map(function ($dept) {
             return [

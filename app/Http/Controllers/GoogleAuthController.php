@@ -4,11 +4,17 @@ namespace App\Http\Controllers;
 
 use App\Models\User;
 use App\Models\MahasiswaProfile;
+use App\Models\Department;
+use App\Models\StudyProgram;
 use App\Helpers\NimHelper;
 use App\Enums\UserStatus;
+use App\Services\ProfileCompletionService;
+use App\Support\AuthTokenAbilities;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
 
 class GoogleAuthController extends Controller
 {
@@ -16,6 +22,17 @@ class GoogleAuthController extends Controller
      * Allowed email domains for Google login.
      */
     private const ALLOWED_DOMAINS = ['mail.ugm.ac.id', 'ugm.ac.id'];
+
+    /**
+     * Only the UGM student domain may create a new Mahasiswa account.
+     * Staff-domain accounts must be pre-provisioned by Super Admin.
+     */
+    private const STUDENT_SELF_REGISTRATION_DOMAIN = 'mail.ugm.ac.id';
+
+    public function __construct(
+        private ProfileCompletionService $profileCompletionService
+    ) {
+    }
 
     /**
      * Handle Google login via ID token (credential).
@@ -38,7 +55,7 @@ class GoogleAuthController extends Controller
             ], 401);
         }
 
-        $email         = $payload['email'] ?? null;
+        $email         = isset($payload['email']) ? strtolower(trim((string) $payload['email'])) : null;
         $googleId      = $payload['sub'] ?? null;
         $name          = $payload['name'] ?? ($payload['given_name'] ?? 'User');
         $avatar        = $payload['picture'] ?? null;
@@ -51,15 +68,15 @@ class GoogleAuthController extends Controller
         }
 
         // Domain restriction
-        $domain = substr($email, strpos($email, '@') + 1);
-        if (!in_array(strtolower($domain), self::ALLOWED_DOMAINS)) {
+        $domain = strtolower((string) substr(strrchr($email, '@') ?: '', 1));
+        if (!in_array($domain, self::ALLOWED_DOMAINS, true)) {
             return response()->json([
                 'message' => 'Hanya email @mail.ugm.ac.id dan @ugm.ac.id yang diizinkan.',
             ], 403);
         }
 
         // Lookup by email (primary identifier) — NOT by google_id
-        $user = User::where('email', strtolower($email))->first();
+        $user = User::where('email', $email)->first();
         $isNewUser = false;
 
         if ($user) {
@@ -77,10 +94,16 @@ class GoogleAuthController extends Controller
                 $user->save();
             }
         } else {
+            if ($domain !== self::STUDENT_SELF_REGISTRATION_DOMAIN) {
+                return response()->json([
+                    'message' => 'Akun belum terdaftar. Silakan hubungi Super Admin.',
+                ], 403);
+            }
+
             // Auto-create: new mahasiswa with pending_profile
             $user = User::create([
                 'name'       => $name,
-                'email'      => strtolower($email),
+                'email'      => $email,
                 'google_id'  => $googleId,
                 'avatar_url' => $avatar,
                 'password'   => null,
@@ -104,18 +127,24 @@ class GoogleAuthController extends Controller
             $user->save();
         }
 
-        $token = $user->createToken('auth_token')->plainTextToken;
+        $completion = $this->profileCompletionService->synchronizeStatus($user);
+        $token = $user->createToken(
+            'auth_token',
+            AuthTokenAbilities::GOOGLE_FULL_ACCESS,
+        )->plainTextToken;
 
         return response()->json([
             'message'          => $isNewUser ? 'Akun berhasil dibuat' : 'Login berhasil',
             'token'            => $token,
-            'needs_completion' => $user->status === UserStatus::PendingProfile,
+            'needs_completion' => $completion['needs_completion'],
+            'completion'       => $completion,
             'user' => [
                 'id'         => $user->id,
                 'name'       => $user->name,
                 'email'      => $user->email,
                 'role'       => $user->role,
                 'sub_role'   => $user->sub_role,
+                'tendik_role' => $user->tendik_role,
                 'role_level' => $user->role_level,
                 'status'     => $user->status,
                 'avatar_url' => $user->avatar_url,
@@ -124,26 +153,103 @@ class GoogleAuthController extends Controller
     }
 
     /**
-     * Complete profile for pending_profile users.
-     * Required: nim, study_program_id.
+     * Complete only the missing, role-appropriate onboarding fields.
      */
     public function completeProfile(Request $request)
     {
         $user = $request->user();
+        $completion = $this->profileCompletionService->status($user);
 
-        if ($user->status !== UserStatus::PendingProfile) {
+        if (!$completion['needs_completion']) {
             return response()->json(['message' => 'Profil sudah lengkap.'], 400);
         }
 
-        $validator = Validator::make($request->all(), [
-            'nim'              => 'required|string|unique:mahasiswa_profiles,nim,' . ($user->mahasiswaProfile?->id ?? 'NULL') . ',id',
-            'study_program_id' => 'required|exists:study_programs,id',
-        ], [
-            'nim.required'              => 'NIM wajib diisi.',
-            'nim.unique'                => 'NIM sudah terdaftar di sistem.',
+        if (!$completion['can_self_complete']) {
+            return response()->json([
+                'message' => $completion['message'],
+                'completion' => $completion,
+            ], 422);
+        }
+
+        $fields = $completion['fields'];
+        $profileId = $user->mahasiswaProfile?->id;
+        $input = $request->all();
+        if (in_array('nim', $fields, true)) {
+            $input['nim'] = NimHelper::normalize($request->input('nim'));
+        }
+        if (in_array('nip', $fields, true)) {
+            $input['nip'] = trim((string) $request->input('nip'));
+        }
+
+        $rules = [
+            'role' => 'prohibited',
+            'sub_role' => 'prohibited',
+            'tendik_role' => 'prohibited',
+            'laboratory_id' => 'prohibited',
+            'role_level' => 'prohibited',
+            'status' => 'prohibited',
+            'assigned_tasks' => 'prohibited',
+            'email' => 'prohibited',
+            'google_id' => 'prohibited',
+            'nim' => in_array('nim', $fields, true)
+                ? [
+                    'required',
+                    'string',
+                    'max:50',
+                    Rule::unique('mahasiswa_profiles', 'nim')->ignore($profileId),
+                ]
+                : 'prohibited',
+            'nip' => in_array('nip', $fields, true)
+                ? [
+                    'required',
+                    'string',
+                    'max:50',
+                    Rule::unique('users', 'nip')->ignore($user->id),
+                ]
+                : 'prohibited',
+            'study_program_id' => in_array('study_program_id', $fields, true)
+                ? ['required', 'integer']
+                : 'prohibited',
+            'department_id' => in_array('department_id', $fields, true)
+                ? ['required', 'integer']
+                : 'prohibited',
+        ];
+
+        $validator = Validator::make($input, $rules, [
+            'nim.required' => 'NIM wajib diisi.',
+            'nim.unique' => 'NIM sudah terdaftar di sistem.',
+            'nip.required' => 'NIP wajib diisi.',
+            'nip.unique' => 'NIP sudah terdaftar di sistem.',
             'study_program_id.required' => 'Program Studi wajib dipilih.',
-            'study_program_id.exists'   => 'Program Studi tidak ditemukan.',
+            'department_id.required' => 'Departemen wajib dipilih.',
+            '*.prohibited' => 'Field :attribute tidak boleh diubah melalui pelengkapan profil.',
         ]);
+
+        $validator->after(function ($validator) use ($input, $fields) {
+            if (
+                in_array('nim', $fields, true)
+                && !empty($input['nim'])
+                && !NimHelper::validate($input['nim'])
+            ) {
+                $validator->errors()->add('nim', 'Format NIM tidak valid.');
+            }
+
+            if (
+                in_array('study_program_id', $fields, true)
+                && !empty($input['study_program_id'])
+                && !StudyProgram::runtimeVisible()->whereKey($input['study_program_id'])->exists()
+            ) {
+                $validator->errors()->add('study_program_id', 'Program Studi tidak ditemukan.');
+            }
+
+            if (
+                in_array('department_id', $fields, true)
+                && !empty($input['department_id'])
+                && !Department::runtimeVisible()->whereKey($input['department_id'])->exists()
+            ) {
+                $validator->errors()->add('department_id', 'Departemen tidak ditemukan.');
+            }
+        });
 
         if ($validator->fails()) {
             return response()->json([
@@ -152,30 +258,73 @@ class GoogleAuthController extends Controller
             ], 422);
         }
 
-        $user->update([
-            'study_program_id' => $request->study_program_id,
-            'status'           => UserStatus::Active,
-        ]);
+        $validated = $validator->validated();
 
-        MahasiswaProfile::updateOrCreate(
-            ['user_id' => $user->id],
-            [
-                'nim'         => NimHelper::normalize($request->nim),
-                'data_source' => $user->mahasiswaProfile?->data_source ?? 'google_sync',
-            ]
-        );
+        DB::transaction(function () use ($validated, $user, $fields) {
+            $updates = [];
+
+            if (in_array('nip', $fields, true)) {
+                $updates['nip'] = $validated['nip'];
+            }
+
+            if (in_array('study_program_id', $fields, true)) {
+                $program = StudyProgram::runtimeVisible()
+                    ->whereKey($validated['study_program_id'])
+                    ->firstOrFail();
+                $updates['study_program_id'] = $program->id;
+                $updates['department_id'] = $program->department_id;
+            }
+
+            if (in_array('department_id', $fields, true)) {
+                $updates['department_id'] = $validated['department_id'];
+                $updates['study_program_id'] = null;
+            }
+
+            if ($updates !== []) {
+                $user->update($updates);
+            }
+
+            if (in_array('nim', $fields, true)) {
+                MahasiswaProfile::updateOrCreate(
+                    ['user_id' => $user->id],
+                    [
+                        'nim' => $validated['nim'],
+                        'data_source' => $user->mahasiswaProfile?->data_source ?? 'google_sync',
+                    ]
+                );
+            }
+        });
+
+        $user->refresh();
+        $completion = $this->profileCompletionService->synchronizeStatus($user);
+
+        if ($completion['needs_completion']) {
+            return response()->json([
+                'message' => $completion['message'],
+                'completion' => $completion,
+            ], 422);
+        }
 
         return response()->json([
             'message' => 'Profil berhasil dilengkapi',
+            'completion' => $completion,
             'user' => [
                 'id'         => $user->id,
                 'name'       => $user->name,
                 'email'      => $user->email,
                 'role'       => $user->role,
                 'sub_role'   => $user->sub_role,
+                'tendik_role' => $user->tendik_role,
                 'role_level' => $user->role_level,
                 'status'     => UserStatus::Active,
             ],
+        ]);
+    }
+
+    public function profileCompletionStatus(Request $request)
+    {
+        return response()->json([
+            'completion' => $this->profileCompletionService->status($request->user()),
         ]);
     }
 

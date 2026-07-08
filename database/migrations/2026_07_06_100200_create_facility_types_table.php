@@ -1,0 +1,28 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Facility dictionary: seeded predefined items (proyektor, AC, …) plus
+     * manager-created custom facilities (is_predefined = false).
+     */
+    public function up(): void
+    {
+        Schema::create('facility_types', function (Blueprint $table) {
+            $table->id();
+            $table->string('name');
+            $table->string('slug')->unique();
+            $table->boolean('is_predefined')->default(false);
+            $table->timestamps();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('facility_types');
+    }
+};

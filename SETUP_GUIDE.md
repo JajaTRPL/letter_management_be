@@ -138,7 +138,15 @@ npm run dev
    - `aud` matches `GOOGLE_CLIENT_ID` (prevents token reuse)
    - Email domain is `@mail.ugm.ac.id` or `@ugm.ac.id`
    - Email is verified by Google
-7. If user exists → login; if new → auto-create as `mahasiswa` with `pending_profile`
+7. If user exists → login using the pre-provisioned role
+8. If user is unknown:
+   - `@mail.ugm.ac.id` → auto-create as `mahasiswa` with `pending_profile`
+   - `@ugm.ac.id` → reject and direct the user to Super Admin
+
+> **Self-registration clarification:** "if new" applies only to
+> `@mail.ugm.ac.id`. An unknown `@ugm.ac.id` staff account is rejected with
+> "Akun belum terdaftar. Silakan hubungi Super Admin." Existing accounts from
+> either UGM domain continue to log in using their pre-provisioned role.
 
 ### Required ENV Variables
 
@@ -186,14 +194,63 @@ npm run dev
 
 ### Domain Restrictions (Backend-Enforced)
 
-The backend only allows these email domains:
-- `@mail.ugm.ac.id` (student emails)
-- `@ugm.ac.id` (staff emails)
+The backend allows Google login from these email domains:
+- `@mail.ugm.ac.id` (student emails; unknown accounts may self-register as Mahasiswa)
+- `@ugm.ac.id` (staff emails; account must already be provisioned by Super Admin)
 
-This is enforced in `GoogleAuthController.php` line 18:
+There is no local-part/NIM email regex. Self-registration is determined by the
+exact student domain. Both domains remain valid for login to an existing,
+pre-provisioned account.
+
+This is enforced in `GoogleAuthController.php`:
 ```php
 private const ALLOWED_DOMAINS = ['mail.ugm.ac.id', 'ugm.ac.id'];
+private const STUDENT_SELF_REGISTRATION_DOMAIN = 'mail.ugm.ac.id';
 ```
+
+---
+
+## ✉️ Forgot Password Email Setup
+
+Forgot-password messages are sent synchronously by the Laravel backend, so a
+queue worker is not required for this flow. The default local configuration uses
+the `log` mailer; the rendered HTML and plain-text message is written to the
+Laravel log and the OTP is never returned to the browser.
+
+For local inbox testing with Mailpit, set:
+
+```dotenv
+MAIL_MAILER=smtp
+MAIL_HOST=127.0.0.1
+MAIL_PORT=1025
+MAIL_USERNAME=null
+MAIL_PASSWORD=null
+MAIL_SCHEME=null
+MAIL_FROM_ADDRESS=no-reply@example.test
+MAIL_FROM_NAME="Sistem Persuratan DTEDI"
+```
+
+Production and staging SMTP credentials must be supplied through environment
+secrets and must not be committed. `PASSWORD_RESET_SIMULATION=false` is the safe
+default. The simulation response can activate only when that flag is explicitly
+set to `true` and `APP_ENV=local`; never enable it in staging or production.
+
+The reset policy defaults to a 10-minute OTP, five verification attempts, a
+60-second resend cooldown, and a separate 10-minute one-time reset token. See
+`.env.example` for the available policy variables.
+
+Active accounts originally created through Google login may use the verified
+email OTP flow to set a local password. This does not change the account's role,
+scope, Google link, or lifecycle rules. Suspended and incomplete accounts do not
+receive reset email, and normal profile-completion middleware still applies on
+the next login.
+
+The current frontend authenticates API calls with Sanctum bearer tokens, not
+session cookies. A successful password reset deletes all personal access tokens
+and any database-session rows linked through `sessions.user_id`. The API
+middleware stack does not currently expose a supported cookie-authenticated API
+flow, so browser QA should verify bearer-token invalidation rather than claim a
+separate cookie-auth flow.
 
 ---
 

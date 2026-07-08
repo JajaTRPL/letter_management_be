@@ -4,7 +4,10 @@ namespace App\Providers;
 
 use App\Services\DocumentConverter;
 use App\Services\GotenbergDocumentConverter;
+use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -41,8 +44,36 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        \Illuminate\Support\Facades\RateLimiter::for('api', function (\Illuminate\Http\Request $request) {
-            return \Illuminate\Cache\RateLimiting\Limit::perMinute(100)->by($request->user()?->id ?: $request->ip());
+        RateLimiter::for('api', function (Request $request) {
+            return Limit::perMinute(100)->by($request->user()?->id ?: $request->ip());
         });
+
+        RateLimiter::for('password-rotation', function (Request $request) {
+            $identity = $request->user()?->getAuthIdentifier() ?: 'guest';
+
+            return Limit::perMinute(
+                max(1, (int) config('password_rotation.max_attempts_per_minute', 6))
+            )->by($identity.'|'.$request->ip());
+        });
+
+        RateLimiter::for('peminjaman-attachment', function (Request $request) {
+            $userId = $request->user()?->getAuthIdentifier();
+            $identity = $userId ? $userId.'|'.$request->ip() : $request->ip();
+
+            return Limit::perMinute(30)->by($identity);
+        });
+
+        // Room management (CP2): separate buckets per concern so photo
+        // browsing can never starve management mutations and vice versa.
+        $roomLimiterIdentity = function (Request $request): string {
+            $userId = $request->user()?->getAuthIdentifier();
+
+            return $userId ? $userId.'|'.$request->ip() : $request->ip();
+        };
+
+        RateLimiter::for('room-media-upload', fn (Request $request) => Limit::perMinute(20)->by($roomLimiterIdentity($request)));
+        RateLimiter::for('room-media-view', fn (Request $request) => Limit::perMinute(120)->by($roomLimiterIdentity($request)));
+        RateLimiter::for('room-template', fn (Request $request) => Limit::perMinute(30)->by($roomLimiterIdentity($request)));
+        RateLimiter::for('room-manage', fn (Request $request) => Limit::perMinute(30)->by($roomLimiterIdentity($request)));
     }
 }

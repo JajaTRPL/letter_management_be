@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
+use App\Enums\PasswordSetMethod;
 use App\Enums\UserStatus;
 
 class User extends Authenticatable
@@ -17,6 +18,10 @@ class User extends Authenticatable
         'email',
         'nip',
         'password',
+        'password_set_method',
+        'password_set_at',
+        'password_set_by_user_id',
+        'password_must_rotate',
         'google_id',
         'avatar_url',
         'role',
@@ -35,6 +40,10 @@ class User extends Authenticatable
 
     protected $hidden = [
         'password',
+        'password_set_method',
+        'password_set_at',
+        'password_set_by_user_id',
+        'password_must_rotate',
         'remember_token',
         'google_id',
         'last_login_at',
@@ -47,12 +56,20 @@ class User extends Authenticatable
         'email_verified_at' => 'datetime',
         'last_login_at' => 'datetime',
         'password' => 'hashed',
+        'password_set_method' => PasswordSetMethod::class,
+        'password_set_at' => 'datetime',
+        'password_must_rotate' => 'boolean',
         'status' => UserStatus::class,
     ];
 
     public function activityLogs(): \Illuminate\Database\Eloquent\Relations\HasMany
     {
         return $this->hasMany(ActivityLog::class);
+    }
+
+    public function passwordSetBy(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(self::class, 'password_set_by_user_id');
     }
 
     public function mahasiswaProfile()
@@ -73,6 +90,16 @@ class User extends Authenticatable
     public function laboratory()
     {
         return $this->belongsTo(Laboratory::class);
+    }
+
+    public function requestedRoomBookings()
+    {
+        return $this->hasMany(RoomBookingRequest::class, 'requester_id');
+    }
+
+    public function reviewedRoomBookings()
+    {
+        return $this->hasMany(RoomBookingRequest::class, 'reviewer_id');
     }
 
     /**

@@ -6,6 +6,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\SuperAdmin\UserController as SuperAdminUserController;
 use App\Http\Controllers\FacultyController;
 use App\Http\Controllers\DepartmentController;
+use App\Http\Controllers\PasswordRotationController;
 use App\Http\Controllers\StudyProgramController;
 
 use App\Http\Controllers\ProfileController;
@@ -25,7 +26,29 @@ Route::middleware('throttle:api')->group(function () {
     // Public proxy for Google Docs to allow PDF.js to fetch without headers
     Route::get('/templates/proxy-google-doc/{id}', [\App\Http\Controllers\SuperAdmin\TemplateController::class, 'proxyGoogleDoc']);
 
-    Route::middleware(['auth:sanctum', 'check_status', 'profile_complete'])->group(function () {
+    Route::middleware(['auth:sanctum', 'check_status'])->group(function () {
+        Route::post('/logout', [AuthController::class, 'logout']);
+
+        Route::get(
+            '/auth/profile-completion',
+            [\App\Http\Controllers\GoogleAuthController::class, 'profileCompletionStatus']
+        )->middleware('password_rotation_satisfied');
+
+        Route::middleware('password_rotation_token')
+            ->prefix('auth/password-rotation')
+            ->group(function () {
+                Route::get('/', [PasswordRotationController::class, 'status']);
+                Route::post('/', [PasswordRotationController::class, 'update'])
+                    ->middleware('throttle:password-rotation');
+            });
+    });
+
+    Route::middleware([
+        'auth:sanctum',
+        'check_status',
+        'password_rotation_satisfied',
+        'profile_complete',
+    ])->group(function () {
 
         Route::get('/storage/{folder}/{filename}', function ($folder, $filename) {
             $user = auth()->user();
@@ -98,7 +121,6 @@ Route::middleware('throttle:api')->group(function () {
             );
         })->where('filename', '.*');
 
-        Route::post('/logout', [AuthController::class, 'logout']);
         Route::post('/auth/complete-profile', [\App\Http\Controllers\GoogleAuthController::class, 'completeProfile']);
 
         // Surat Analytics (accessible by all authenticated users)
@@ -121,6 +143,10 @@ Route::middleware('throttle:api')->group(function () {
         Route::get('/faculties', [FacultyController::class, 'index']);
         Route::get('/departments', [DepartmentController::class, 'index']);
         Route::get('/study-programs-grouped', [StudyProgramController::class, 'grouped']);
+        Route::get(
+            '/laboratories',
+            [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'laboratories']
+        )->middleware('role:super_admin');
 
         // Beasiswa supporting-document preview bytes (role-scoped inside controller).
         // Separate from /api/storage, which is intentionally closed to supporting
@@ -144,6 +170,60 @@ Route::middleware('throttle:api')->group(function () {
             '/surat-tugas/{application}/supporting-documents/{field}/preview',
             [\App\Http\Controllers\SuratTugasSupportingDocumentController::class, 'preview']
         );
+
+        Route::middleware('throttle:peminjaman-attachment')
+            ->prefix('peminjaman-ruangan/{booking}/attachment/surat-peminjaman')
+            ->group(function () {
+                Route::get('/preview', [\App\Http\Controllers\RoomBookingAttachmentController::class, 'preview']);
+                Route::get('/download', [\App\Http\Controllers\RoomBookingAttachmentController::class, 'download']);
+            });
+
+        // Authenticated room photo delivery (catalog content): id+variant
+        // addressing only — storage paths never appear in URLs.
+        Route::get('/rooms/{room}/photos/{photo}/{variant}', [\App\Http\Controllers\RoomMediaController::class, 'show'])
+            ->middleware('throttle:room-media-view')
+            ->whereIn('variant', ['thumb', 'display', 'full']);
+
+        /*
+        |----------------------------------------------------------------------
+        | Room Management (Super Admin + Tendik; fine-grained scope decided
+        | by RoomPermissionResolver: sarpras=classroom, kalab=own lab,
+        | laboran=all labs, super_admin=all).
+        |----------------------------------------------------------------------
+        */
+        Route::middleware('role:super_admin,tendik')->prefix('room-management')->group(function () {
+            Route::middleware('throttle:room-manage')->group(function () {
+                Route::get('/rooms', [\App\Http\Controllers\RoomManagement\RoomController::class, 'index']);
+                Route::post('/rooms', [\App\Http\Controllers\RoomManagement\RoomController::class, 'store']);
+                Route::get('/rooms/{room}', [\App\Http\Controllers\RoomManagement\RoomController::class, 'show']);
+                Route::patch('/rooms/{room}', [\App\Http\Controllers\RoomManagement\RoomController::class, 'update']);
+                Route::post('/rooms/{room}/activate', [\App\Http\Controllers\RoomManagement\RoomController::class, 'activate']);
+                Route::post('/rooms/{room}/deactivate', [\App\Http\Controllers\RoomManagement\RoomController::class, 'deactivate']);
+
+                Route::get('/facility-types', [\App\Http\Controllers\RoomManagement\RoomFacilityController::class, 'facilityTypes']);
+                Route::post('/facility-types', [\App\Http\Controllers\RoomManagement\RoomFacilityController::class, 'storeFacilityType']);
+                Route::get('/rooms/{room}/facilities', [\App\Http\Controllers\RoomManagement\RoomFacilityController::class, 'index']);
+                Route::put('/rooms/{room}/facilities', [\App\Http\Controllers\RoomManagement\RoomFacilityController::class, 'sync']);
+
+                Route::get('/rooms/{room}/photos', [\App\Http\Controllers\RoomManagement\RoomPhotoController::class, 'index']);
+                Route::delete('/rooms/{room}/photos/{photo}', [\App\Http\Controllers\RoomManagement\RoomPhotoController::class, 'destroy']);
+                Route::post('/rooms/{room}/photos/{photo}/cover', [\App\Http\Controllers\RoomManagement\RoomPhotoController::class, 'setCover']);
+                Route::patch('/rooms/{room}/photos/reorder', [\App\Http\Controllers\RoomManagement\RoomPhotoController::class, 'reorder']);
+
+                Route::get('/rooms/{room}/templates', [\App\Http\Controllers\RoomManagement\RoomTemplateController::class, 'index']);
+                Route::post('/rooms/{room}/templates/{template}/activate', [\App\Http\Controllers\RoomManagement\RoomTemplateController::class, 'activate']);
+                Route::post('/rooms/{room}/templates/{template}/deactivate', [\App\Http\Controllers\RoomManagement\RoomTemplateController::class, 'deactivate']);
+
+                Route::get('/rooms/{room}/audit-logs', [\App\Http\Controllers\RoomManagement\RoomAuditController::class, 'index']);
+            });
+
+            Route::post('/rooms/{room}/photos', [\App\Http\Controllers\RoomManagement\RoomPhotoController::class, 'store'])
+                ->middleware('throttle:room-media-upload');
+            Route::post('/rooms/{room}/templates', [\App\Http\Controllers\RoomManagement\RoomTemplateController::class, 'store'])
+                ->middleware('throttle:room-template');
+            Route::get('/rooms/{room}/templates/{template}/download', [\App\Http\Controllers\RoomManagement\RoomTemplateController::class, 'download'])
+                ->middleware('throttle:room-template');
+        });
 
 
         /*
@@ -181,12 +261,20 @@ Route::middleware('throttle:api')->group(function () {
             Route::post('/templates/{key}/refresh', [\App\Http\Controllers\SuperAdmin\TemplateManagementController::class, 'refresh'])
                 ->where('key', '[a-z0-9\-]+');
 
-            // Bulk Operations & Export (Place above /{user} wildcard)
-            Route::post('/users/validate-import', [\App\Http\Controllers\SuperAdmin\UserController::class, 'validateImport']);
-            Route::post('/users/bulk-import', [\App\Http\Controllers\SuperAdmin\UserController::class, 'bulkImport']);
-            Route::post('/users/import-errors', [\App\Http\Controllers\SuperAdmin\UserController::class, 'importErrors']);
-            Route::get('/users/import-template', [\App\Http\Controllers\SuperAdmin\UserController::class, 'importTemplate']);
-            Route::get('/users/export', [\App\Http\Controllers\SuperAdmin\UserController::class, 'export']);
+            // Bulk Operations & Export (Place above /{user} wildcard).
+            // Rate-limited: uploads/exports 10/min, template & history 30/min.
+            Route::post('/users/validate-import', [\App\Http\Controllers\SuperAdmin\UserController::class, 'validateImport'])
+                ->middleware('throttle:10,1,import-upload');
+            Route::post('/users/bulk-import', [\App\Http\Controllers\SuperAdmin\UserController::class, 'bulkImport'])
+                ->middleware('throttle:10,1,import-upload');
+            Route::get('/users/import-template', [\App\Http\Controllers\SuperAdmin\UserController::class, 'importTemplate'])
+                ->middleware('throttle:30,1,import-template');
+            Route::get('/users/import-batches', [\App\Http\Controllers\SuperAdmin\UserController::class, 'importBatches'])
+                ->middleware('throttle:30,1,import-history');
+            Route::get('/users/import-batches/{importBatch}/errors', [\App\Http\Controllers\SuperAdmin\UserController::class, 'importBatchErrors'])
+                ->middleware('throttle:10,1,import-errors');
+            Route::get('/users/export', [\App\Http\Controllers\SuperAdmin\UserController::class, 'export'])
+                ->middleware('throttle:10,1,users-export');
 
             Route::get('/departments', [DepartmentController::class, 'basicList']);
 
@@ -205,6 +293,17 @@ Route::middleware('throttle:api')->group(function () {
             Route::put('/academic-periods/{academicPeriod}', [\App\Http\Controllers\SuperAdmin\AcademicPeriodController::class, 'update']);
             Route::delete('/academic-periods/{academicPeriod}', [\App\Http\Controllers\SuperAdmin\AcademicPeriodController::class, 'destroy']);
             Route::patch('/academic-periods/{academicPeriod}/toggle-active', [\App\Http\Controllers\SuperAdmin\AcademicPeriodController::class, 'toggleActive']);
+
+            Route::prefix('peminjaman-ruangan')->group(function () {
+                Route::get('/rooms', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'rooms']);
+                Route::post('/rooms', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'storeRoom']);
+                Route::get('/rooms/{room}', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'showRoom']);
+                Route::put('/rooms/{room}', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'updateRoom']);
+                Route::patch('/rooms/{room}/activate', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'activateRoom']);
+                Route::patch('/rooms/{room}/deactivate', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'deactivateRoom']);
+                Route::get('/requests', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'requests']);
+                Route::get('/requests/{booking}', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'showRequest']);
+            });
         });
 
 
@@ -216,6 +315,14 @@ Route::middleware('throttle:api')->group(function () {
         Route::middleware('role:tendik')->prefix('tendik')->group(function () {
             Route::get('/dashboard/tasks', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'getDashboardData']);
             Route::get('/riwayat', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'getRiwayatData']);
+
+            Route::prefix('peminjaman-ruangan/requests')->group(function () {
+                Route::get('/', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'index']);
+                Route::get('/{booking}', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'show']);
+                Route::patch('/{booking}/approve', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'approve']);
+                Route::patch('/{booking}/revise', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'revise']);
+                Route::patch('/{booking}/reject', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'reject']);
+            });
             
             // Scholarship Review Actions
             foreach (['scholarship', 'surat-permohonan-beasiswa'] as $scholarshipRoutePrefix) {
@@ -341,6 +448,27 @@ Route::middleware('throttle:api')->group(function () {
         Route::middleware('role:mahasiswa')->prefix('mahasiswa')->group(function () {
             Route::get('/dashboard', function () {
                 return response()->json(['message' => 'Halaman Dasbord Mahasiswa']);
+            });
+
+            Route::prefix('peminjaman-ruangan')->group(function () {
+                Route::get('/rooms', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'rooms']);
+                Route::get('/rooms/{room}', [\App\Http\Controllers\Mahasiswa\RoomCatalogController::class, 'show']);
+                Route::get('/rooms/{room}/template', [\App\Http\Controllers\Mahasiswa\RoomCatalogController::class, 'template'])
+                    ->middleware('throttle:room-template');
+                Route::get('/availability', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'availability']);
+                Route::prefix('requests')->group(function () {
+                    Route::get('/', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'index']);
+                    Route::post('/', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'store'])
+                        ->middleware('throttle:peminjaman-attachment');
+                    Route::get('/{booking}', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'show']);
+                    Route::put('/{booking}', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'update']);
+                    Route::patch('/{booking}/submit', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'submit']);
+                    Route::patch('/{booking}/cancel', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'cancel']);
+                });
+                Route::post(
+                    '/{booking}/attachment/surat-peminjaman',
+                    [\App\Http\Controllers\RoomBookingAttachmentController::class, 'replace']
+                )->middleware('throttle:peminjaman-attachment');
             });
 
             // Scholarship Application Routes
