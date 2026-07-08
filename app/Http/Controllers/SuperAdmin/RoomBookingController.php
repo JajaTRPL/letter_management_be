@@ -6,6 +6,7 @@ use App\Enums\RoomBookingStatus;
 use App\Http\Controllers\Concerns\HandlesRoomBookingApi;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Peminjaman\BookingListRequest;
+use App\Http\Requests\Peminjaman\RoomBookingCalendarRequest;
 use App\Http\Requests\Peminjaman\RoomListRequest;
 use App\Http\Requests\Peminjaman\StoreRoomRequest;
 use App\Http\Requests\Peminjaman\UpdateRoomRequest;
@@ -169,6 +170,44 @@ class RoomBookingController extends Controller
         ]);
     }
 
+    public function calendar(RoomBookingCalendarRequest $request): JsonResponse
+    {
+        $filters = $request->validated();
+        [$rangeStart, $rangeEndExclusive, $month] = $this->calendarRange($filters);
+
+        $query = RoomBookingRequest::query()
+            ->with([
+                'room.owningLaboratory:id,code,name',
+                'requester:id,name,email',
+            ])
+            ->where('start_at', '<', $rangeEndExclusive)
+            ->where('end_at', '>', $rangeStart)
+            ->orderBy('start_at');
+
+        $this->applyBookingFilters($query, $filters);
+
+        $items = $query
+            ->get()
+            ->map(fn (RoomBookingRequest $booking) => $this->calendarItemPayload($booking))
+            ->values();
+
+        return response()->json([
+            'message' => 'Kalender peminjaman ruangan berhasil diambil',
+            'month' => $month,
+            'range' => [
+                'start' => $rangeStart->toDateString(),
+                'end' => $rangeEndExclusive->copy()->subDay()->toDateString(),
+            ],
+            'items' => $items->all(),
+            'summary' => [
+                'total' => $items->count(),
+                'counts_by_status' => $items
+                    ->countBy('status')
+                    ->all(),
+            ],
+        ]);
+    }
+
     /**
      * @param  array<string, mixed>  $filters
      */
@@ -214,6 +253,13 @@ class RoomBookingController extends Controller
             );
         }
 
+        if (isset($filters['laboratory_id'])) {
+            $query->whereHas(
+                'room',
+                fn (Builder $roomQuery) => $roomQuery->where('owning_laboratory_id', $filters['laboratory_id']),
+            );
+        }
+
         if (isset($filters['date_from'])) {
             $query->where(
                 'start_at',
@@ -237,5 +283,63 @@ class RoomBookingController extends Controller
                 )->addDay()->startOfDay(),
             );
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
+     * @return array{0: Carbon, 1: Carbon, 2: string}
+     */
+    private function calendarRange(array $filters): array
+    {
+        $timezone = config('app.timezone');
+
+        if (isset($filters['month'])) {
+            $start = Carbon::createFromFormat('Y-m', $filters['month'], $timezone)->startOfMonth();
+
+            return [
+                $start,
+                $start->copy()->addMonthNoOverflow()->startOfMonth(),
+                $start->format('Y-m'),
+            ];
+        }
+
+        $start = Carbon::createFromFormat('Y-m-d', $filters['from'], $timezone)->startOfDay();
+        $endExclusive = Carbon::createFromFormat('Y-m-d', $filters['to'], $timezone)
+            ->addDay()
+            ->startOfDay();
+
+        return [$start, $endExclusive, $start->format('Y-m')];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function calendarItemPayload(RoomBookingRequest $booking): array
+    {
+        $room = $booking->room;
+
+        return [
+            'id' => (int) $booking->id,
+            'room_id' => (int) $room->id,
+            'room_code' => $room->code,
+            'room_name' => $room->name,
+            'room_type' => $room->type->value,
+            'laboratory_id' => $room->owningLaboratory ? (int) $room->owningLaboratory->id : null,
+            'laboratory_name' => $room->owningLaboratory?->name,
+            'requester_name' => $booking->requester?->name,
+            'requester_identifier' => $booking->requester?->email,
+            'activity_name' => $booking->activity_name,
+            'purpose' => $booking->purpose,
+            'status' => $booking->status->value,
+            'start_at' => $booking->start_at->toIso8601String(),
+            'end_at' => $booking->end_at->toIso8601String(),
+            'can_view' => true,
+            'can_review' => false,
+            'can_approve' => false,
+            'can_reject' => false,
+            'can_request_revision' => false,
+            'can_cancel' => false,
+            'can_manage_room' => true,
+        ];
     }
 }

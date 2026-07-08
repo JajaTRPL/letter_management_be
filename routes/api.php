@@ -307,6 +307,7 @@ Route::middleware('throttle:api')->group(function () {
                 Route::put('/rooms/{room}', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'updateRoom']);
                 Route::patch('/rooms/{room}/activate', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'activateRoom']);
                 Route::patch('/rooms/{room}/deactivate', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'deactivateRoom']);
+                Route::get('/calendar', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'calendar']);
                 Route::get('/requests', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'requests']);
                 Route::get('/requests/{booking}', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'showRequest']);
             });
@@ -329,7 +330,7 @@ Route::middleware('throttle:api')->group(function () {
                 Route::patch('/{booking}/revise', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'revise']);
                 Route::patch('/{booking}/reject', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'reject']);
             });
-            
+
             // Scholarship Review Actions
             foreach (['scholarship', 'surat-permohonan-beasiswa'] as $scholarshipRoutePrefix) {
                 Route::prefix($scholarshipRoutePrefix)->group(function () {
