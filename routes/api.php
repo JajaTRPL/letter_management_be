@@ -250,6 +250,8 @@ Route::middleware('throttle:api')->group(function () {
                 Route::get('/overview', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'overview']);
                 Route::get('/policy', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'policy']);
                 Route::put('/policy', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'updatePolicy']);
+                Route::get('/automation', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'automation']);
+                Route::patch('/automation', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'updateAutomation']);
                 Route::get('/candidates', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'candidates']);
                 Route::get('/archives', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'archives']);
                 Route::get('/actions', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'actions']);

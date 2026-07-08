@@ -16,12 +16,14 @@ if (config('import_batches.purge.enabled')) {
         ->withoutOverlapping();
 }
 
-if (config('letter_retention.enabled')) {
-    $event = Schedule::command('letters:retention --execute --manifest')
-        ->dailyAt((string) config('letter_retention.scheduler.time', '02:30'))
-        ->withoutOverlapping();
+// Registered unconditionally so the SuperAdmin UI switch (DB automation flag)
+// is the real ON/OFF control, not LETTER_RETENTION_ENABLED. The command checks
+// the database automation state at runtime and exits safely without mutating
+// anything when the switch is OFF.
+$event = Schedule::command('letters:retention --execute --manifest')
+    ->dailyAt((string) config('letter_retention.scheduler.time', '02:30'))
+    ->withoutOverlapping();
 
-    if (config('letter_retention.scheduler.on_one_server') && config('cache.default') !== 'array') {
-        $event->onOneServer();
-    }
+if (config('letter_retention.scheduler.on_one_server') && config('cache.default') !== 'array') {
+    $event->onOneServer();
 }
