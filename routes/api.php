@@ -267,6 +267,12 @@ Route::middleware('throttle:api')->group(function () {
             Route::post('/templates/{key}/refresh', [\App\Http\Controllers\SuperAdmin\TemplateManagementController::class, 'refresh'])
                 ->where('key', '[a-z0-9\-]+');
 
+            Route::prefix('delegated-activity-acknowledgements')->group(function () {
+                Route::get('/', [\App\Http\Controllers\SuperAdmin\DelegatedActivityAcknowledgementController::class, 'index']);
+                Route::get('/{acknowledgement}', [\App\Http\Controllers\SuperAdmin\DelegatedActivityAcknowledgementController::class, 'show']);
+                Route::post('/{acknowledgement}/mark-escalation-seen', [\App\Http\Controllers\SuperAdmin\DelegatedActivityAcknowledgementController::class, 'markEscalationSeen']);
+            });
+
             // Bulk Operations & Export (Place above /{user} wildcard).
             // Rate-limited: uploads/exports 10/min, template & history 30/min.
             Route::post('/users/validate-import', [\App\Http\Controllers\SuperAdmin\UserController::class, 'validateImport'])
@@ -322,6 +328,12 @@ Route::middleware('throttle:api')->group(function () {
         Route::middleware('role:tendik')->prefix('tendik')->group(function () {
             Route::get('/dashboard/tasks', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'getDashboardData']);
             Route::get('/riwayat', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'getRiwayatData']);
+
+            Route::prefix('delegated-activity-acknowledgements')->group(function () {
+                Route::get('/', [\App\Http\Controllers\Tendik\DelegatedActivityAcknowledgementController::class, 'index']);
+                Route::get('/{acknowledgement}', [\App\Http\Controllers\Tendik\DelegatedActivityAcknowledgementController::class, 'show']);
+                Route::post('/{acknowledgement}/acknowledge', [\App\Http\Controllers\Tendik\DelegatedActivityAcknowledgementController::class, 'acknowledge']);
+            });
 
             Route::get('/peminjaman-ruangan/calendar', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'calendar']);
 
