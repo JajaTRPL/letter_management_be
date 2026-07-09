@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Concerns;
 use App\Models\Room;
 use App\Models\RoomBookingRequest;
 use App\Services\RoomBookingAttachmentService;
+use App\Services\RoomBookingConflictService;
 use App\Services\RoomBookingDomainException;
 use Illuminate\Http\JsonResponse;
 
@@ -64,6 +65,7 @@ trait HandlesRoomBookingApi
         RoomBookingRequest $booking,
         bool $includeRequester = false,
         bool $includeHistory = false,
+        bool $includeConflicts = false,
     ): array {
         $booking->loadMissing([
             'room.owningLaboratory:id,code,name',
@@ -128,6 +130,18 @@ trait HandlesRoomBookingApi
                     'created_at' => $history->created_at?->toIso8601String(),
                 ])
                 ->all();
+        }
+
+        if ($includeConflicts) {
+            $payload = array_merge(
+                $payload,
+                app(RoomBookingConflictService::class)->conflictMetadata(
+                    $booking,
+                    includeRequester: $includeRequester,
+                    includeActivity: true,
+                    includePurpose: true,
+                ),
+            );
         }
 
         return $payload;

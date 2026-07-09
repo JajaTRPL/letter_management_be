@@ -191,6 +191,45 @@ class RoomBookingSuperAdminApiTest extends RoomBookingApiTestCase
             ->assertJsonMissingPath('summary.counts_by_status.diproses');
     }
 
+    public function test_super_admin_calendar_includes_read_only_conflict_metadata(): void
+    {
+        $room = $this->classroom(['code' => 'CAL-CONFLICT', 'name' => 'Monitoring Conflict Room']);
+        $approved = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-06-20 09:00:00',
+            endAt: '2026-06-20 11:00:00',
+            attributes: ['activity_name' => 'Agenda Disetujui Admin'],
+        );
+        $candidate = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-20 10:00:00',
+            endAt: '2026-06-20 12:00:00',
+        );
+
+        $this->actingAsUser($this->superAdmin());
+        $response = $this->getJson($this->adminUrl('/calendar?month=2026-06&status=submitted'));
+
+        $response
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $candidate->id)
+            ->assertJsonPath('items.0.can_approve', false)
+            ->assertJsonPath('items.0.can_reject', false)
+            ->assertJsonPath('items.0.can_request_revision', false)
+            ->assertJsonPath('items.0.conflict_status', 'approved_overlap')
+            ->assertJsonPath('items.0.has_conflict', true)
+            ->assertJsonPath('items.0.conflict_level', 'blocking')
+            ->assertJsonPath('items.0.conflicts.0.booking_id', $approved->id)
+            ->assertJsonPath('items.0.conflicts.0.activity_name', 'Agenda Disetujui Admin');
+
+        $this->getJson($this->adminUrl("/requests/{$candidate->id}"))
+            ->assertOk()
+            ->assertJsonPath('data.conflict_status', 'approved_overlap')
+            ->assertJsonPath('data.conflicts.0.booking_id', $approved->id);
+    }
+
     public function test_super_admin_calendar_filters_by_room_type_room_and_laboratory(): void
     {
         $targetLaboratory = $this->bookingLaboratory('CAL-A');

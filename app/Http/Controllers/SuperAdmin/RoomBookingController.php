@@ -13,6 +13,7 @@ use App\Http\Requests\Peminjaman\UpdateRoomRequest;
 use App\Models\Laboratory;
 use App\Models\Room;
 use App\Models\RoomBookingRequest;
+use App\Services\RoomBookingConflictService;
 use App\Services\RoomBookingDomainException;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -23,6 +24,10 @@ use InvalidArgumentException;
 class RoomBookingController extends Controller
 {
     use HandlesRoomBookingApi;
+
+    public function __construct(
+        private RoomBookingConflictService $conflictService,
+    ) {}
 
     public function laboratories(): JsonResponse
     {
@@ -152,6 +157,7 @@ class RoomBookingController extends Controller
                 ->map(fn (RoomBookingRequest $booking) => $this->bookingPayload(
                     $booking,
                     includeRequester: true,
+                    includeConflicts: true,
                 ))
                 ->all(),
             'meta' => $this->paginationMeta($paginator),
@@ -166,6 +172,7 @@ class RoomBookingController extends Controller
                 $booking,
                 includeRequester: true,
                 includeHistory: true,
+                includeConflicts: true,
             ),
         ]);
     }
@@ -327,7 +334,7 @@ class RoomBookingController extends Controller
     {
         $room = $booking->room;
 
-        return [
+        return array_merge([
             'id' => (int) $booking->id,
             'room_id' => (int) $room->id,
             'room_code' => $room->code,
@@ -349,6 +356,11 @@ class RoomBookingController extends Controller
             'can_request_revision' => false,
             'can_cancel' => false,
             'can_manage_room' => true,
-        ];
+        ], $this->conflictService->conflictMetadata(
+            $booking,
+            includeRequester: true,
+            includeActivity: true,
+            includePurpose: true,
+        ));
     }
 }

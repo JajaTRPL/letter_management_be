@@ -11,6 +11,7 @@ use App\Http\Requests\Peminjaman\RejectRoomBookingRequest;
 use App\Http\Requests\Peminjaman\RoomBookingCalendarRequest;
 use App\Http\Requests\Peminjaman\ReviseRoomBookingRequest;
 use App\Models\RoomBookingRequest;
+use App\Services\RoomBookingConflictService;
 use App\Services\RoomBookingDomainException;
 use App\Services\RoomBookingReviewerResolver;
 use App\Services\RoomBookingTransitionService;
@@ -29,6 +30,7 @@ class RoomBookingController extends Controller
         private RoomBookingReviewerResolver $reviewerResolver,
         private RoomBookingTransitionService $transitionService,
         private RoomPermissionResolver $roomPermissionResolver,
+        private RoomBookingConflictService $conflictService,
     ) {}
 
     public function index(BookingListRequest $request): JsonResponse
@@ -53,6 +55,7 @@ class RoomBookingController extends Controller
                 ->map(fn (RoomBookingRequest $booking) => $this->bookingPayload(
                     $booking,
                     includeRequester: true,
+                    includeConflicts: true,
                 ))
                 ->all(),
             'meta' => $this->paginationMeta($paginator),
@@ -69,6 +72,7 @@ class RoomBookingController extends Controller
                 $booking,
                 includeRequester: true,
                 includeHistory: true,
+                includeConflicts: true,
             ),
         ]);
     }
@@ -171,11 +175,12 @@ class RoomBookingController extends Controller
             return response()->json([
                 'message' => $message,
                 'data' => $this->bookingPayload(
-                    $booking,
-                    includeRequester: true,
-                    includeHistory: true,
-                ),
-            ]);
+                $booking,
+                includeRequester: true,
+                includeHistory: true,
+                includeConflicts: true,
+            ),
+        ]);
         } catch (RoomBookingDomainException $exception) {
             return $this->roomBookingDomainResponse($exception);
         }
@@ -305,7 +310,7 @@ class RoomBookingController extends Controller
         $canTakeReviewerAction = $booking->status === RoomBookingStatus::Submitted
             && $this->reviewerResolver->canActAsApprover($request->user(), $booking);
 
-        return [
+        return array_merge([
             'id' => (int) $booking->id,
             'room_id' => (int) $room->id,
             'room_code' => $room->code,
@@ -333,7 +338,12 @@ class RoomBookingController extends Controller
             'can_update_readiness' => false,
             'can_resolve_conflict' => false,
             'can_relocate_booking' => false,
-        ];
+        ], $this->conflictService->conflictMetadata(
+            $booking,
+            includeRequester: true,
+            includeActivity: true,
+            includePurpose: true,
+        ));
     }
 
     private function canViewCalendarBooking(RoomBookingRequest $booking, Request $request): bool
