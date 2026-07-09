@@ -135,6 +135,11 @@ abstract class RoomBookingApiTestCase extends TestCase
         return '/api/tendik/peminjaman-ruangan/requests'.$suffix;
     }
 
+    protected function reviewerCalendarUrl(string $suffix = ''): string
+    {
+        return '/api/tendik/peminjaman-ruangan/calendar'.$suffix;
+    }
+
     protected function adminUrl(string $suffix = ''): string
     {
         return '/api/super-admin/peminjaman-ruangan'.$suffix;

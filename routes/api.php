@@ -323,6 +323,8 @@ Route::middleware('throttle:api')->group(function () {
             Route::get('/dashboard/tasks', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'getDashboardData']);
             Route::get('/riwayat', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'getRiwayatData']);
 
+            Route::get('/peminjaman-ruangan/calendar', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'calendar']);
+
             Route::prefix('peminjaman-ruangan/requests')->group(function () {
                 Route::get('/', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'index']);
                 Route::get('/{booking}', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'show']);
