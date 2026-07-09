@@ -42,8 +42,8 @@ class RoomBookingCalendarRequest extends FormRequest
             $from = Carbon::createFromFormat('Y-m-d', $this->string('from'));
             $to = Carbon::createFromFormat('Y-m-d', $this->string('to'));
 
-            if ($from->diffInDays($to) + 1 > 62) {
-                $validator->errors()->add('to', 'Rentang kalender maksimal 62 hari.');
+            if ($from->diffInDays($to) + 1 > 90) {
+                $validator->errors()->add('to', 'Rentang kalender maksimal 90 hari.');
             }
         });
     }

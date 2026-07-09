@@ -159,6 +159,12 @@ class RoomBookingSuperAdminApiTest extends RoomBookingApiTestCase
         $this->roomBooking(
             $room,
             status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-23 09:00:00',
+            endAt: '2026-06-23 11:00:00',
+        );
+        $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Submitted,
             startAt: '2026-07-01 09:00:00',
             endAt: '2026-07-01 11:00:00',
         );
@@ -179,8 +185,10 @@ class RoomBookingSuperAdminApiTest extends RoomBookingApiTestCase
             ->assertJsonPath('items.0.can_view', true)
             ->assertJsonPath('items.0.can_review', false)
             ->assertJsonPath('items.0.can_approve', false)
-            ->assertJsonPath('summary.total', 1)
-            ->assertJsonPath('summary.counts_by_status.approved', 1);
+            ->assertJsonPath('summary.total', 2)
+            ->assertJsonPath('summary.counts_by_status.approved', 1)
+            ->assertJsonPath('summary.counts_by_status.submitted', 1)
+            ->assertJsonMissingPath('summary.counts_by_status.diproses');
     }
 
     public function test_super_admin_calendar_filters_by_room_type_room_and_laboratory(): void
@@ -212,7 +220,27 @@ class RoomBookingSuperAdminApiTest extends RoomBookingApiTestCase
             ->assertJsonPath('items.0.id', $targetBooking->id)
             ->assertJsonPath('items.0.room_id', $targetRoom->id)
             ->assertJsonPath('items.0.room_type', 'laboratory')
-            ->assertJsonPath('items.0.laboratory_id', $targetLaboratory->id);
+            ->assertJsonPath('items.0.laboratory_id', $targetLaboratory->id)
+            ->assertJsonPath('summary.total', 1)
+            ->assertJsonPath('summary.counts_by_status.submitted', 1);
+    }
+
+    public function test_super_admin_calendar_accepts_upcoming_ninety_day_range(): void
+    {
+        $booking = $this->roomBooking(
+            $this->classroom(['code' => 'CAL-90']),
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-09-15 09:00:00',
+            endAt: '2026-09-15 11:00:00',
+        );
+        $this->actingAsUser($this->superAdmin());
+
+        $this->getJson($this->adminUrl('/calendar?from=2026-06-18&to=2026-09-15'))
+            ->assertOk()
+            ->assertJsonPath('range.start', '2026-06-18')
+            ->assertJsonPath('range.end', '2026-09-15')
+            ->assertJsonPath('items.0.id', $booking->id)
+            ->assertJsonPath('summary.counts_by_status.approved', 1);
     }
 
     public function test_super_admin_calendar_is_read_only_role_scoped_and_hides_storage_details(): void

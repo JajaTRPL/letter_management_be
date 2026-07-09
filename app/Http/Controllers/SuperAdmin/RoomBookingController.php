@@ -175,13 +175,15 @@ class RoomBookingController extends Controller
         $filters = $request->validated();
         [$rangeStart, $rangeEndExclusive, $month] = $this->calendarRange($filters);
 
-        $query = RoomBookingRequest::query()
+        $baseQuery = RoomBookingRequest::query()
+            ->where('start_at', '<', $rangeEndExclusive)
+            ->where('end_at', '>', $rangeStart);
+
+        $query = (clone $baseQuery)
             ->with([
                 'room.owningLaboratory:id,code,name',
                 'requester:id,name,email',
             ])
-            ->where('start_at', '<', $rangeEndExclusive)
-            ->where('end_at', '>', $rangeStart)
             ->orderBy('start_at');
 
         $this->applyBookingFilters($query, $filters);
@@ -190,6 +192,15 @@ class RoomBookingController extends Controller
             ->get()
             ->map(fn (RoomBookingRequest $booking) => $this->calendarItemPayload($booking))
             ->values();
+
+        $summaryQuery = clone $baseQuery;
+        $this->applyBookingFilters($summaryQuery, $filters, includeStatus: false);
+        $countsByStatus = $summaryQuery
+            ->select('status', DB::raw('count(*) as aggregate'))
+            ->groupBy('status')
+            ->pluck('aggregate', 'status')
+            ->map(fn ($count) => (int) $count)
+            ->all();
 
         return response()->json([
             'message' => 'Kalender peminjaman ruangan berhasil diambil',
@@ -200,10 +211,8 @@ class RoomBookingController extends Controller
             ],
             'items' => $items->all(),
             'summary' => [
-                'total' => $items->count(),
-                'counts_by_status' => $items
-                    ->countBy('status')
-                    ->all(),
+                'total' => array_sum($countsByStatus),
+                'counts_by_status' => $countsByStatus,
             ],
         ]);
     }
@@ -236,9 +245,9 @@ class RoomBookingController extends Controller
     /**
      * @param  array<string, mixed>  $filters
      */
-    private function applyBookingFilters(Builder $query, array $filters): void
+    private function applyBookingFilters(Builder $query, array $filters, bool $includeStatus = true): void
     {
-        if (isset($filters['status'])) {
+        if ($includeStatus && isset($filters['status'])) {
             $query->where('status', $filters['status']);
         }
 
