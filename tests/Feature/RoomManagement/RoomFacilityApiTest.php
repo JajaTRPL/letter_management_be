@@ -272,11 +272,14 @@ class RoomFacilityApiTest extends TestCase
         $proyektor = FacilityType::where('slug', 'proyektor')->firstOrFail();
         $kursi = FacilityType::where('slug', 'kursi')->firstOrFail();
 
-        $this->putJson($url, ['facilities' => [
+        $initialResponse = $this->putJson($url, ['facilities' => [
             ['facility_type_id' => $proyektor->id, 'quantity' => 1, 'condition' => 'baik'],
             ['facility_type_id' => $kursi->id, 'quantity' => 40, 'condition' => 'perlu_perbaikan', 'notes' => 'Beberapa kursi goyang.'],
         ]])->assertOk()
             ->assertJsonCount(2, 'data');
+        $this->assertSame('not_applicable', $initialResponse->json('delegated_activity_acknowledgement.outcome'));
+        $this->assertSame('actor_not_laboran', $initialResponse->json('delegated_activity_acknowledgement.reason'));
+        $this->assertSame('Perubahan fasilitas tersimpan.', $initialResponse->json('delegated_activity_acknowledgement.message'));
 
         // Second sync: update quantity, drop kursi.
         $response = $this->putJson($url, ['facilities' => [
@@ -331,10 +334,27 @@ class RoomFacilityApiTest extends TestCase
             ->assertOk()
             ->assertJsonCount(2, 'data');
 
-        $this->assertArrayNotHasKey('delegated_activity_acknowledgement', $response->json());
         $this->assertSame(1, DelegatedActivityAcknowledgement::count());
 
         $task = DelegatedActivityAcknowledgement::firstOrFail();
+        $metadata = $response->json('delegated_activity_acknowledgement');
+        $this->assertSame('created', $metadata['outcome']);
+        $this->assertSame($task->id, $metadata['id']);
+        $this->assertSame(DelegatedActivityAcknowledgement::STATUS_PENDING_REVIEW, $metadata['status']);
+        $this->assertSame(DelegatedActivityAcknowledgement::STATUS_PENDING_REVIEW, $metadata['effective_status']);
+        $this->assertSame($task->acknowledgement_due_at?->toIso8601String(), $metadata['acknowledgement_due_at']);
+        $this->assertSame('kepala_lab', $metadata['accountable_role']);
+        $this->assertSame(['id' => $kepalaLab->id, 'name' => $kepalaLab->name], $metadata['accountable_user']);
+        $this->assertSame('Perubahan fasilitas tersimpan dan menunggu peninjauan Kepala Lab.', $metadata['message']);
+        $this->assertNull($metadata['reason']);
+        $this->assertArrayNotHasKey('before_state', $metadata);
+        $this->assertArrayNotHasKey('after_state', $metadata);
+        $this->assertArrayNotHasKey('internal_note', $metadata);
+        $this->assertArrayNotHasKey('attachments', $metadata);
+        $encodedMetadata = json_encode($metadata);
+        $this->assertStringNotContainsString('/storage/', $encodedMetadata);
+        $this->assertStringNotContainsString('room-booking-attachments', $encodedMetadata);
+
         $this->assertSame('room_management', $task->domain_type);
         $this->assertSame('room', $task->subject_type);
         $this->assertSame($this->labBRoom->id, $task->subject_id);
@@ -401,7 +421,19 @@ class RoomFacilityApiTest extends TestCase
             'action' => 'Delegated activity recorded',
         ]);
 
-        $this->putJson($url, $payload)->assertOk();
+        RoomFacility::where('room_id', $this->labBRoom->id)->delete();
+        RoomFacility::create([
+            'room_id' => $this->labBRoom->id,
+            'facility_type_id' => $proyektor->id,
+            'quantity' => 1,
+            'condition' => 'baik',
+            'notes' => 'Siap digunakan.',
+        ]);
+
+        $retryResponse = $this->putJson($url, $payload)->assertOk();
+        $this->assertSame('existing', $retryResponse->json('delegated_activity_acknowledgement.outcome'));
+        $this->assertSame($task->id, $retryResponse->json('delegated_activity_acknowledgement.id'));
+        $this->assertSame('Perubahan fasilitas tersimpan. Aktivitas peninjauan sudah tercatat sebelumnya.', $retryResponse->json('delegated_activity_acknowledgement.message'));
         $this->assertSame(1, DelegatedActivityAcknowledgement::count());
     }
 
@@ -425,9 +457,13 @@ class RoomFacilityApiTest extends TestCase
             'notes' => 'Siap digunakan.',
         ]);
 
-        $this->putJson("/api/room-management/rooms/{$this->labBRoom->id}/facilities", $payload)
+        $response = $this->putJson("/api/room-management/rooms/{$this->labBRoom->id}/facilities", $payload)
             ->assertOk()
             ->assertJsonCount(1, 'data');
+        $this->assertSame('skipped', $response->json('delegated_activity_acknowledgement.outcome'));
+        $this->assertSame('no_effective_change', $response->json('delegated_activity_acknowledgement.reason'));
+        $this->assertSame('Tidak ada perubahan fasilitas yang perlu ditinjau.', $response->json('delegated_activity_acknowledgement.message'));
+        $this->assertNull($response->json('delegated_activity_acknowledgement.id'));
 
         $this->assertSame(0, DelegatedActivityAcknowledgement::count());
         $this->assertDatabaseHas('room_audit_logs', [
@@ -443,19 +479,26 @@ class RoomFacilityApiTest extends TestCase
         $kursi = FacilityType::where('slug', 'kursi')->firstOrFail();
 
         $this->actingAsKalab($this->labA->id);
-        $this->putJson("/api/room-management/rooms/{$this->labARoom->id}/facilities", [
+        $kalabResponse = $this->putJson("/api/room-management/rooms/{$this->labARoom->id}/facilities", [
             'facilities' => [['facility_type_id' => $proyektor->id, 'quantity' => 1]],
         ])->assertOk();
+        $this->assertSame('not_applicable', $kalabResponse->json('delegated_activity_acknowledgement.outcome'));
+        $this->assertSame('actor_not_laboran', $kalabResponse->json('delegated_activity_acknowledgement.reason'));
+        $this->assertSame('Perubahan fasilitas tersimpan.', $kalabResponse->json('delegated_activity_acknowledgement.message'));
 
         $this->actingAsSarpras();
-        $this->putJson("/api/room-management/rooms/{$this->classroom->id}/facilities", [
+        $sarprasResponse = $this->putJson("/api/room-management/rooms/{$this->classroom->id}/facilities", [
             'facilities' => [['facility_type_id' => $kursi->id, 'quantity' => 20]],
         ])->assertOk();
+        $this->assertSame('not_applicable', $sarprasResponse->json('delegated_activity_acknowledgement.outcome'));
+        $this->assertSame('actor_not_laboran', $sarprasResponse->json('delegated_activity_acknowledgement.reason'));
 
         $this->actingAsSuperAdmin();
-        $this->putJson("/api/room-management/rooms/{$this->labBRoom->id}/facilities", [
+        $superAdminResponse = $this->putJson("/api/room-management/rooms/{$this->labBRoom->id}/facilities", [
             'facilities' => [['facility_type_id' => $proyektor->id, 'quantity' => 3]],
         ])->assertOk();
+        $this->assertSame('not_applicable', $superAdminResponse->json('delegated_activity_acknowledgement.outcome'));
+        $this->assertSame('actor_not_laboran', $superAdminResponse->json('delegated_activity_acknowledgement.reason'));
 
         $this->assertSame(0, DelegatedActivityAcknowledgement::count());
     }
@@ -465,7 +508,7 @@ class RoomFacilityApiTest extends TestCase
         $laboran = $this->actingAsLaboran();
         $proyektor = FacilityType::where('slug', 'proyektor')->firstOrFail();
 
-        $this->putJson("/api/room-management/rooms/{$this->labBRoom->id}/facilities", [
+        $response = $this->putJson("/api/room-management/rooms/{$this->labBRoom->id}/facilities", [
             'facilities' => [[
                 'facility_type_id' => $proyektor->id,
                 'quantity' => 1,
@@ -475,6 +518,10 @@ class RoomFacilityApiTest extends TestCase
         ])
             ->assertOk()
             ->assertJsonCount(1, 'data');
+        $this->assertSame('skipped', $response->json('delegated_activity_acknowledgement.outcome'));
+        $this->assertSame('no_active_kepala_lab', $response->json('delegated_activity_acknowledgement.reason'));
+        $this->assertSame('Perubahan fasilitas tersimpan. Belum ada Kepala Lab aktif untuk peninjauan otomatis.', $response->json('delegated_activity_acknowledgement.message'));
+        $this->assertNull($response->json('delegated_activity_acknowledgement.id'));
 
         $this->assertDatabaseHas('room_facilities', [
             'room_id' => $this->labBRoom->id,

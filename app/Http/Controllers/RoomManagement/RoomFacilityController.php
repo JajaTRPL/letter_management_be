@@ -292,8 +292,9 @@ class RoomFacilityController extends Controller
 
         $entries = collect($request->validated('facilities'));
         $beforeState = $this->delegatedAcknowledgements->facilityState($room);
+        $delegatedAcknowledgementResult = null;
 
-        DB::transaction(function () use ($room, $entries, $request, $beforeState) {
+        DB::transaction(function () use ($room, $entries, $request, $beforeState, &$delegatedAcknowledgementResult) {
             $room->facilityItems()
                 ->whereNotIn('facility_type_id', $entries->pluck('facility_type_id'))
                 ->delete();
@@ -323,7 +324,7 @@ class RoomFacilityController extends Controller
             );
 
             $afterState = $this->delegatedAcknowledgements->facilityState($room);
-            $this->delegatedAcknowledgements->recordLaboranFacilitySyncIfNeeded(
+            $delegatedAcknowledgementResult = $this->delegatedAcknowledgements->recordLaboranFacilitySyncIfNeeded(
                 $room,
                 $request->user(),
                 $beforeState,
@@ -336,6 +337,12 @@ class RoomFacilityController extends Controller
             'data' => $room->facilityItems()->with('facilityType:id,name,slug')->get()
                 ->map(fn (RoomFacility $facility) => $this->roomFacilityPayload($facility))
                 ->all(),
+            'delegated_activity_acknowledgement' => $this->delegatedAcknowledgements->responseMetadata($delegatedAcknowledgementResult ?? [
+                'outcome' => 'not_applicable',
+                'acknowledgement' => null,
+                'reason' => null,
+                'message' => 'Perubahan fasilitas tersimpan.',
+            ]),
         ]);
     }
 }

@@ -22,6 +22,15 @@ class DelegatedActivityAcknowledgementService
      */
     public function createTask(array $payload): DelegatedActivityAcknowledgement
     {
+        return $this->createTaskWithOutcome($payload)['acknowledgement'];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array{outcome: 'created'|'existing', acknowledgement: DelegatedActivityAcknowledgement}
+     */
+    public function createTaskWithOutcome(array $payload): array
+    {
         $validated = $this->validateCreatePayload($payload);
 
         $idempotencyKey = $this->blankToNull($validated['idempotency_key'] ?? null);
@@ -31,7 +40,10 @@ class DelegatedActivityAcknowledgementService
                 ->first();
 
             if ($existing) {
-                return $existing;
+                return [
+                    'outcome' => 'existing',
+                    'acknowledgement' => $existing->loadMissing(['delegatedActor', 'accountableUser', 'acknowledgedBy']),
+                ];
             }
         }
 
@@ -42,7 +54,7 @@ class DelegatedActivityAcknowledgementService
             : $this->calculateDueAt((string) $validated['activity_type'], (string) $urgency, $performedAt);
 
         try {
-            return DB::transaction(function () use ($validated, $idempotencyKey, $performedAt, $urgency, $dueAt) {
+            $task = DB::transaction(function () use ($validated, $idempotencyKey, $performedAt, $urgency, $dueAt) {
                 $task = DelegatedActivityAcknowledgement::create([
                     'domain_type' => $validated['domain_type'],
                     'subject_type' => $this->blankToNull($validated['subject_type'] ?? null),
@@ -75,6 +87,11 @@ class DelegatedActivityAcknowledgementService
 
                 return $task->fresh(['delegatedActor', 'accountableUser', 'acknowledgedBy']);
             });
+
+            return [
+                'outcome' => 'created',
+                'acknowledgement' => $task,
+            ];
         } catch (QueryException $exception) {
             if ($idempotencyKey !== null && $this->isUniqueConstraintViolation($exception)) {
                 $existing = DelegatedActivityAcknowledgement::query()
@@ -82,7 +99,10 @@ class DelegatedActivityAcknowledgementService
                     ->first();
 
                 if ($existing) {
-                    return $existing;
+                    return [
+                        'outcome' => 'existing',
+                        'acknowledgement' => $existing->loadMissing(['delegatedActor', 'accountableUser', 'acknowledgedBy']),
+                    ];
                 }
             }
 
