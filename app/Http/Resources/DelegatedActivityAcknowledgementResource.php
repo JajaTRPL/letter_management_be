@@ -102,12 +102,8 @@ class DelegatedActivityAcknowledgementResource extends JsonResource
     private function canMarkEscalationSeen(?User $user, DelegatedActivityAcknowledgement $task): bool
     {
         return $user !== null
-            && $user->role === 'super_admin'
-            && in_array($task->status, [
-                DelegatedActivityAcknowledgement::STATUS_PENDING_REVIEW,
-                DelegatedActivityAcknowledgement::STATUS_ESCALATED,
-            ], true)
-            && ($task->isOverdue() || $task->status === DelegatedActivityAcknowledgement::STATUS_ESCALATED);
+            && app(\App\Services\DelegatedActivityAcknowledgementService::class)
+                ->canMarkEscalationSeen($user, $task);
     }
 
     private function statusLabel(string $status): string

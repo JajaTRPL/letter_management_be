@@ -112,6 +112,17 @@ class DelegatedActivityAcknowledgement extends Model
         ], true);
     }
 
+    /**
+     * A task warrants SuperAdmin attention only when the normal review chain
+     * has stalled: it was explicitly escalated, or the pending review is
+     * overdue. Single source of truth for the mark-escalation-seen
+     * permission (API resource flag AND service guard).
+     */
+    public function needsSuperAdminEscalationAttention(): bool
+    {
+        return $this->status === self::STATUS_ESCALATED || $this->isOverdue();
+    }
+
     public function overdueHours(): int
     {
         if (! $this->isOverdue()) {

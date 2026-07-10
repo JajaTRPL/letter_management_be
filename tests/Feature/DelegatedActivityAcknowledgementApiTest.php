@@ -238,6 +238,68 @@ class DelegatedActivityAcknowledgementApiTest extends TestCase
         $this->assertNull($freshTask->acknowledged_by);
     }
 
+    public function test_mark_escalation_seen_permission_matches_service_eligibility(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-07-10 10:00:00', config('app.timezone')));
+
+        $laboratory = $this->laboratory();
+        $kepalaLab = $this->user('tendik', 'kepala_lab', $laboratory);
+        $laboran = $this->user('tendik', 'laboran', $laboratory);
+
+        $overdueTask = $this->createTask($laboran, $kepalaLab, [
+            'acknowledgement_due_at' => '2026-07-08 09:00:00',
+        ]);
+        $escalatedTask = $this->createTask($laboran, $kepalaLab, [
+            'status' => DelegatedActivityAcknowledgement::STATUS_ESCALATED,
+            'escalated_at' => '2026-07-09 09:00:00',
+        ]);
+        $futureTask = $this->createTask($laboran, $kepalaLab, [
+            'acknowledgement_due_at' => '2026-07-13 09:00:00',
+        ]);
+        $voidedTask = $this->createTask($laboran, $kepalaLab, [
+            'status' => DelegatedActivityAcknowledgement::STATUS_VOIDED,
+        ]);
+        $acknowledgedTask = $this->createTask($laboran, $kepalaLab);
+        app(DelegatedActivityAcknowledgementService::class)->acknowledge($acknowledgedTask, $kepalaLab);
+
+        Sanctum::actingAs($this->user('super_admin'));
+
+        // Resource flag mirrors service eligibility exactly.
+        foreach ([
+            [$overdueTask, true],
+            [$escalatedTask, true],
+            [$futureTask, false],
+            [$voidedTask, false],
+            [$acknowledgedTask, false],
+        ] as [$task, $expected]) {
+            $this->getJson(self::SUPER_ADMIN_URL.'/'.$task->id)
+                ->assertOk()
+                ->assertJsonPath('data.permissions.can_mark_escalation_seen', $expected);
+        }
+
+        // Escalated task can be marked seen; status stays escalated.
+        $this->postJson(self::SUPER_ADMIN_URL.'/'.$escalatedTask->id.'/mark-escalation-seen')
+            ->assertOk()
+            ->assertJsonPath('data.status', DelegatedActivityAcknowledgement::STATUS_ESCALATED)
+            ->assertJsonPath('data.acknowledged_at', null);
+        $this->assertNotNull($escalatedTask->fresh()->escalation_seen_by_superadmin_at);
+
+        // Ineligible tasks are denied and left untouched.
+        $this->postJson(self::SUPER_ADMIN_URL.'/'.$futureTask->id.'/mark-escalation-seen')
+            ->assertConflict();
+        $this->assertNull($futureTask->fresh()->escalation_seen_by_superadmin_at);
+
+        $this->postJson(self::SUPER_ADMIN_URL.'/'.$voidedTask->id.'/mark-escalation-seen')
+            ->assertConflict();
+        $this->assertNull($voidedTask->fresh()->escalation_seen_by_superadmin_at);
+
+        $this->postJson(self::SUPER_ADMIN_URL.'/'.$acknowledgedTask->id.'/mark-escalation-seen')
+            ->assertConflict();
+        $freshAcknowledged = $acknowledgedTask->fresh();
+        $this->assertNull($freshAcknowledged->escalation_seen_by_superadmin_at);
+        $this->assertSame(DelegatedActivityAcknowledgement::STATUS_ACKNOWLEDGED, $freshAcknowledged->status);
+    }
+
     public function test_super_admin_cannot_acknowledge_and_role_groups_remain_separate(): void
     {
         $laboratory = $this->laboratory();

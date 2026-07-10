@@ -164,6 +164,18 @@ class DelegatedActivityAcknowledgementService
         });
     }
 
+    /**
+     * Single source of truth for mark-escalation-seen, mirrored by the API
+     * resource's permissions.can_mark_escalation_seen flag: only SuperAdmin,
+     * and only while the task actually needs SuperAdmin attention
+     * (escalated, or pending review past its due date).
+     */
+    public function canMarkEscalationSeen(User $actor, DelegatedActivityAcknowledgement $task): bool
+    {
+        return $actor->role === 'super_admin'
+            && $task->needsSuperAdminEscalationAttention();
+    }
+
     public function markEscalationSeen(
         DelegatedActivityAcknowledgement $task,
         User $superAdmin,
@@ -183,6 +195,12 @@ class DelegatedActivityAcknowledgementService
 
             if ($lockedTask->status === DelegatedActivityAcknowledgement::STATUS_VOIDED) {
                 throw new DomainException('Aktivitas delegasi sudah dibatalkan.');
+            }
+
+            if (! $this->canMarkEscalationSeen($superAdmin, $lockedTask)) {
+                throw new DomainException(
+                    'Aktivitas delegasi masih dalam batas peninjauan dan belum memerlukan atensi Super Admin.',
+                );
             }
 
             $lockedTask->update([
