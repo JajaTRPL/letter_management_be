@@ -2,14 +2,30 @@
 
 namespace App\Http\Requests\RoomManagement;
 
+use App\Services\RoomPermissionResolver;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Str;
 
 class StoreFacilityTypeRequest extends FormRequest
 {
-    public function authorize(): bool
+    /**
+     * The route group admits every Tendik subrole, so the global-dictionary
+     * restriction (SuperAdmin + Sarpras/Kepala Lab/Laboran) is enforced here,
+     * before validation runs.
+     */
+    public function authorize(RoomPermissionResolver $resolver): bool
     {
-        return true; // manager-only route group; creation is not room-scoped
+        $user = $this->user();
+
+        return $user !== null && $resolver->canCreateFacilityType($user);
+    }
+
+    protected function failedAuthorization(): void
+    {
+        throw new AuthorizationException(
+            'Anda tidak memiliki akses untuk menambahkan jenis fasilitas.',
+        );
     }
 
     public function rules(): array

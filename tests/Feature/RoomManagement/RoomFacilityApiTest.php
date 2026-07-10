@@ -205,6 +205,58 @@ class RoomFacilityApiTest extends TestCase
         $this->postJson('/api/room-management/facility-types', ['name' => 'Layar Sentuh'])->assertCreated();
     }
 
+    public function test_facility_type_creation_denies_roles_without_room_management_surface(): void
+    {
+        // Persuratan passes the tendik route middleware but manages letters,
+        // not rooms — it must not grow the global facility dictionary.
+        $this->actingUser('tendik', 'persuratan');
+        $this->postJson('/api/room-management/facility-types', ['name' => 'Router'])
+            ->assertForbidden()
+            ->assertJsonPath('message', 'Anda tidak memiliki akses untuk menambahkan jenis fasilitas.');
+
+        // Akademik (profile-complete, so the role middleware is what denies).
+        $program = \App\Models\StudyProgram::firstOrCreate(
+            ['code' => 'TRPL-RM'],
+            ['name' => 'Program Uji Room Management', 'department_id' => \App\Models\Department::firstOrCreate(
+                ['code' => 'DTEDI-RM'],
+                ['name' => 'Departemen Uji Room Management'],
+            )->id],
+        );
+        $akademik = \App\Models\User::factory()->create([
+            'role' => 'akademik',
+            'sub_role' => 'kaprodi',
+            'study_program_id' => $program->id,
+            'nip' => fake()->unique()->numerify('19########'),
+            'status' => \App\Enums\UserStatus::Active,
+        ]);
+        \Laravel\Sanctum\Sanctum::actingAs($akademik);
+        $this->postJson('/api/room-management/facility-types', ['name' => 'Router'])->assertForbidden();
+
+        $this->actingAsMahasiswa();
+        $this->postJson('/api/room-management/facility-types', ['name' => 'Router'])->assertForbidden();
+
+        $this->assertDatabaseMissing('facility_types', ['slug' => 'router']);
+    }
+
+    public function test_facility_type_creation_requires_authentication(): void
+    {
+        $this->postJson('/api/room-management/facility-types', ['name' => 'Router'])->assertUnauthorized();
+        $this->assertDatabaseMissing('facility_types', ['slug' => 'router']);
+    }
+
+    public function test_room_managing_roles_can_create_facility_types(): void
+    {
+        // Sarpras is covered by test_facility_types_list_predefined_first_and_custom_creation.
+        $this->actingAsSuperAdmin();
+        $this->postJson('/api/room-management/facility-types', ['name' => 'Mimbar'])->assertCreated();
+
+        $this->actingAsKalab();
+        $this->postJson('/api/room-management/facility-types', ['name' => 'Osiloskop'])->assertCreated();
+
+        $this->actingAsLaboran();
+        $this->postJson('/api/room-management/facility-types', ['name' => 'Solder'])->assertCreated();
+    }
+
     public function test_facility_usage_lists_rooms_with_counts_by_type(): void
     {
         $this->actingAsSuperAdmin();

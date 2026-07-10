@@ -95,6 +95,24 @@ class RoomPermissionResolver
     }
 
     /**
+     * Creating a facility type extends the GLOBAL facility dictionary, so it
+     * is limited to SuperAdmin plus the operational room-data roles (Sarpras,
+     * Kepala Lab, Laboran) who add missing types while assigning facilities.
+     * Other Tendik subroles (e.g. Persuratan) have no room-management surface
+     * and must not grow the dictionary. Rename/archive/delete stay
+     * SuperAdmin-only (enforced in the controller).
+     */
+    public function canCreateFacilityType(User $user): bool
+    {
+        if ($this->canManageAnyRoom($user)) {
+            return true;
+        }
+
+        return $this->isActive($user)
+            && ($user->isTendikSarpras() || $user->isKalab() || $user->isLaboran());
+    }
+
+    /**
      * Room photos are catalog content: any authenticated user may view
      * photos of ACTIVE rooms; inactive rooms are visible only to their
      * managers.
