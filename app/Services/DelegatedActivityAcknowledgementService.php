@@ -8,6 +8,7 @@ use App\Models\User;
 use Carbon\CarbonInterface;
 use DomainException;
 use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -40,39 +41,53 @@ class DelegatedActivityAcknowledgementService
             ? $this->nullableCarbon($validated['acknowledgement_due_at'])
             : $this->calculateDueAt((string) $validated['activity_type'], (string) $urgency, $performedAt);
 
-        return DB::transaction(function () use ($validated, $idempotencyKey, $performedAt, $urgency, $dueAt) {
-            $task = DelegatedActivityAcknowledgement::create([
-                'domain_type' => $validated['domain_type'],
-                'subject_type' => $this->blankToNull($validated['subject_type'] ?? null),
-                'subject_id' => $validated['subject_id'] ?? null,
-                'idempotency_key' => $idempotencyKey,
-                'delegated_actor_id' => $validated['delegated_actor_id'],
-                'accountable_user_id' => $validated['accountable_user_id'],
-                'accountable_role' => $validated['accountable_role'],
-                'represented_scope_type' => $this->blankToNull($validated['represented_scope_type'] ?? null),
-                'represented_scope_id' => $validated['represented_scope_id'] ?? null,
-                'activity_type' => $validated['activity_type'],
-                'activity_summary' => $validated['activity_summary'],
-                'internal_note' => $this->blankToNull($validated['internal_note'] ?? null),
-                'student_facing_note' => $this->blankToNull($validated['student_facing_note'] ?? null),
-                'before_state' => $validated['before_state'] ?? null,
-                'after_state' => $validated['after_state'] ?? null,
-                'status' => $validated['status'] ?? DelegatedActivityAcknowledgement::STATUS_PENDING_REVIEW,
-                'urgency' => $urgency,
-                'performed_at' => $performedAt,
-                'acknowledgement_due_at' => $dueAt,
-                'escalated_at' => $this->nullableCarbon($validated['escalated_at'] ?? null),
-            ]);
+        try {
+            return DB::transaction(function () use ($validated, $idempotencyKey, $performedAt, $urgency, $dueAt) {
+                $task = DelegatedActivityAcknowledgement::create([
+                    'domain_type' => $validated['domain_type'],
+                    'subject_type' => $this->blankToNull($validated['subject_type'] ?? null),
+                    'subject_id' => $validated['subject_id'] ?? null,
+                    'idempotency_key' => $idempotencyKey,
+                    'delegated_actor_id' => $validated['delegated_actor_id'],
+                    'accountable_user_id' => $validated['accountable_user_id'],
+                    'accountable_role' => $validated['accountable_role'],
+                    'represented_scope_type' => $this->blankToNull($validated['represented_scope_type'] ?? null),
+                    'represented_scope_id' => $validated['represented_scope_id'] ?? null,
+                    'activity_type' => $validated['activity_type'],
+                    'activity_summary' => $validated['activity_summary'],
+                    'internal_note' => $this->blankToNull($validated['internal_note'] ?? null),
+                    'student_facing_note' => $this->blankToNull($validated['student_facing_note'] ?? null),
+                    'before_state' => $validated['before_state'] ?? null,
+                    'after_state' => $validated['after_state'] ?? null,
+                    'status' => $validated['status'] ?? DelegatedActivityAcknowledgement::STATUS_PENDING_REVIEW,
+                    'urgency' => $urgency,
+                    'performed_at' => $performedAt,
+                    'acknowledgement_due_at' => $dueAt,
+                    'escalated_at' => $this->nullableCarbon($validated['escalated_at'] ?? null),
+                ]);
 
-            $this->recordActivity(
-                User::find($task->delegated_actor_id),
-                'Delegated activity recorded',
-                $task,
-                'Aktivitas delegasi dicatat untuk peninjauan pejabat penanggung jawab.',
-            );
+                $this->recordActivity(
+                    User::find($task->delegated_actor_id),
+                    'Delegated activity recorded',
+                    $task,
+                    'Aktivitas delegasi dicatat untuk peninjauan pejabat penanggung jawab.',
+                );
 
-            return $task->fresh(['delegatedActor', 'accountableUser', 'acknowledgedBy']);
-        });
+                return $task->fresh(['delegatedActor', 'accountableUser', 'acknowledgedBy']);
+            });
+        } catch (QueryException $exception) {
+            if ($idempotencyKey !== null && $this->isUniqueConstraintViolation($exception)) {
+                $existing = DelegatedActivityAcknowledgement::query()
+                    ->where('idempotency_key', $idempotencyKey)
+                    ->first();
+
+                if ($existing) {
+                    return $existing;
+                }
+            }
+
+            throw $exception;
+        }
     }
 
     public function calculateDueAt(string $activityType, string $urgency, CarbonInterface $performedAt): Carbon
@@ -255,6 +270,13 @@ class DelegatedActivityAcknowledgementService
 
         return str_contains($normalized, '/' . 'storage' . '/')
             || str_contains($normalized, 'room-booking' . '-attachments');
+    }
+
+    private function isUniqueConstraintViolation(QueryException $exception): bool
+    {
+        $sqlState = $exception->errorInfo[0] ?? null;
+
+        return in_array($sqlState, ['23000', '23505'], true);
     }
 
     /**

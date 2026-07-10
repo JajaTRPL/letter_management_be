@@ -2,7 +2,9 @@
 
 namespace Tests\Feature\RoomManagement;
 
+use App\Models\DelegatedActivityAcknowledgement;
 use App\Models\FacilityType;
+use App\Models\RoomFacility;
 use Database\Seeders\FacilityTypeSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Feature\RoomManagement\Concerns\InteractsWithRoomManagement;
@@ -292,6 +294,201 @@ class RoomFacilityApiTest extends TestCase
             'room_id' => $this->classroom->id,
             'subject_type' => 'facility',
             'action' => 'synced',
+        ]);
+    }
+
+    public function test_laboran_facility_sync_creates_delegated_acknowledgement_for_kepala_lab(): void
+    {
+        $kepalaLab = $this->actingAsKalab($this->labB->id);
+        $laboran = $this->actingAsLaboran();
+        $url = "/api/room-management/rooms/{$this->labBRoom->id}/facilities";
+        $proyektor = FacilityType::where('slug', 'proyektor')->firstOrFail();
+        $kursi = FacilityType::where('slug', 'kursi')->firstOrFail();
+
+        RoomFacility::create([
+            'room_id' => $this->labBRoom->id,
+            'facility_type_id' => $proyektor->id,
+            'quantity' => 1,
+            'condition' => 'baik',
+            'notes' => 'Siap digunakan.',
+        ]);
+
+        $payload = ['facilities' => [
+            [
+                'facility_type_id' => $proyektor->id,
+                'quantity' => 2,
+                'condition' => 'perlu_perbaikan',
+                'notes' => 'Lampu indikator redup.',
+            ],
+            [
+                'facility_type_id' => $kursi->id,
+                'quantity' => 12,
+                'condition' => 'baik',
+            ],
+        ]];
+
+        $response = $this->putJson($url, $payload)
+            ->assertOk()
+            ->assertJsonCount(2, 'data');
+
+        $this->assertArrayNotHasKey('delegated_activity_acknowledgement', $response->json());
+        $this->assertSame(1, DelegatedActivityAcknowledgement::count());
+
+        $task = DelegatedActivityAcknowledgement::firstOrFail();
+        $this->assertSame('room_management', $task->domain_type);
+        $this->assertSame('room', $task->subject_type);
+        $this->assertSame($this->labBRoom->id, $task->subject_id);
+        $this->assertSame('lab_facility_condition_synced', $task->activity_type);
+        $this->assertSame($laboran->id, $task->delegated_actor_id);
+        $this->assertSame($kepalaLab->id, $task->accountable_user_id);
+        $this->assertSame('kepala_lab', $task->accountable_role);
+        $this->assertSame('laboratory', $task->represented_scope_type);
+        $this->assertSame($this->labB->id, $task->represented_scope_id);
+        $this->assertSame(DelegatedActivityAcknowledgement::URGENCY_NORMAL, $task->urgency);
+        $this->assertSame(DelegatedActivityAcknowledgement::STATUS_PENDING_REVIEW, $task->status);
+        $this->assertSame(
+            "Laboran memperbarui kondisi fasilitas {$this->labBRoom->code} - {$this->labBRoom->name}.",
+            $task->activity_summary,
+        );
+        $this->assertNull($task->student_facing_note);
+        $this->assertStringStartsWith(
+            "room_facility_sync:{$this->labBRoom->id}:{$laboran->id}:",
+            (string) $task->idempotency_key,
+        );
+
+        $this->assertSame([
+            'room' => [
+                'id' => $this->labBRoom->id,
+                'code' => $this->labBRoom->code,
+                'name' => $this->labBRoom->name,
+            ],
+            'facilities' => [[
+                'facility_type_id' => $proyektor->id,
+                'name' => $proyektor->name,
+                'quantity' => 1,
+                'condition' => 'baik',
+                'notes' => 'Siap digunakan.',
+            ]],
+        ], $task->before_state);
+
+        $afterFacilities = collect($task->after_state['facilities']);
+        $this->assertSame([
+            'facility_type_id' => $proyektor->id,
+            'name' => $proyektor->name,
+            'quantity' => 2,
+            'condition' => 'perlu_perbaikan',
+            'notes' => 'Lampu indikator redup.',
+        ], $afterFacilities->firstWhere('facility_type_id', $proyektor->id));
+        $this->assertSame([
+            'facility_type_id' => $kursi->id,
+            'name' => $kursi->name,
+            'quantity' => 12,
+            'condition' => 'baik',
+            'notes' => null,
+        ], $afterFacilities->firstWhere('facility_type_id', $kursi->id));
+
+        $encodedStates = json_encode([$task->before_state, $task->after_state]);
+        $this->assertStringNotContainsString('/storage/', $encodedStates);
+        $this->assertStringNotContainsString('room-booking-attachments', $encodedStates);
+        $this->assertDatabaseHas('room_audit_logs', [
+            'room_id' => $this->labBRoom->id,
+            'subject_type' => 'facility',
+            'action' => 'synced',
+        ]);
+        $this->assertDatabaseHas('activity_logs', [
+            'user_id' => $laboran->id,
+            'type' => 'delegated_activity',
+            'action' => 'Delegated activity recorded',
+        ]);
+
+        $this->putJson($url, $payload)->assertOk();
+        $this->assertSame(1, DelegatedActivityAcknowledgement::count());
+    }
+
+    public function test_laboran_facility_sync_noop_skips_delegated_acknowledgement_but_keeps_audit(): void
+    {
+        $this->actingAsKalab($this->labB->id);
+        $this->actingAsLaboran();
+        $proyektor = FacilityType::where('slug', 'proyektor')->firstOrFail();
+        $payload = ['facilities' => [[
+            'facility_type_id' => $proyektor->id,
+            'quantity' => 1,
+            'condition' => 'baik',
+            'notes' => 'Siap digunakan.',
+        ]]];
+
+        RoomFacility::create([
+            'room_id' => $this->labBRoom->id,
+            'facility_type_id' => $proyektor->id,
+            'quantity' => 1,
+            'condition' => 'baik',
+            'notes' => 'Siap digunakan.',
+        ]);
+
+        $this->putJson("/api/room-management/rooms/{$this->labBRoom->id}/facilities", $payload)
+            ->assertOk()
+            ->assertJsonCount(1, 'data');
+
+        $this->assertSame(0, DelegatedActivityAcknowledgement::count());
+        $this->assertDatabaseHas('room_audit_logs', [
+            'room_id' => $this->labBRoom->id,
+            'subject_type' => 'facility',
+            'action' => 'synced',
+        ]);
+    }
+
+    public function test_facility_sync_skips_delegated_acknowledgement_for_non_laboran_actors(): void
+    {
+        $proyektor = FacilityType::where('slug', 'proyektor')->firstOrFail();
+        $kursi = FacilityType::where('slug', 'kursi')->firstOrFail();
+
+        $this->actingAsKalab($this->labA->id);
+        $this->putJson("/api/room-management/rooms/{$this->labARoom->id}/facilities", [
+            'facilities' => [['facility_type_id' => $proyektor->id, 'quantity' => 1]],
+        ])->assertOk();
+
+        $this->actingAsSarpras();
+        $this->putJson("/api/room-management/rooms/{$this->classroom->id}/facilities", [
+            'facilities' => [['facility_type_id' => $kursi->id, 'quantity' => 20]],
+        ])->assertOk();
+
+        $this->actingAsSuperAdmin();
+        $this->putJson("/api/room-management/rooms/{$this->labBRoom->id}/facilities", [
+            'facilities' => [['facility_type_id' => $proyektor->id, 'quantity' => 3]],
+        ])->assertOk();
+
+        $this->assertSame(0, DelegatedActivityAcknowledgement::count());
+    }
+
+    public function test_laboran_facility_sync_without_active_kepala_lab_succeeds_and_logs_skip(): void
+    {
+        $laboran = $this->actingAsLaboran();
+        $proyektor = FacilityType::where('slug', 'proyektor')->firstOrFail();
+
+        $this->putJson("/api/room-management/rooms/{$this->labBRoom->id}/facilities", [
+            'facilities' => [[
+                'facility_type_id' => $proyektor->id,
+                'quantity' => 1,
+                'condition' => 'rusak',
+                'notes' => 'Perlu dicek teknisi.',
+            ]],
+        ])
+            ->assertOk()
+            ->assertJsonCount(1, 'data');
+
+        $this->assertDatabaseHas('room_facilities', [
+            'room_id' => $this->labBRoom->id,
+            'facility_type_id' => $proyektor->id,
+            'quantity' => 1,
+            'condition' => 'rusak',
+            'notes' => 'Perlu dicek teknisi.',
+        ]);
+        $this->assertSame(0, DelegatedActivityAcknowledgement::count());
+        $this->assertDatabaseHas('activity_logs', [
+            'user_id' => $laboran->id,
+            'type' => 'delegated_activity',
+            'action' => 'Delegated activity skipped',
+            'target_user' => 'room:'.$this->labBRoom->id,
         ]);
     }
 

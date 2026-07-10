@@ -11,6 +11,7 @@ use App\Models\Room;
 use App\Models\RoomAuditLog;
 use App\Models\RoomFacility;
 use App\Services\RoomAuditService;
+use App\Services\RoomFacilityDelegatedAcknowledgementService;
 use App\Services\RoomPermissionResolver;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -23,6 +24,7 @@ class RoomFacilityController extends Controller
     public function __construct(
         private RoomPermissionResolver $resolver,
         private RoomAuditService $audit,
+        private RoomFacilityDelegatedAcknowledgementService $delegatedAcknowledgements,
     ) {
     }
 
@@ -289,8 +291,9 @@ class RoomFacilityController extends Controller
         abort_unless($this->resolver->canManageRoomFacilities($request->user(), $room), 404);
 
         $entries = collect($request->validated('facilities'));
+        $beforeState = $this->delegatedAcknowledgements->facilityState($room);
 
-        DB::transaction(function () use ($room, $entries, $request) {
+        DB::transaction(function () use ($room, $entries, $request, $beforeState) {
             $room->facilityItems()
                 ->whereNotIn('facility_type_id', $entries->pluck('facility_type_id'))
                 ->delete();
@@ -317,6 +320,14 @@ class RoomFacilityController extends Controller
                 $request->user(),
                 'Fasilitas ruangan diperbarui (' . $entries->count() . ' fasilitas).',
                 $request->ip(),
+            );
+
+            $afterState = $this->delegatedAcknowledgements->facilityState($room);
+            $this->delegatedAcknowledgements->recordLaboranFacilitySyncIfNeeded(
+                $room,
+                $request->user(),
+                $beforeState,
+                $afterState,
             );
         });
 
