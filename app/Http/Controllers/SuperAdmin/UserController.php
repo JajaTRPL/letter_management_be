@@ -513,6 +513,18 @@ class UserController extends Controller
             }
         }
 
+        // Room-booking evidence (bookings, histories, attachments, snapshots,
+        // workflow events) must survive account removal. The requester FK is
+        // restrictOnDelete at the database level; this guard answers before
+        // the constraint would throw, with a safe domain response.
+        if (\App\Models\RoomBookingRequest::query()->where('requester_id', $user->id)->exists()) {
+            return response()->json([
+                'message' => 'User tidak dapat dihapus karena memiliki riwayat peminjaman ruangan. '
+                    . 'Gunakan suspend/nonaktifkan akun untuk menutup aksesnya tanpa menghapus riwayat.',
+                'code' => 'protected_business_record',
+            ], 409);
+        }
+
         $targetEmail = $user->email;
         $user->delete();
 
