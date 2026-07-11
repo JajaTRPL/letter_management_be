@@ -14,10 +14,12 @@ use App\Http\Requests\Peminjaman\StoreRoomBookingRequest;
 use App\Http\Requests\Peminjaman\UpdateRoomBookingRequest;
 use App\Models\Room;
 use App\Models\RoomBookingRequest;
+use App\Models\RoomBookingSubmissionSnapshot;
 use App\Services\RoomAvailabilityService;
 use App\Services\RoomBookingAttachmentService;
 use App\Services\RoomBookingConflictService;
 use App\Services\RoomBookingDomainException;
+use App\Services\RoomBookingSubmissionSnapshotService;
 use App\Services\RoomBookingTransitionService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -37,6 +39,7 @@ class RoomBookingController extends Controller
         private RoomBookingAttachmentService $attachmentService,
         private RoomBookingConflictService $conflictService,
         private RoomBookingTransitionService $transitionService,
+        private RoomBookingSubmissionSnapshotService $snapshotService,
     ) {}
 
     public function rooms(RoomListRequest $request): JsonResponse
@@ -118,18 +121,44 @@ class RoomBookingController extends Controller
             ));
 
             $this->assertNoApprovedConflict($booking);
-            $booking = DB::transaction(function () use ($booking, $file, $request) {
-                $submitted = $this->transitionService->submit($booking, $request->user());
-                $this->attachmentService->storeSuratPeminjaman(
-                    $submitted,
-                    $file,
-                    $request->user(),
-                    'upload',
-                    $request,
-                );
 
-                return $submitted->fresh();
-            });
+            // Compensation boundary: filesystem writes are not transactional,
+            // so if anything fails AFTER the physical PDF is stored but before
+            // the outer transaction commits (e.g. the snapshot write), the
+            // database rolls back and the newly written file must be removed
+            // explicitly. Only the file created by THIS attempt is tracked;
+            // committed submissions and pre-existing attachments are never
+            // touched, and the original exception is always rethrown.
+            $newAttachment = null;
+
+            try {
+                $booking = DB::transaction(function () use ($booking, $file, $request, &$newAttachment) {
+                    $submitted = $this->transitionService->submit($booking, $request->user());
+                    $newAttachment = $this->attachmentService->storeSuratPeminjaman(
+                        $submitted,
+                        $file,
+                        $request->user(),
+                        'upload',
+                        $request,
+                    );
+
+                    // Immutable iteration-1 evidence, written after the
+                    // attachment persists so the snapshot carries its checksum.
+                    $this->snapshotService->capture(
+                        $submitted->fresh(),
+                        $request->user(),
+                        RoomBookingSubmissionSnapshot::PROVENANCE_NATIVE_SUBMISSION,
+                    );
+
+                    return $submitted->fresh();
+                });
+            } catch (\Throwable $exception) {
+                if ($newAttachment !== null) {
+                    $this->attachmentService->cleanupFailedPersistedAttachment($newAttachment);
+                }
+
+                throw $exception;
+            }
 
             return response()->json([
                 'message' => 'Pengajuan peminjaman ruangan berhasil dikirim',

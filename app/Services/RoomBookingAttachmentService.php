@@ -165,6 +165,33 @@ class RoomBookingAttachmentService
         return $attachment;
     }
 
+    /**
+     * Compensating cleanup for a failed authoritative submission: when the
+     * surrounding database transaction rolls back AFTER the physical file was
+     * written, the metadata row disappears but the file would survive. This
+     * removes exactly that newly written file. Path/disk/prefix validation is
+     * the same safeDelete/isManagedPath rule set used everywhere else, so an
+     * arbitrary or user-controlled path can never be deleted. A cleanup
+     * failure is reported internally and never masks the original business
+     * exception (callers rethrow it).
+     */
+    public function cleanupFailedPersistedAttachment(RoomBookingAttachment $attachment): void
+    {
+        try {
+            if ($attachment->storage_disk !== self::DISK) {
+                return;
+            }
+
+            $this->safeDelete((string) $attachment->storage_path);
+        } catch (Throwable $exception) {
+            report(new RuntimeException(
+                "Failed to clean up room booking attachment file after rollback (attachment {$attachment->id}).",
+                0,
+                $exception,
+            ));
+        }
+    }
+
     public function previewResponse(RoomBookingAttachment $attachment): StreamedResponse
     {
         $this->assertReadable($attachment);

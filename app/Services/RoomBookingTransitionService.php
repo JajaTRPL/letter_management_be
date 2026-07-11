@@ -7,6 +7,8 @@ use App\Enums\RoomType;
 use App\Models\Room;
 use App\Models\RoomBookingRequest;
 use App\Models\RoomBookingStatusHistory;
+use App\Models\RoomBookingSubmissionSnapshot;
+use App\Models\RoomBookingWorkflowEvent;
 use App\Models\User;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -16,6 +18,8 @@ class RoomBookingTransitionService
     public function __construct(
         private RoomBookingConflictService $conflictService,
         private RoomBookingReviewerResolver $reviewerResolver,
+        private RoomBookingWorkflowAuditService $workflowAudit,
+        private RoomBookingSubmissionSnapshotService $submissionSnapshots,
     ) {}
 
     public function submit(RoomBookingRequest $booking, User $actor): RoomBookingRequest
@@ -36,10 +40,11 @@ class RoomBookingTransitionService
             $room = $this->room($lockedBooking);
             $this->validateBookingDetails($lockedBooking, $room, requireFutureStart: true);
 
-            return $this->persistTransition(
+            $resubmitted = $this->persistTransition(
                 $lockedBooking,
                 $actor,
                 RoomBookingStatus::Submitted,
+                RoomBookingWorkflowEvent::EVENT_BOOKING_RESUBMITTED,
                 [
                     'reviewer_id' => null,
                     'reviewed_at' => null,
@@ -47,7 +52,20 @@ class RoomBookingTransitionService
                     'rejection_reason' => null,
                     'cancellation_reason' => null,
                 ],
+                submissionIteration: (int) $lockedBooking->submission_iteration + 1,
             );
+
+            // The resubmitted payload becomes authoritative now, so its
+            // immutable evidence is written in the same transaction. The
+            // attachment already exists at this point (enforced by the
+            // resubmit endpoint before this service is called).
+            $this->submissionSnapshots->capture(
+                $resubmitted,
+                $actor,
+                RoomBookingSubmissionSnapshot::PROVENANCE_NATIVE_RESUBMISSION,
+            );
+
+            return $resubmitted;
         });
     }
 
@@ -86,6 +104,7 @@ class RoomBookingTransitionService
                 $lockedBooking,
                 $actor,
                 RoomBookingStatus::RevisionRequested,
+                RoomBookingWorkflowEvent::EVENT_REVISION_REQUESTED,
                 [
                     'reviewer_id' => $actor->id,
                     'reviewed_at' => $this->now(),
@@ -139,6 +158,7 @@ class RoomBookingTransitionService
                 $lockedBooking,
                 $actor,
                 RoomBookingStatus::Approved,
+                RoomBookingWorkflowEvent::EVENT_BOOKING_APPROVED,
                 [
                     'reviewer_id' => $actor->id,
                     'reviewed_at' => $this->now(),
@@ -176,6 +196,7 @@ class RoomBookingTransitionService
                 $lockedBooking,
                 $actor,
                 RoomBookingStatus::Rejected,
+                RoomBookingWorkflowEvent::EVENT_BOOKING_REJECTED,
                 [
                     'reviewer_id' => $actor->id,
                     'reviewed_at' => $this->now(),
@@ -230,6 +251,7 @@ class RoomBookingTransitionService
                 $lockedBooking,
                 $actor,
                 RoomBookingStatus::Cancelled,
+                RoomBookingWorkflowEvent::EVENT_BOOKING_CANCELLED,
                 ['cancellation_reason' => $reason],
                 $reason,
             );
@@ -247,6 +269,8 @@ class RoomBookingTransitionService
             $this->validateBookingDetails($booking, $room, requireFutureStart: true);
 
             $booking->status = RoomBookingStatus::Submitted;
+            $booking->workflow_version = 1;
+            $booking->submission_iteration = 1;
             $booking->reviewer_id = null;
             $booking->reviewed_at = null;
             $booking->save();
@@ -258,20 +282,54 @@ class RoomBookingTransitionService
                 $actor,
             );
 
+            $this->workflowAudit->record(
+                $booking,
+                RoomBookingWorkflowEvent::EVENT_BOOKING_SUBMITTED,
+                $actor,
+                null,
+                RoomBookingStatus::Submitted->value,
+                null,
+                1,
+                1,
+                null,
+                [
+                    'room_id' => (int) $booking->room_id,
+                    'start_at' => $booking->start_at?->toIso8601String(),
+                    'end_at' => $booking->end_at?->toIso8601String(),
+                ],
+            );
+
             return $booking->fresh();
         });
     }
 
+    /**
+     * Persists one authoritative transition: status + attribute changes,
+     * exactly one workflow_version increment, the legacy status-history row,
+     * and one immutable workflow event — all inside the caller's transaction.
+     */
     private function persistTransition(
         RoomBookingRequest $booking,
         User $actor,
         RoomBookingStatus $toStatus,
+        string $eventType,
         array $attributes,
         ?string $historyNote = null,
+        ?int $submissionIteration = null,
     ): RoomBookingRequest {
         $fromStatus = $booking->status;
+        $versionBefore = (int) ($booking->workflow_version ?? 1);
+        $versionAfter = $versionBefore + 1;
 
         $booking->fill(array_merge($attributes, ['status' => $toStatus]));
+        // Server-owned lifecycle fields are not mass-assignable; trusted
+        // transitions write them explicitly with exact values.
+        $booking->forceFill(array_merge(
+            ['workflow_version' => $versionAfter],
+            $submissionIteration !== null
+                ? ['submission_iteration' => $submissionIteration]
+                : [],
+        ));
         $booking->save();
 
         $this->recordHistory(
@@ -280,6 +338,23 @@ class RoomBookingTransitionService
             $toStatus,
             $actor,
             $historyNote,
+        );
+
+        $this->workflowAudit->record(
+            $booking,
+            $eventType,
+            $actor,
+            $fromStatus?->value,
+            $toStatus->value,
+            $versionBefore,
+            $versionAfter,
+            max(1, (int) ($booking->submission_iteration ?? 1)),
+            $historyNote,
+            [
+                'room_id' => (int) $booking->room_id,
+                'start_at' => $booking->start_at?->toIso8601String(),
+                'end_at' => $booking->end_at?->toIso8601String(),
+            ],
         );
 
         return $booking->fresh();
