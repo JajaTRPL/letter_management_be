@@ -31,6 +31,10 @@ class RoomBookingDomainException extends RuntimeException
 
     public const ATTACHMENT_REQUIRED = 'attachment_required';
 
+    public const BOOKING_START_PASSED = 'booking_start_passed';
+
+    public const PROTECTED_BUSINESS_RECORD = 'protected_business_record';
+
     /**
      * @param  array<string, mixed>  $context
      */

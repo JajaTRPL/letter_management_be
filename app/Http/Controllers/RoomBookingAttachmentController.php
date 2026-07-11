@@ -7,7 +7,7 @@ use App\Http\Controllers\Concerns\HandlesRoomBookingApi;
 use App\Models\RoomBookingRequest;
 use App\Services\RoomBookingAttachmentService;
 use App\Services\RoomBookingDomainException;
-use App\Services\RoomBookingReviewerResolver;
+use App\Services\RoomBookingLifecycleCapabilityResolver;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -20,7 +20,7 @@ class RoomBookingAttachmentController extends Controller
 
     public function __construct(
         private RoomBookingAttachmentService $attachments,
-        private RoomBookingReviewerResolver $reviewerResolver,
+        private RoomBookingLifecycleCapabilityResolver $capabilityResolver,
     ) {}
 
     public function replace(Request $request, RoomBookingRequest $booking): JsonResponse
@@ -92,23 +92,8 @@ class RoomBookingAttachmentController extends Controller
 
     private function canReadAttachment(Request $request, RoomBookingRequest $booking): bool
     {
-        $user = $request->user();
-        if (! $user) {
-            return false;
-        }
-
-        if ($user->role === 'super_admin') {
-            return true;
-        }
-
-        if ($user->role === 'mahasiswa') {
-            return (int) $booking->requester_id === (int) $user->id;
-        }
-
-        if ($user->role === 'tendik') {
-            return $this->reviewerResolver->canRead($user, $booking);
-        }
-
-        return false;
+        // Same policy source as the capabilities payload (C7B1): the
+        // endpoint and the projected can_view_attachment flag cannot drift.
+        return $this->capabilityResolver->canViewAttachment($request->user(), $booking);
     }
 }

@@ -7,6 +7,7 @@ use App\Models\RoomBookingRequest;
 use App\Services\RoomBookingAttachmentService;
 use App\Services\RoomBookingConflictService;
 use App\Services\RoomBookingDomainException;
+use App\Services\RoomBookingLifecycleCapabilityResolver;
 use Illuminate\Http\JsonResponse;
 
 trait HandlesRoomBookingApi
@@ -17,6 +18,8 @@ trait HandlesRoomBookingApi
         $status = match ($exception->reason) {
             RoomBookingDomainException::BOOKING_CONFLICT,
             RoomBookingDomainException::INVALID_TRANSITION,
+            RoomBookingDomainException::BOOKING_START_PASSED,
+            RoomBookingDomainException::PROTECTED_BUSINESS_RECORD,
             RoomBookingDomainException::INACTIVE_ROOM => 409,
             RoomBookingDomainException::UNAUTHORIZED_ACTION => 403,
             default => 422,
@@ -90,6 +93,16 @@ trait HandlesRoomBookingApi
             'start_at' => $booking->start_at->toIso8601String(),
             'end_at' => $booking->end_at->toIso8601String(),
             'status' => $booking->status->value,
+            // C7B1 additive lifecycle projection: the stored five-status
+            // contract above is unchanged; these fields are read-only
+            // derivations plus the server-authoritative capability object.
+            'workflow_version' => (int) ($booking->workflow_version ?? 1),
+            'submission_iteration' => (int) ($booking->submission_iteration ?? 1),
+            'effective_status' => $booking->effectiveStatus(),
+            'is_expired' => $booking->isExpired(),
+            'is_completed' => $booking->isCompleted(),
+            'capabilities' => app(RoomBookingLifecycleCapabilityResolver::class)
+                ->capabilitiesFor(auth()->user(), $booking),
             'reviewer' => $booking->reviewer ? [
                 'id' => (int) $booking->reviewer->id,
                 'name' => $booking->reviewer->name,

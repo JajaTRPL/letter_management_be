@@ -134,6 +134,22 @@ class RoomBookingTransitionService
             $this->assertApprover($actor, $lockedBooking);
             $this->validateBookingDetails($lockedBooking, $room, requireFutureStart: false);
 
+            // A pending request whose activity has already started can no
+            // longer become an official reservation. Server time only; no
+            // status change, no history, no event.
+            if (
+                $lockedBooking->start_at === null
+                || ! $lockedBooking->start_at->greaterThan($this->now())
+            ) {
+                throw new RoomBookingDomainException(
+                    RoomBookingDomainException::BOOKING_START_PASSED,
+                    'Pengajuan tidak dapat disetujui karena waktu kegiatan sudah dimulai atau terlewati.',
+                    [
+                        'start_at' => $lockedBooking->start_at?->toIso8601String(),
+                    ],
+                );
+            }
+
             if ($this->conflictService->hasConflict(
                 $room->id,
                 $lockedBooking->start_at,
