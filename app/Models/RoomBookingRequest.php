@@ -10,6 +10,19 @@ class RoomBookingRequest extends Model
 {
     use HasFactory;
 
+    /**
+     * Derived (never stored) effective statuses. The stored status column
+     * keeps the original five values; these are read projections only.
+     */
+    public const EFFECTIVE_STATUS_COMPLETED = 'completed';
+    public const EFFECTIVE_STATUS_EXPIRED = 'expired';
+
+    /**
+     * workflow_version and submission_iteration are deliberately NOT
+     * mass-assignable: they are server-owned lifecycle fields written only
+     * via forceFill/direct assignment inside trusted domain services
+     * (RoomBookingTransitionService).
+     */
     protected $fillable = [
         'requester_id',
         'room_id',
@@ -33,9 +46,43 @@ class RoomBookingRequest extends Model
         'start_at' => 'datetime',
         'end_at' => 'datetime',
         'status' => RoomBookingStatus::class,
+        'workflow_version' => 'integer',
+        'submission_iteration' => 'integer',
         'reviewer_id' => 'integer',
         'reviewed_at' => 'datetime',
     ];
+
+    /** Approved and the activity window has ended. */
+    public function isCompleted(): bool
+    {
+        return $this->status === RoomBookingStatus::Approved
+            && $this->end_at !== null
+            && $this->end_at->lessThanOrEqualTo(now(config('app.timezone')));
+    }
+
+    /** Still pending a decision while the activity start has already passed. */
+    public function isExpired(): bool
+    {
+        return in_array($this->status, [
+            RoomBookingStatus::Submitted,
+            RoomBookingStatus::RevisionRequested,
+        ], true)
+            && $this->start_at !== null
+            && $this->start_at->lessThanOrEqualTo(now(config('app.timezone')));
+    }
+
+    public function effectiveStatus(): string
+    {
+        if ($this->isCompleted()) {
+            return self::EFFECTIVE_STATUS_COMPLETED;
+        }
+
+        if ($this->isExpired()) {
+            return self::EFFECTIVE_STATUS_EXPIRED;
+        }
+
+        return $this->status->value;
+    }
 
     public function requester()
     {
@@ -66,5 +113,15 @@ class RoomBookingRequest extends Model
     {
         return $this->hasOne(RoomBookingAttachment::class)
             ->where('document_type', RoomBookingAttachment::DOCUMENT_SURAT_PEMINJAMAN);
+    }
+
+    public function submissionSnapshots()
+    {
+        return $this->hasMany(RoomBookingSubmissionSnapshot::class);
+    }
+
+    public function workflowEvents()
+    {
+        return $this->hasMany(RoomBookingWorkflowEvent::class);
     }
 }

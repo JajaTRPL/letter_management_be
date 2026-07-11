@@ -1,0 +1,88 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use RuntimeException;
+
+/**
+ * Append-only workflow ledger for room bookings. One row per successful
+ * business transition; rows are never updated or deleted through the
+ * application, and actor snapshots keep the evidence readable after account
+ * deactivation or deletion.
+ */
+class RoomBookingWorkflowEvent extends Model
+{
+    use HasFactory;
+
+    public const EVENT_BOOKING_SUBMITTED = 'booking_submitted';
+    public const EVENT_REVISION_REQUESTED = 'revision_requested';
+    public const EVENT_BOOKING_RESUBMITTED = 'booking_resubmitted';
+    public const EVENT_BOOKING_APPROVED = 'booking_approved';
+    public const EVENT_BOOKING_REJECTED = 'booking_rejected';
+    public const EVENT_BOOKING_CANCELLED = 'booking_cancelled';
+    public const EVENT_LEGACY_BASELINE_IMPORTED = 'legacy_baseline_imported';
+
+    public const EVENT_TYPES = [
+        self::EVENT_BOOKING_SUBMITTED,
+        self::EVENT_REVISION_REQUESTED,
+        self::EVENT_BOOKING_RESUBMITTED,
+        self::EVENT_BOOKING_APPROVED,
+        self::EVENT_BOOKING_REJECTED,
+        self::EVENT_BOOKING_CANCELLED,
+        self::EVENT_LEGACY_BASELINE_IMPORTED,
+    ];
+
+    protected $fillable = [
+        'room_booking_request_id',
+        'event_type',
+        'actor_id',
+        'actor_name_snapshot',
+        'actor_role_snapshot',
+        'actor_subrole_snapshot',
+        'actor_scope_type',
+        'actor_scope_id',
+        'previous_status',
+        'resulting_status',
+        'workflow_version_before',
+        'workflow_version_after',
+        'submission_iteration',
+        'public_note',
+        'internal_note',
+        'safe_metadata',
+        'correlation_id',
+        'occurred_at',
+    ];
+
+    protected $casts = [
+        'room_booking_request_id' => 'integer',
+        'actor_id' => 'integer',
+        'actor_scope_id' => 'integer',
+        'workflow_version_before' => 'integer',
+        'workflow_version_after' => 'integer',
+        'submission_iteration' => 'integer',
+        'safe_metadata' => 'array',
+        'occurred_at' => 'datetime',
+    ];
+
+    protected static function booted(): void
+    {
+        static::updating(function (): never {
+            throw new RuntimeException('Room booking workflow events are immutable.');
+        });
+        static::deleting(function (): never {
+            throw new RuntimeException('Room booking workflow events cannot be deleted.');
+        });
+    }
+
+    public function booking()
+    {
+        return $this->belongsTo(RoomBookingRequest::class, 'room_booking_request_id');
+    }
+
+    public function actor()
+    {
+        return $this->belongsTo(User::class, 'actor_id');
+    }
+}
