@@ -22,6 +22,33 @@ class RoomBookingReviewerResolver
         return $this->canRead($user, $booking);
     }
 
+    public function canAccessCancellationDecisionQueue(User $user): bool
+    {
+        return $this->isActive($user)
+            && ($user->isTendikSarpras() || ($user->isKalab() && $user->laboratory_id !== null));
+    }
+
+    public function scopeCancellationRequests(Builder $query, User $user): Builder
+    {
+        if (! $this->canAccessCancellationDecisionQueue($user)) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->whereHas('booking', function (Builder $bookingQuery) use ($user) {
+            $bookingQuery->whereHas('room', function (Builder $roomQuery) use ($user) {
+                if ($user->isTendikSarpras()) {
+                    $roomQuery->where('type', RoomType::Classroom->value);
+
+                    return;
+                }
+
+                $roomQuery
+                    ->where('type', RoomType::Laboratory->value)
+                    ->where('owning_laboratory_id', $user->laboratory_id);
+            });
+        });
+    }
+
     public function canRead(User $user, RoomBookingRequest $booking): bool
     {
         if (! $this->canReadReviewQueue($user)) {

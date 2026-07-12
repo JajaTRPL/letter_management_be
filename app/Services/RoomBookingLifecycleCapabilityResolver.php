@@ -5,7 +5,6 @@ namespace App\Services;
 use App\Enums\RoomBookingStatus;
 use App\Models\RoomBookingRequest;
 use App\Models\User;
-use Illuminate\Support\Carbon;
 
 /**
  * Server-authoritative capability projection for room bookings. Uses the
@@ -21,10 +20,11 @@ class RoomBookingLifecycleCapabilityResolver
 {
     public function __construct(
         private RoomBookingReviewerResolver $reviewerResolver,
+        private RoomBookingWithdrawalPolicy $withdrawalPolicy,
     ) {}
 
     /**
-     * @return array<string, bool>
+     * @return array<string, bool|string|null>
      */
     public function capabilitiesFor(?User $actor, RoomBookingRequest $booking): array
     {
@@ -33,10 +33,17 @@ class RoomBookingLifecycleCapabilityResolver
             'can_resubmit' => false,
             'can_cancel' => false,
             'can_review' => false,
+            'can_start_review' => false,
             'can_approve' => false,
             'can_request_revision' => false,
             'can_reject' => false,
             'can_view_attachment' => false,
+            'can_withdraw' => false,
+            'can_request_cancellation' => false,
+            'can_withdraw_cancellation_request' => false,
+            'can_decide_cancellation' => false,
+            'withdrawal_block_reason' => null,
+            'next_action' => null,
         ];
 
         if (! $actor) {
@@ -44,10 +51,19 @@ class RoomBookingLifecycleCapabilityResolver
         }
 
         $capabilities['can_view_attachment'] = $this->canViewAttachment($actor, $booking);
+        $booking->loadMissing([
+            'activeCancellationRequest',
+            'revisionRequestHistory',
+            'room',
+        ]);
 
-        // Completed bookings (approved + activity ended) carry no workflow
-        // mutation capabilities at all.
-        if ($booking->isCompleted()) {
+        if (
+            $booking->isCompleted()
+            || in_array($booking->status, [
+                RoomBookingStatus::Rejected,
+                RoomBookingStatus::Cancelled,
+            ], true)
+        ) {
             return $capabilities;
         }
 
@@ -56,35 +72,58 @@ class RoomBookingLifecycleCapabilityResolver
 
         if ($isOwner) {
             $inRevision = $booking->status === RoomBookingStatus::RevisionRequested;
-            $capabilities['can_edit'] = $inRevision;
-            // Parity with the resubmit endpoint: an expired schedule is
-            // deterministically rejected (future-start validation), so the
-            // capability must not advertise it. Editing stays available so
-            // the applicant can move the schedule to a future date first.
-            $capabilities['can_resubmit'] = $inRevision && ! $booking->isExpired();
-            // Legacy immediate-cancel compatibility: submitted/revision any
-            // time, approved only before the activity starts.
-            $capabilities['can_cancel'] = in_array($booking->status, [
-                RoomBookingStatus::Submitted,
-                RoomBookingStatus::RevisionRequested,
-            ], true)
-                || (
-                    $booking->status === RoomBookingStatus::Approved
-                    && $booking->start_at !== null
-                    && $booking->start_at->greaterThan(Carbon::now(config('app.timezone')))
-                );
+            $pendingCancellation = $booking->hasPendingCancellationRequest();
+            $withdrawalDecision = $this->withdrawalPolicy
+                ->directWithdrawalDecision($actor, $booking);
+
+            $capabilities['can_edit'] = $inRevision && ! $pendingCancellation;
+            $capabilities['can_resubmit'] = $inRevision
+                && ! $booking->isExpired()
+                && ! $pendingCancellation;
+            $capabilities['can_withdraw'] = $withdrawalDecision['allowed'];
+            // Deprecated compatibility output: can_cancel has exactly one
+            // meaning in C7B2, direct withdrawal eligibility.
+            $capabilities['can_cancel'] = $capabilities['can_withdraw'];
+            $capabilities['can_request_cancellation'] = $this->withdrawalPolicy
+                ->canRequestCancellation($actor, $booking);
+            $capabilities['can_withdraw_cancellation_request'] = $this->withdrawalPolicy
+                ->canWithdrawCancellationRequest($actor, $booking);
+            $capabilities['withdrawal_block_reason'] = $withdrawalDecision['block_reason'];
+            $capabilities['next_action'] = $this->withdrawalPolicy->nextAction($actor, $booking);
         }
 
-        $canAct = $booking->status === RoomBookingStatus::Submitted
-            && $this->reviewerResolver->canActAsApprover($actor, $booking);
+        $isDecisionReviewer = $this->reviewerResolver->canActAsApprover($actor, $booking);
+        if ($isDecisionReviewer) {
+            $pendingCancellation = $booking->hasPendingCancellationRequest();
+            $submitted = $booking->status === RoomBookingStatus::Submitted;
+            $expiredRevision = $booking->status === RoomBookingStatus::RevisionRequested
+                && $booking->isExpired();
+            $future = $booking->start_at !== null
+                && $booking->start_at->greaterThan(now(config('app.timezone')));
 
-        $capabilities['can_review'] = $canAct;
-        // Past-start pending requests can no longer be approved (guarded in
-        // the transition service); revision/rejection remain available so a
-        // reviewer can still close the loop explicitly.
-        $capabilities['can_approve'] = $canAct && ! $booking->isExpired();
-        $capabilities['can_request_revision'] = $canAct;
-        $capabilities['can_reject'] = $canAct;
+            $capabilities['can_review'] = $submitted || $expiredRevision;
+            $capabilities['can_start_review'] = $submitted
+                && ! $booking->isExpired()
+                && $booking->review_started_at === null
+                && ! $pendingCancellation;
+            $capabilities['can_approve'] = $submitted
+                && ! $booking->isExpired()
+                && ! $pendingCancellation;
+            $capabilities['can_request_revision'] = $submitted
+                && ! $booking->isExpired()
+                && ! $pendingCancellation;
+            $capabilities['can_reject'] = ($submitted || $expiredRevision)
+                && ! $pendingCancellation;
+            $capabilities['can_decide_cancellation'] = $pendingCancellation && $future;
+
+            if ($capabilities['can_decide_cancellation']) {
+                $capabilities['next_action'] = 'decide_cancellation';
+            } elseif ($capabilities['can_start_review']) {
+                $capabilities['next_action'] = 'start_review';
+            } elseif ($capabilities['can_review']) {
+                $capabilities['next_action'] = 'review';
+            }
+        }
 
         return $capabilities;
     }

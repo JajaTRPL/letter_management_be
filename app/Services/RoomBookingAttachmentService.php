@@ -76,12 +76,21 @@ class RoomBookingAttachmentService
         ];
     }
 
+    /**
+     * @param  callable(RoomBookingRequest): void|null  $lockedGuard
+     *         Runs inside the transaction against the LOCKED booking, before
+     *         any metadata is written. Callers use it to reauthorize
+     *         ownership/status/pending-cancellation state authoritatively;
+     *         domain exceptions it throws propagate unwrapped (after the new
+     *         file is cleaned up).
+     */
     public function storeSuratPeminjaman(
         RoomBookingRequest $booking,
         UploadedFile $file,
         User $actor,
         string $action,
         ?Request $request = null,
+        ?callable $lockedGuard = null,
     ): RoomBookingAttachment {
         if (! in_array($action, ['upload', 'replacement'], true)) {
             throw new RuntimeException('Unsupported room booking attachment audit action.');
@@ -106,10 +115,15 @@ class RoomBookingAttachmentService
                 $metadata,
                 $newPath,
                 $request,
+                $lockedGuard,
             ) {
                 $lockedBooking = RoomBookingRequest::query()
                     ->lockForUpdate()
                     ->findOrFail($booking->id);
+
+                if ($lockedGuard !== null) {
+                    $lockedGuard($lockedBooking);
+                }
 
                 $existing = RoomBookingAttachment::query()
                     ->where('room_booking_request_id', $lockedBooking->id)
@@ -153,11 +167,18 @@ class RoomBookingAttachmentService
 
                 return [$attachment->fresh(), $replacedPath];
             });
+        } catch (RoomBookingDomainException $exception) {
+            // Locked-guard denials keep their domain semantics (409/403);
+            // the newly written file never survives a refused replacement.
+            $this->safeDelete($newPath);
+            throw $exception;
         } catch (Throwable $exception) {
             $this->safeDelete($newPath);
             throw new RuntimeException('Failed to persist room booking attachment metadata.', 0, $exception);
         }
 
+        // The previous valid attachment file is deleted only AFTER the
+        // replacement transaction committed successfully.
         if ($replacedPath && $replacedPath !== $newPath) {
             $this->safeDelete($replacedPath);
         }
@@ -230,18 +251,27 @@ class RoomBookingAttachmentService
     private function validatePdf(UploadedFile $file): void
     {
         if (! $file->isValid()) {
-            throw new RuntimeException('Uploaded surat peminjaman file is invalid.');
+            throw new RoomBookingDomainException(
+                RoomBookingDomainException::INVALID_ATTACHMENT,
+                'Berkas surat peminjaman tidak valid.',
+            );
         }
 
         $extension = strtolower((string) $file->getClientOriginalExtension());
         $guessedMime = $file->getMimeType();
 
         if ($extension !== 'pdf' || $guessedMime !== self::MIME_TYPE) {
-            throw new RuntimeException('Surat peminjaman must be a PDF file.');
+            throw new RoomBookingDomainException(
+                RoomBookingDomainException::INVALID_ATTACHMENT,
+                'Surat peminjaman harus berupa berkas PDF.',
+            );
         }
 
         if ($file->getSize() !== false && $file->getSize() > self::MAX_KB * 1024) {
-            throw new RuntimeException('Surat peminjaman exceeds the maximum allowed size.');
+            throw new RoomBookingDomainException(
+                RoomBookingDomainException::INVALID_ATTACHMENT,
+                'Ukuran surat peminjaman melebihi batas yang diizinkan.',
+            );
         }
     }
 

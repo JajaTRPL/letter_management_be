@@ -29,6 +29,15 @@ class RoomBookingWorkflowAuditService
         RoomBookingWorkflowEvent::EVENT_BOOKING_REJECTED => [],
         RoomBookingWorkflowEvent::EVENT_BOOKING_CANCELLED => [],
         RoomBookingWorkflowEvent::EVENT_LEGACY_BASELINE_IMPORTED => [],
+        RoomBookingWorkflowEvent::EVENT_REVIEW_STARTED => [],
+        RoomBookingWorkflowEvent::EVENT_BOOKING_WITHDRAWN => ['cancellation_source'],
+        RoomBookingWorkflowEvent::EVENT_CANCELLATION_REQUESTED => ['cancellation_request_id'],
+        RoomBookingWorkflowEvent::EVENT_CANCELLATION_REQUEST_WITHDRAWN => ['cancellation_request_id'],
+        RoomBookingWorkflowEvent::EVENT_CANCELLATION_APPROVED => [
+            'cancellation_request_id',
+            'cancellation_source',
+        ],
+        RoomBookingWorkflowEvent::EVENT_CANCELLATION_REJECTED => ['cancellation_request_id'],
     ];
 
     /**
@@ -45,6 +54,7 @@ class RoomBookingWorkflowAuditService
         ?int $submissionIteration = null,
         ?string $publicNote = null,
         array $safeMetadata = [],
+        ?string $correlationId = null,
     ): RoomBookingWorkflowEvent {
         return RoomBookingWorkflowEvent::create([
             'room_booking_request_id' => $booking->id,
@@ -63,7 +73,7 @@ class RoomBookingWorkflowAuditService
             'public_note' => $publicNote,
             'internal_note' => null,
             'safe_metadata' => $this->filterMetadata($eventType, $safeMetadata),
-            'correlation_id' => $this->correlationId(),
+            'correlation_id' => $this->correlationId($correlationId),
             'occurred_at' => Carbon::now(config('app.timezone')),
         ]);
     }
@@ -80,8 +90,12 @@ class RoomBookingWorkflowAuditService
         return $filtered === [] ? null : $filtered;
     }
 
-    private function correlationId(): string
+    private function correlationId(?string $requestedId = null): string
     {
+        if (is_string($requestedId) && Str::isUuid($requestedId)) {
+            return $requestedId;
+        }
+
         $header = request()?->header('X-Request-Id');
 
         return is_string($header) && Str::isUuid($header)
