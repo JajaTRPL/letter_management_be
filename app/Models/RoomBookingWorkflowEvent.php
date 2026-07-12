@@ -17,12 +17,30 @@ class RoomBookingWorkflowEvent extends Model
     use HasFactory;
 
     public const EVENT_BOOKING_SUBMITTED = 'booking_submitted';
+
     public const EVENT_REVISION_REQUESTED = 'revision_requested';
+
     public const EVENT_BOOKING_RESUBMITTED = 'booking_resubmitted';
+
     public const EVENT_BOOKING_APPROVED = 'booking_approved';
+
     public const EVENT_BOOKING_REJECTED = 'booking_rejected';
+
     public const EVENT_BOOKING_CANCELLED = 'booking_cancelled';
+
     public const EVENT_LEGACY_BASELINE_IMPORTED = 'legacy_baseline_imported';
+
+    public const EVENT_REVIEW_STARTED = 'review_started';
+
+    public const EVENT_BOOKING_WITHDRAWN = 'booking_withdrawn';
+
+    public const EVENT_CANCELLATION_REQUESTED = 'cancellation_requested';
+
+    public const EVENT_CANCELLATION_REQUEST_WITHDRAWN = 'cancellation_request_withdrawn';
+
+    public const EVENT_CANCELLATION_APPROVED = 'cancellation_approved';
+
+    public const EVENT_CANCELLATION_REJECTED = 'cancellation_rejected';
 
     public const EVENT_TYPES = [
         self::EVENT_BOOKING_SUBMITTED,
@@ -32,6 +50,12 @@ class RoomBookingWorkflowEvent extends Model
         self::EVENT_BOOKING_REJECTED,
         self::EVENT_BOOKING_CANCELLED,
         self::EVENT_LEGACY_BASELINE_IMPORTED,
+        self::EVENT_REVIEW_STARTED,
+        self::EVENT_BOOKING_WITHDRAWN,
+        self::EVENT_CANCELLATION_REQUESTED,
+        self::EVENT_CANCELLATION_REQUEST_WITHDRAWN,
+        self::EVENT_CANCELLATION_APPROVED,
+        self::EVENT_CANCELLATION_REJECTED,
     ];
 
     protected $fillable = [

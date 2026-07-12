@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\RoomBookingCancellationStatus;
 use App\Enums\RoomBookingStatus;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -15,7 +16,10 @@ class RoomBookingRequest extends Model
      * keeps the original five values; these are read projections only.
      */
     public const EFFECTIVE_STATUS_COMPLETED = 'completed';
+
     public const EFFECTIVE_STATUS_EXPIRED = 'expired';
+
+    public const EFFECTIVE_STATUS_UNDER_REVIEW = 'under_review';
 
     /**
      * workflow_version and submission_iteration are deliberately NOT
@@ -31,12 +35,6 @@ class RoomBookingRequest extends Model
         'participant_count',
         'start_at',
         'end_at',
-        'status',
-        'reviewer_id',
-        'reviewed_at',
-        'revision_note',
-        'rejection_reason',
-        'cancellation_reason',
     ];
 
     protected $casts = [
@@ -48,6 +46,8 @@ class RoomBookingRequest extends Model
         'status' => RoomBookingStatus::class,
         'workflow_version' => 'integer',
         'submission_iteration' => 'integer',
+        'review_started_at' => 'datetime',
+        'review_started_by' => 'integer',
         'reviewer_id' => 'integer',
         'reviewed_at' => 'datetime',
     ];
@@ -81,6 +81,13 @@ class RoomBookingRequest extends Model
             return self::EFFECTIVE_STATUS_EXPIRED;
         }
 
+        if (
+            $this->status === RoomBookingStatus::Submitted
+            && $this->review_started_at !== null
+        ) {
+            return self::EFFECTIVE_STATUS_UNDER_REVIEW;
+        }
+
         return $this->status->value;
     }
 
@@ -97,6 +104,11 @@ class RoomBookingRequest extends Model
     public function reviewer()
     {
         return $this->belongsTo(User::class, 'reviewer_id');
+    }
+
+    public function reviewStartedBy()
+    {
+        return $this->belongsTo(User::class, 'review_started_by');
     }
 
     public function statusHistories()
@@ -123,5 +135,42 @@ class RoomBookingRequest extends Model
     public function workflowEvents()
     {
         return $this->hasMany(RoomBookingWorkflowEvent::class);
+    }
+
+    public function cancellationRequests()
+    {
+        return $this->hasMany(RoomBookingCancellationRequest::class);
+    }
+
+    public function activeCancellationRequest()
+    {
+        return $this->hasOne(RoomBookingCancellationRequest::class)
+            ->where('status', RoomBookingCancellationStatus::Pending->value)
+            ->where('active_pending_guard', true);
+    }
+
+    public function revisionRequestHistory()
+    {
+        return $this->hasOne(RoomBookingStatusHistory::class)
+            ->where('to_status', RoomBookingStatus::RevisionRequested->value)
+            ->oldestOfMany('created_at');
+    }
+
+    public function hasRevisionBeenRequested(): bool
+    {
+        if ($this->relationLoaded('revisionRequestHistory')) {
+            return $this->revisionRequestHistory !== null;
+        }
+
+        return $this->revisionRequestHistory()->exists();
+    }
+
+    public function hasPendingCancellationRequest(): bool
+    {
+        if ($this->relationLoaded('activeCancellationRequest')) {
+            return $this->activeCancellationRequest !== null;
+        }
+
+        return $this->activeCancellationRequest()->exists();
     }
 }
