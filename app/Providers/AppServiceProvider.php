@@ -63,6 +63,16 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute(30)->by($identity);
         });
 
+        RateLimiter::for('room-booking-mutation', function (Request $request) {
+            $userId = $request->user()?->getAuthIdentifier();
+            $identity = $userId ? $userId.'|'.$request->ip() : $request->ip();
+
+            return Limit::perMinute(max(
+                1,
+                (int) config('room_booking.mutation_rate_limit_per_minute', 20),
+            ))->by($identity);
+        });
+
         // Room management (CP2): separate buckets per concern so photo
         // browsing can never starve management mutations and vice versa.
         $roomLimiterIdentity = function (Request $request): string {

@@ -340,9 +340,23 @@ Route::middleware('throttle:api')->group(function () {
             Route::prefix('peminjaman-ruangan/requests')->group(function () {
                 Route::get('/', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'index']);
                 Route::get('/{booking}', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'show']);
-                Route::patch('/{booking}/approve', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'approve']);
-                Route::patch('/{booking}/revise', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'revise']);
-                Route::patch('/{booking}/reject', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'reject']);
+                Route::patch('/{booking}/start-review', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'startReview'])
+                    ->middleware('throttle:room-booking-mutation');
+                Route::patch('/{booking}/approve', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'approve'])
+                    ->middleware('throttle:room-booking-mutation');
+                Route::patch('/{booking}/revise', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'revise'])
+                    ->middleware('throttle:room-booking-mutation');
+                Route::patch('/{booking}/reject', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'reject'])
+                    ->middleware('throttle:room-booking-mutation');
+            });
+
+            Route::prefix('peminjaman-ruangan/cancellation-requests')->group(function () {
+                Route::get('/', [\App\Http\Controllers\Tendik\RoomBookingCancellationRequestController::class, 'index']);
+                Route::get('/{cancellationRequest}', [\App\Http\Controllers\Tendik\RoomBookingCancellationRequestController::class, 'show']);
+                Route::patch('/{cancellationRequest}/approve', [\App\Http\Controllers\Tendik\RoomBookingCancellationRequestController::class, 'approve'])
+                    ->middleware('throttle:room-booking-mutation');
+                Route::patch('/{cancellationRequest}/reject', [\App\Http\Controllers\Tendik\RoomBookingCancellationRequestController::class, 'reject'])
+                    ->middleware('throttle:room-booking-mutation');
             });
 
             // Scholarship Review Actions
@@ -483,8 +497,17 @@ Route::middleware('throttle:api')->group(function () {
                         ->middleware('throttle:peminjaman-attachment');
                     Route::get('/{booking}', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'show']);
                     Route::put('/{booking}', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'update']);
-                    Route::patch('/{booking}/submit', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'submit']);
-                    Route::patch('/{booking}/cancel', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'cancel']);
+                    Route::patch('/{booking}/submit', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'submit'])
+                        ->middleware('throttle:room-booking-mutation');
+                    Route::patch('/{booking}/cancel', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'cancel'])
+                        ->middleware('throttle:room-booking-mutation');
+                    Route::post('/{booking}/withdraw', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'withdraw'])
+                        ->middleware('throttle:room-booking-mutation');
+                    Route::post('/{booking}/cancellation-requests', [\App\Http\Controllers\Mahasiswa\RoomBookingCancellationRequestController::class, 'store'])
+                        ->middleware('throttle:room-booking-mutation');
+                    Route::get('/{booking}/cancellation-request', [\App\Http\Controllers\Mahasiswa\RoomBookingCancellationRequestController::class, 'show']);
+                    Route::patch('/{booking}/cancellation-requests/{cancellationRequest}/withdraw', [\App\Http\Controllers\Mahasiswa\RoomBookingCancellationRequestController::class, 'withdraw'])
+                        ->middleware('throttle:room-booking-mutation');
                 });
                 Route::post(
                     '/{booking}/attachment/surat-peminjaman',

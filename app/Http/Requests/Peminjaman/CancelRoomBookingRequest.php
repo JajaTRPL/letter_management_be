@@ -14,7 +14,12 @@ class CancelRoomBookingRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'reason' => ['required', 'string', 'max:5000'],
+            'reason' => [
+                'required',
+                'string',
+                'max:'.config('room_booking.reason_max_length', 2000),
+            ],
+            'expected_workflow_version' => ['nullable', 'integer', 'min:1'],
         ];
     }
 }

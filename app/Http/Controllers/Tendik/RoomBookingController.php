@@ -2,18 +2,21 @@
 
 namespace App\Http\Controllers\Tendik;
 
-use App\Enums\RoomBookingStatus;
 use App\Enums\RoomType;
 use App\Http\Controllers\Concerns\HandlesRoomBookingApi;
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Peminjaman\ApproveRoomBookingRequest;
 use App\Http\Requests\Peminjaman\BookingListRequest;
 use App\Http\Requests\Peminjaman\RejectRoomBookingRequest;
-use App\Http\Requests\Peminjaman\RoomBookingCalendarRequest;
 use App\Http\Requests\Peminjaman\ReviseRoomBookingRequest;
+use App\Http\Requests\Peminjaman\RoomBookingCalendarRequest;
+use App\Http\Requests\Peminjaman\StartRoomBookingReviewRequest;
 use App\Models\RoomBookingRequest;
 use App\Services\RoomBookingConflictService;
 use App\Services\RoomBookingDomainException;
+use App\Services\RoomBookingLifecycleCapabilityResolver;
 use App\Services\RoomBookingReviewerResolver;
+use App\Services\RoomBookingReviewService;
 use App\Services\RoomBookingTransitionService;
 use App\Services\RoomPermissionResolver;
 use Illuminate\Database\Eloquent\Builder;
@@ -21,6 +24,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Throwable;
 
 class RoomBookingController extends Controller
 {
@@ -31,6 +35,8 @@ class RoomBookingController extends Controller
         private RoomBookingTransitionService $transitionService,
         private RoomPermissionResolver $roomPermissionResolver,
         private RoomBookingConflictService $conflictService,
+        private RoomBookingLifecycleCapabilityResolver $capabilityResolver,
+        private RoomBookingReviewService $reviewService,
     ) {}
 
     public function index(BookingListRequest $request): JsonResponse
@@ -131,11 +137,18 @@ class RoomBookingController extends Controller
         ]);
     }
 
-    public function approve(Request $request, RoomBookingRequest $booking): JsonResponse
-    {
+    public function approve(
+        ApproveRoomBookingRequest $request,
+        RoomBookingRequest $booking,
+    ): JsonResponse {
         return $this->transitionResponse(
-            fn () => $this->transitionService->approve($booking, $request->user()),
+            fn () => $this->transitionService->approve(
+                $booking,
+                $request->user(),
+                $request->validated('expected_workflow_version'),
+            ),
             'Pengajuan peminjaman ruangan berhasil disetujui',
+            $booking,
         );
     }
 
@@ -148,8 +161,10 @@ class RoomBookingController extends Controller
                 $booking,
                 $request->user(),
                 $request->validated('note'),
+                $request->validated('expected_workflow_version'),
             ),
             'Permintaan revisi peminjaman ruangan berhasil dikirim',
+            $booking,
         );
     }
 
@@ -162,27 +177,71 @@ class RoomBookingController extends Controller
                 $booking,
                 $request->user(),
                 $request->validated('reason'),
+                $request->validated('expected_workflow_version'),
             ),
             'Pengajuan peminjaman ruangan berhasil ditolak',
+            $booking,
         );
     }
 
-    private function transitionResponse(callable $transition, string $message): JsonResponse
-    {
+    public function startReview(
+        StartRoomBookingReviewRequest $request,
+        RoomBookingRequest $booking,
+    ): JsonResponse {
+        abort_unless(
+            $this->reviewerResolver->canActAsApprover($request->user(), $booking),
+            404,
+        );
+
+        try {
+            $outcome = $this->reviewService->start(
+                $booking,
+                $request->user(),
+                $request->integer('expected_workflow_version'),
+                $request->validated('idempotency_key'),
+                fn (array $result): array => $this->roomBookingMutationResponseBody(
+                    $result,
+                    includeRequester: true,
+                ),
+            );
+
+            return $this->roomBookingOutcomeResponse($outcome);
+        } catch (RoomBookingDomainException $exception) {
+            return $this->roomBookingDomainResponse(
+                $exception,
+                $booking,
+                includeRequester: true,
+            );
+        } catch (Throwable $exception) {
+            return $this->roomBookingInfrastructureResponse($exception, $booking);
+        }
+    }
+
+    private function transitionResponse(
+        callable $transition,
+        string $message,
+        RoomBookingRequest $subject,
+    ): JsonResponse {
         try {
             $booking = $transition();
 
             return response()->json([
                 'message' => $message,
                 'data' => $this->bookingPayload(
-                $booking,
-                includeRequester: true,
-                includeHistory: true,
-                includeConflicts: true,
-            ),
-        ]);
+                    $booking,
+                    includeRequester: true,
+                    includeHistory: true,
+                    includeConflicts: true,
+                ),
+            ]);
         } catch (RoomBookingDomainException $exception) {
-            return $this->roomBookingDomainResponse($exception);
+            return $this->roomBookingDomainResponse(
+                $exception,
+                $subject,
+                includeRequester: true,
+            );
+        } catch (Throwable $exception) {
+            return $this->roomBookingInfrastructureResponse($exception, $subject);
         }
     }
 
@@ -307,8 +366,10 @@ class RoomBookingController extends Controller
     private function calendarItemPayload(RoomBookingRequest $booking, Request $request): array
     {
         $room = $booking->room;
-        $canTakeReviewerAction = $booking->status === RoomBookingStatus::Submitted
-            && $this->reviewerResolver->canActAsApprover($request->user(), $booking);
+        $capabilities = $this->capabilityResolver->capabilitiesFor(
+            $request->user(),
+            $booking,
+        );
 
         return array_merge([
             'id' => (int) $booking->id,
@@ -326,10 +387,12 @@ class RoomBookingController extends Controller
             'start_at' => $booking->start_at->toIso8601String(),
             'end_at' => $booking->end_at->toIso8601String(),
             'can_view' => $this->canViewCalendarBooking($booking, $request),
-            'can_review' => $canTakeReviewerAction,
-            'can_approve' => $canTakeReviewerAction,
-            'can_reject' => $canTakeReviewerAction,
-            'can_request_revision' => $canTakeReviewerAction,
+            'can_review' => $capabilities['can_review'],
+            'can_start_review' => $capabilities['can_start_review'],
+            'can_approve' => $capabilities['can_approve'],
+            'can_reject' => $capabilities['can_reject'],
+            'can_request_revision' => $capabilities['can_request_revision'],
+            'can_decide_cancellation' => $capabilities['can_decide_cancellation'],
             'can_cancel' => false,
             'can_manage_room' => $this->roomPermissionResolver->canReadRoomManagement(
                 $request->user(),
