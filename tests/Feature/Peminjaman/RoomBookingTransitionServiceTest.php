@@ -163,7 +163,7 @@ class RoomBookingTransitionServiceTest extends TestCase
         ]);
     }
 
-    public function test_owner_can_cancel_submitted_and_revision_requested_bookings(): void
+    public function test_owner_can_directly_withdraw_only_eligible_submitted_booking(): void
     {
         $missingReasonBooking = $this->roomBooking($this->classroom());
         $missingReason = $this->captureDomainException(
@@ -175,25 +175,31 @@ class RoomBookingTransitionServiceTest extends TestCase
         );
         $this->assertSame(RoomBookingDomainException::REASON_REQUIRED, $missingReason->reason);
 
-        foreach ([
-            RoomBookingStatus::Submitted,
+        $requester = $this->bookingUser();
+        $submitted = $this->roomBooking($this->classroom(), $requester);
+        $cancelled = $this->transitions->cancel(
+            $submitted,
+            $requester,
+            'The activity was cancelled.',
+        );
+        $this->assertSame(RoomBookingStatus::Cancelled, $cancelled->status);
+        $this->assertSame('requester_withdrawal', $cancelled->cancellation_source);
+
+        $revision = $this->roomBooking(
+            $this->classroom(),
+            $requester,
             RoomBookingStatus::RevisionRequested,
-        ] as $status) {
-            $requester = $this->bookingUser();
-            $booking = $this->roomBooking($this->classroom(), $requester, $status);
-
-            $cancelled = $this->transitions->cancel(
-                $booking,
-                $requester,
-                'The activity was cancelled.',
-            );
-
-            $this->assertSame(RoomBookingStatus::Cancelled, $cancelled->status);
-            $this->assertSame('The activity was cancelled.', $cancelled->cancellation_reason);
-        }
+        );
+        $exception = $this->captureDomainException(fn () => $this->transitions->cancel(
+            $revision,
+            $requester,
+            'Must be reviewed.',
+        ));
+        $this->assertSame(RoomBookingDomainException::REVISION_ALREADY_REQUESTED, $exception->reason);
+        $this->assertSame(RoomBookingStatus::RevisionRequested, $revision->fresh()->status);
     }
 
-    public function test_approved_owner_cancellation_is_allowed_only_before_start(): void
+    public function test_approved_owner_cancellation_always_requires_review(): void
     {
         $requester = $this->bookingUser();
         $beforeStart = $this->roomBooking(
@@ -204,12 +210,15 @@ class RoomBookingTransitionServiceTest extends TestCase
             '2026-06-20 12:00:00',
         );
 
-        $cancelled = $this->transitions->cancel(
+        $beforeException = $this->captureDomainException(fn () => $this->transitions->cancel(
             $beforeStart,
             $requester,
             'The approved activity was cancelled.',
+        ));
+        $this->assertSame(
+            RoomBookingDomainException::REQUIRES_CANCELLATION_REVIEW,
+            $beforeException->reason,
         );
-        $this->assertSame(RoomBookingStatus::Cancelled, $cancelled->status);
 
         $atStart = $this->roomBooking(
             $this->classroom(),
@@ -226,7 +235,10 @@ class RoomBookingTransitionServiceTest extends TestCase
             ),
         );
 
-        $this->assertSame(RoomBookingDomainException::INVALID_TRANSITION, $exception->reason);
+        $this->assertSame(
+            RoomBookingDomainException::REQUIRES_CANCELLATION_REVIEW,
+            $exception->reason,
+        );
         $this->assertSame(RoomBookingStatus::Approved, $atStart->fresh()->status);
     }
 

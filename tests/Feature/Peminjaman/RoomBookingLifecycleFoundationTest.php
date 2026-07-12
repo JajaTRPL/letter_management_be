@@ -73,8 +73,16 @@ class RoomBookingLifecycleFoundationTest extends RoomBookingApiTestCase
         $booking = $service->approve($booking, $reviewer);
         $this->assertSame(4, $booking->workflow_version);
 
-        $booking = $service->cancel($booking, $student, 'Kegiatan dibatalkan panitia.');
-        $this->assertSame(5, $booking->workflow_version);
+        try {
+            $service->cancel($booking, $student, 'Kegiatan dibatalkan panitia.');
+            $this->fail('Approved booking must use reviewed cancellation.');
+        } catch (RoomBookingDomainException $exception) {
+            $this->assertSame(
+                RoomBookingDomainException::REQUIRES_CANCELLATION_REVIEW,
+                $exception->reason,
+            );
+        }
+        $this->assertSame(4, $booking->fresh()->workflow_version);
     }
 
     public function test_reject_increments_version_once(): void
@@ -186,7 +194,7 @@ class RoomBookingLifecycleFoundationTest extends RoomBookingApiTestCase
         ]);
 
         // Model-level guard: mass assignment drops the fields entirely.
-        $model = new \App\Models\RoomBookingRequest();
+        $model = new RoomBookingRequest;
         $model->fill(['workflow_version' => 9, 'submission_iteration' => 9]);
         $this->assertNull($model->workflow_version);
         $this->assertNull($model->submission_iteration);
@@ -457,7 +465,7 @@ class RoomBookingLifecycleFoundationTest extends RoomBookingApiTestCase
         $this->assertFalse($reviewerCaps['can_approve']);
         // Reviewers may still close the loop on an expired pending request.
         $this->assertTrue($reviewerCaps['can_reject']);
-        $this->assertTrue($reviewerCaps['can_request_revision']);
+        $this->assertFalse($reviewerCaps['can_request_revision']);
 
         $completed = $this->roomBooking(
             $this->classroom(),
@@ -489,7 +497,8 @@ class RoomBookingLifecycleFoundationTest extends RoomBookingApiTestCase
             ->assertOk()
             ->assertJsonPath('data.capabilities.can_edit', true)
             ->assertJsonPath('data.capabilities.can_resubmit', true)
-            ->assertJsonPath('data.capabilities.can_cancel', true)
+            ->assertJsonPath('data.capabilities.can_cancel', false)
+            ->assertJsonPath('data.capabilities.can_request_cancellation', true)
             ->assertJsonPath('data.capabilities.can_approve', false);
     }
 }

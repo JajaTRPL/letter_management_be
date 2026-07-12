@@ -234,7 +234,7 @@ class RoomBookingMahasiswaApiTest extends RoomBookingApiTestCase
             ->assertJsonPath('code', 'attachment_required');
     }
 
-    public function test_mahasiswa_can_cancel_submitted_and_revision_requested_bookings(): void
+    public function test_legacy_cancel_only_withdraws_eligible_submitted_booking(): void
     {
         $student = $this->student();
         $room = $this->classroom();
@@ -246,21 +246,19 @@ class RoomBookingMahasiswaApiTest extends RoomBookingApiTestCase
         );
         $this->actingAsUser($student);
 
-        foreach ([$submitted, $revision] as $booking) {
-            $this->patchJson(
-                $this->mahasiswaUrl("/requests/{$booking->id}/cancel"),
-                ['reason' => 'Activity cancelled by requester.'],
-            )
-                ->assertOk()
-                ->assertJsonPath(
-                    'data.status',
-                    RoomBookingStatus::Cancelled->value,
-                )
-                ->assertJsonPath(
-                    'data.status_histories.0.to_status',
-                    RoomBookingStatus::Cancelled->value,
-                );
-        }
+        $this->patchJson(
+            $this->mahasiswaUrl("/requests/{$submitted->id}/cancel"),
+            ['reason' => 'Activity cancelled by requester.'],
+        )->assertOk()
+            ->assertJsonPath('data.status', RoomBookingStatus::Cancelled->value)
+            ->assertJsonPath('data.status_histories.0.to_status', RoomBookingStatus::Cancelled->value);
+
+        $this->patchJson(
+            $this->mahasiswaUrl("/requests/{$revision->id}/cancel"),
+            ['reason' => 'Activity cancelled by requester.'],
+        )->assertConflict()
+            ->assertJsonPath('code', 'revision_already_requested')
+            ->assertJsonPath('data.capabilities.can_request_cancellation', true);
     }
 
     public function test_mahasiswa_cannot_cancel_approved_booking_at_start_time(): void
@@ -280,6 +278,6 @@ class RoomBookingMahasiswaApiTest extends RoomBookingApiTestCase
             ['reason' => 'Too late to cancel.'],
         )
             ->assertConflict()
-            ->assertJsonPath('code', 'invalid_transition');
+            ->assertJsonPath('code', 'requires_cancellation_review');
     }
 }

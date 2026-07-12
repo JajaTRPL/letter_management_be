@@ -4,9 +4,11 @@ namespace Tests\Feature\Peminjaman;
 
 use App\Enums\RoomBookingStatus;
 use App\Models\RoomBookingAttachment;
+use App\Models\RoomBookingCancellationRequest;
 use App\Models\RoomBookingRequest;
 use App\Models\RoomBookingSubmissionSnapshot;
 use App\Models\RoomBookingWorkflowEvent;
+use App\Services\RoomBookingCancellationRequestService;
 use App\Services\RoomBookingDomainException;
 use App\Services\RoomBookingSubmissionSnapshotService;
 use App\Services\RoomBookingTransitionService;
@@ -233,7 +235,24 @@ class RoomBookingSubmissionEvidenceTest extends RoomBookingApiTestCase
         $booking = $service->requestRevision($booking, $reviewer, 'Lengkapi data.');
         $booking = $service->submit($booking, $student);
         $booking = $service->approve($booking, $reviewer);
-        $service->cancel($booking, $student, 'Kegiatan batal.');
+        $cancellations = app(RoomBookingCancellationRequestService::class);
+        $requested = $cancellations->create(
+            $booking,
+            $student,
+            'Kegiatan batal.',
+            4,
+            'evidence-cancel-request',
+        );
+        $cancellationRequest = RoomBookingCancellationRequest::findOrFail(
+            $requested->body['data']['cancellation_request_id'],
+        );
+        $cancellations->approve(
+            $cancellationRequest,
+            $reviewer,
+            'Disetujui.',
+            5,
+            'evidence-cancel-approve',
+        );
 
         $events = RoomBookingWorkflowEvent::query()
             ->where('room_booking_request_id', $booking->id)
@@ -245,7 +264,8 @@ class RoomBookingSubmissionEvidenceTest extends RoomBookingApiTestCase
             RoomBookingWorkflowEvent::EVENT_REVISION_REQUESTED,
             RoomBookingWorkflowEvent::EVENT_BOOKING_RESUBMITTED,
             RoomBookingWorkflowEvent::EVENT_BOOKING_APPROVED,
-            RoomBookingWorkflowEvent::EVENT_BOOKING_CANCELLED,
+            RoomBookingWorkflowEvent::EVENT_CANCELLATION_REQUESTED,
+            RoomBookingWorkflowEvent::EVENT_CANCELLATION_APPROVED,
         ], $events->pluck('event_type')->all());
 
         $submitted = $events[0];
@@ -276,7 +296,12 @@ class RoomBookingSubmissionEvidenceTest extends RoomBookingApiTestCase
         $this->assertSame(2, $resubmitted->submission_iteration);
         $this->assertSame(3, $resubmitted->workflow_version_after);
 
-        $cancelled = $events[4];
+        $requestedCancellation = $events[4];
+        $this->assertSame('approved', $requestedCancellation->previous_status);
+        $this->assertSame('approved', $requestedCancellation->resulting_status);
+        $this->assertSame(5, $requestedCancellation->workflow_version_after);
+
+        $cancelled = $events[5];
         $this->assertSame('approved', $cancelled->previous_status);
         $this->assertSame('cancelled', $cancelled->resulting_status);
         $this->assertSame('Kegiatan batal.', $cancelled->public_note);
@@ -309,8 +334,13 @@ class RoomBookingSubmissionEvidenceTest extends RoomBookingApiTestCase
             $this->validBookingPayloadWithPdf($room),
         );
 
-        $response->assertUnprocessable();
-        // Original exception semantics retained; no raw storage path leaks.
+        $response->assertStatus(500)
+            ->assertJsonPath('code', 'infrastructure_error');
+        // Infrastructure details remain private; no raw collaborator text or path leaks.
+        $this->assertStringNotContainsString(
+            'Snapshot pipeline unavailable',
+            $response->getContent(),
+        );
         $this->assertStringNotContainsString(
             'room-booking-attachments',
             $response->getContent(),
