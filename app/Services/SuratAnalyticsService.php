@@ -10,18 +10,23 @@ class SuratAnalyticsService
 {
     /**
      * Minimum number of completed surat required to use dynamic duration.
+     *
+     * Public because the review-performance analytics reads the SAME number:
+     * "how much data is enough to stop estimating" must be one answer across the
+     * product, or the student-facing badge and the governance dashboard will
+     * disagree about whether a figure is trustworthy.
      */
-    private const MIN_SAMPLE_SIZE = 5;
+    public const MIN_SAMPLE_SIZE = 5;
 
     /**
      * Maximum duration in days to consider valid (outlier filter).
      */
-    private const MAX_DURATION_DAYS = 30;
+    public const MAX_DURATION_DAYS = 30;
 
     /**
      * Cache TTL in seconds (10 minutes).
      */
-    private const CACHE_TTL = 600;
+    public const CACHE_TTL = 600;
 
     /**
      * Static fallback labels when insufficient data.

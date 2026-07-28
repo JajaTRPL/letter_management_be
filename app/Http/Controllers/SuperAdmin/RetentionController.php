@@ -5,6 +5,7 @@ namespace App\Http\Controllers\SuperAdmin;
 use App\Http\Controllers\Controller;
 use App\Models\LetterDocumentArtifact;
 use App\Models\LetterRetentionAction;
+use App\Services\LetterRetentionAutomationService;
 use App\Services\LetterRetentionPolicyService;
 use App\Services\LetterRetentionService;
 use App\Services\SuperAdminRetentionService;
@@ -52,6 +53,55 @@ class RetentionController extends Controller
         return response()->json([
             'message' => 'Kebijakan retensi surat berhasil diperbarui',
             'data' => $this->retentionApi->policyPayload(),
+        ]);
+    }
+
+    public function automation(LetterRetentionAutomationService $automation)
+    {
+        return response()->json([
+            'message' => 'Status pengarsipan otomatis berhasil diambil',
+            'data' => $automation->status(),
+        ]);
+    }
+
+    public function updateAutomation(Request $request, LetterRetentionAutomationService $automation)
+    {
+        $validated = $request->validate([
+            'enabled' => 'required|boolean',
+            'reason' => 'required|string|min:10|max:1000',
+            'acknowledged' => 'required|accepted',
+            'confirmation_phrase' => ['nullable', 'string', 'max:64'],
+        ], [
+            'reason.required' => 'Alasan wajib diisi.',
+            'reason.min' => 'Alasan minimal 10 karakter.',
+            'acknowledged.required' => 'Anda harus menyetujui konsekuensi tindakan ini.',
+            'acknowledged.accepted' => 'Anda harus menyetujui konsekuensi tindakan ini.',
+        ]);
+
+        $enabling = $request->boolean('enabled');
+
+        // Disabling is the higher-risk, harder-to-verify direction — require the
+        // typed confirmation phrase.
+        if (!$enabling && ($validated['confirmation_phrase'] ?? '') !== 'NONAKTIFKAN') {
+            return response()->json([
+                'message' => 'Ketik NONAKTIFKAN untuk mengonfirmasi penonaktifan.',
+            ], 422);
+        }
+
+        // Cannot enable automation if the retention schema is not installed.
+        if ($enabling && !$this->policies->schemaReady()) {
+            return response()->json([
+                'message' => 'Sistem arsip belum siap. Pengarsipan otomatis tidak dapat diaktifkan.',
+            ], 422);
+        }
+
+        $status = $automation->setEnabled($enabling, $request->user(), $validated['reason']);
+
+        return response()->json([
+            'message' => $enabling
+                ? 'Pengarsipan otomatis berhasil diaktifkan'
+                : 'Pengarsipan otomatis berhasil dinonaktifkan',
+            'data' => $status,
         ]);
     }
 

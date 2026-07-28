@@ -8,24 +8,25 @@ use App\Http\Controllers\Concerns\BuildsRoomManagementPayloads;
 use App\Http\Controllers\Concerns\HandlesRoomBookingApi;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Peminjaman\AvailabilityRequest;
-use App\Http\Requests\Peminjaman\CancelRoomBookingRequest;
 use App\Http\Requests\Peminjaman\RoomListRequest;
 use App\Http\Requests\Peminjaman\StoreRoomBookingRequest;
+use App\Http\Requests\Peminjaman\SubmitRoomBookingRequest;
 use App\Http\Requests\Peminjaman\UpdateRoomBookingRequest;
+use App\Http\Requests\Peminjaman\WithdrawRoomBookingRequest;
 use App\Models\Room;
 use App\Models\RoomBookingRequest;
 use App\Services\RoomAvailabilityService;
 use App\Services\RoomBookingAttachmentService;
 use App\Services\RoomBookingConflictService;
 use App\Services\RoomBookingDomainException;
+use App\Services\RoomBookingInitialSubmissionService;
 use App\Services\RoomBookingTransitionService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
-use RuntimeException;
+use Throwable;
 
 class RoomBookingController extends Controller
 {
@@ -37,6 +38,7 @@ class RoomBookingController extends Controller
         private RoomBookingAttachmentService $attachmentService,
         private RoomBookingConflictService $conflictService,
         private RoomBookingTransitionService $transitionService,
+        private RoomBookingInitialSubmissionService $initialSubmissions,
     ) {}
 
     public function rooms(RoomListRequest $request): JsonResponse
@@ -106,39 +108,33 @@ class RoomBookingController extends Controller
         try {
             $validated = $request->validated();
             $file = $request->file(RoomBookingAttachmentService::INPUT_SURAT_PEMINJAMAN);
+            $idempotencyKey = $validated['idempotency_key'];
             unset($validated[RoomBookingAttachmentService::INPUT_SURAT_PEMINJAMAN]);
+            unset($validated['idempotency_key']);
 
             if (! $file instanceof UploadedFile) {
-                throw new RuntimeException('Surat peminjaman wajib diunggah.');
+                throw new RoomBookingDomainException(
+                    RoomBookingDomainException::ATTACHMENT_REQUIRED,
+                    'Surat peminjaman wajib diunggah.',
+                );
             }
 
-            $booking = new RoomBookingRequest(array_merge(
+            $outcome = $this->initialSubmissions->submit(
+                $request->user(),
                 $validated,
-                ['requester_id' => $request->user()->id],
-            ));
+                $file,
+                $idempotencyKey,
+                $request,
+                fn (array $result): array => $this->roomBookingInitialSubmissionResponseBody(
+                    $result,
+                ),
+            );
 
-            $this->assertNoApprovedConflict($booking);
-            $booking = DB::transaction(function () use ($booking, $file, $request) {
-                $submitted = $this->transitionService->submit($booking, $request->user());
-                $this->attachmentService->storeSuratPeminjaman(
-                    $submitted,
-                    $file,
-                    $request->user(),
-                    'upload',
-                    $request,
-                );
-
-                return $submitted->fresh();
-            });
-
-            return response()->json([
-                'message' => 'Pengajuan peminjaman ruangan berhasil dikirim',
-                'data' => $this->bookingPayload($booking, includeHistory: true),
-            ], 201);
+            return $this->roomBookingOutcomeResponse($outcome);
         } catch (RoomBookingDomainException $exception) {
             return $this->roomBookingDomainResponse($exception);
-        } catch (RuntimeException $exception) {
-            return response()->json(['message' => $exception->getMessage()], 422);
+        } catch (Throwable $exception) {
+            return $this->roomBookingInfrastructureResponse($exception);
         }
     }
 
@@ -159,30 +155,31 @@ class RoomBookingController extends Controller
         $this->assertOwned($request, $booking);
 
         try {
-            if ($booking->status !== RoomBookingStatus::RevisionRequested) {
-                throw new RoomBookingDomainException(
-                    RoomBookingDomainException::INVALID_TRANSITION,
-                    'Pengajuan hanya dapat diubah saat berstatus revision_requested.',
-                );
-            }
-
-            $booking->fill($request->validated());
-            $booking->unsetRelation('room');
-            $this->transitionService->validateForSubmission($booking);
-            $this->assertNoApprovedConflict($booking, $booking->id);
-            $booking->save();
+            // Every guard (status, pending cancellation, version, schedule,
+            // conflict) is re-evaluated by the service under the booking
+            // lock; nothing here is the final authority.
+            $booking = $this->transitionService->updateRevision(
+                $booking,
+                $request->user(),
+                $request->safe()->except(['expected_workflow_version']),
+                $request->validated('expected_workflow_version'),
+            );
 
             return response()->json([
                 'message' => 'Perbaikan pengajuan peminjaman berhasil disimpan',
-                'data' => $this->bookingPayload($booking->fresh(), includeHistory: true),
+                'data' => $this->bookingPayload($booking, includeHistory: true),
             ]);
         } catch (RoomBookingDomainException $exception) {
-            return $this->roomBookingDomainResponse($exception);
+            return $this->roomBookingDomainResponse($exception, $booking);
+        } catch (Throwable $exception) {
+            return $this->roomBookingInfrastructureResponse($exception, $booking);
         }
     }
 
-    public function submit(Request $request, RoomBookingRequest $booking): JsonResponse
-    {
+    public function submit(
+        SubmitRoomBookingRequest $request,
+        RoomBookingRequest $booking,
+    ): JsonResponse {
         $this->assertOwned($request, $booking);
 
         try {
@@ -202,36 +199,44 @@ class RoomBookingController extends Controller
             }
 
             $this->assertNoApprovedConflict($booking, $booking->id);
-            $booking = $this->transitionService->submit($booking, $request->user());
+            $booking = $this->transitionService->submit(
+                $booking,
+                $request->user(),
+                $request->validated('expected_workflow_version'),
+            );
 
             return response()->json([
                 'message' => 'Pengajuan peminjaman berhasil dikirim ulang',
                 'data' => $this->bookingPayload($booking, includeHistory: true),
             ]);
         } catch (RoomBookingDomainException $exception) {
-            return $this->roomBookingDomainResponse($exception);
+            return $this->roomBookingDomainResponse($exception, $booking);
+        } catch (Throwable $exception) {
+            return $this->roomBookingInfrastructureResponse($exception, $booking);
         }
     }
 
-    public function cancel(
-        CancelRoomBookingRequest $request,
+    public function withdraw(
+        WithdrawRoomBookingRequest $request,
         RoomBookingRequest $booking,
     ): JsonResponse {
         $this->assertOwned($request, $booking);
 
         try {
-            $booking = $this->transitionService->cancel(
+            $outcome = $this->transitionService->withdraw(
                 $booking,
                 $request->user(),
                 $request->validated('reason'),
+                $request->integer('expected_workflow_version'),
+                $request->validated('idempotency_key'),
+                fn (array $result): array => $this->roomBookingMutationResponseBody($result),
             );
 
-            return response()->json([
-                'message' => 'Pengajuan peminjaman ruangan berhasil dibatalkan',
-                'data' => $this->bookingPayload($booking, includeHistory: true),
-            ]);
+            return $this->roomBookingOutcomeResponse($outcome);
         } catch (RoomBookingDomainException $exception) {
-            return $this->roomBookingDomainResponse($exception);
+            return $this->roomBookingDomainResponse($exception, $booking);
+        } catch (Throwable $exception) {
+            return $this->roomBookingInfrastructureResponse($exception, $booking);
         }
     }
 

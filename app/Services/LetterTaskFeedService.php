@@ -8,11 +8,32 @@ use App\Models\SuratKeteranganAktifApplication;
 use App\Models\SuratPengantarMagangApplication;
 use App\Models\SuratTugasApplication;
 use App\Support\LetterTypeRegistry;
+use App\Support\Workflow\LetterReviewStageClock;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 
 class LetterTaskFeedService
 {
+
+    /**
+     * When the file arrived at the stage the CURRENT reviewer owns.
+     *
+     * Akademik rows used to read `created_at` — the moment the student created
+     * their draft. A file drafted last week but approved by Tendik five minutes
+     * ago therefore showed a Kaprodi "24 jam tertunda" on arrival, and sorted as
+     * if it had been ignored for days. The reviewer was being shown someone
+     * else's elapsed time as their own backlog.
+     *
+     * Delegated to LetterReviewStageClock, which is the same clock the review-SLA
+     * scanner and the review analytics use. All three now agree on when a stage's
+     * wait began; previously the dashboard was the odd one out.
+     */
+    private function stageEntryAt(Model $task): Carbon
+    {
+        return LetterReviewStageClock::waitingSince($task, (string) $task->getAttribute('status'))
+            ?? Carbon::parse($task->getAttribute('created_at'));
+    }
     public function combinedTendikRows($scholarshipTasks, $magangTasks, $aktifTasks = null, $prosesLuarNegeriTasks = null, $suratTugasTasks = null): Collection
     {
         return $this->tendikScholarshipRows($scholarshipTasks)
@@ -260,7 +281,7 @@ class LetterTaskFeedService
 
         return array_merge([
             'id' => $task->id,
-            'submitted_at' => $this->formatDate($task->created_at),
+            'submitted_at' => $this->formatDate($this->stageEntryAt($task)),
             'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? $task->user?->name,
             'nim' => $task->mahasiswaProfile?->nim,
             'type' => $task->scholarship_name ?? 'Beasiswa',
@@ -270,8 +291,8 @@ class LetterTaskFeedService
             'status' => $task->status,
             'docx_url' => null,
             'action_at' => $this->formatNullableDate($this->actionTimestamp($task)),
-            'is_overdue' => $task->created_at->diffInHours(now()) > 24,
-            'sort_timestamp' => $task->created_at->timestamp,
+            'is_overdue' => $this->stageEntryAt($task)->diffInHours(now()) > 24,
+            'sort_timestamp' => $this->stageEntryAt($task)->timestamp,
         ], $this->actorFields($task), $this->academicActorFields($task));
     }
 
@@ -281,7 +302,7 @@ class LetterTaskFeedService
 
         return array_merge([
             'id' => $task->id,
-            'submitted_at' => $this->formatDate($task->created_at),
+            'submitted_at' => $this->formatDate($this->stageEntryAt($task)),
             'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? $task->user?->name,
             'nim' => $task->mahasiswaProfile?->nim,
             'type' => $metadata['letter_label'],
@@ -291,8 +312,8 @@ class LetterTaskFeedService
             'status' => $task->status,
             'docx_url' => null,
             'action_at' => $this->formatNullableDate($this->actionTimestamp($task)),
-            'is_overdue' => $task->created_at->diffInHours(now()) > 24,
-            'sort_timestamp' => $task->created_at->timestamp,
+            'is_overdue' => $this->stageEntryAt($task)->diffInHours(now()) > 24,
+            'sort_timestamp' => $this->stageEntryAt($task)->timestamp,
         ], $this->actorFields($task), $this->academicActorFields($task));
     }
 
@@ -302,7 +323,7 @@ class LetterTaskFeedService
 
         return array_merge([
             'id' => $task->id,
-            'submitted_at' => $this->formatDate($task->created_at),
+            'submitted_at' => $this->formatDate($this->stageEntryAt($task)),
             'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? $task->user?->name,
             'nim' => $task->mahasiswaProfile?->nim,
             'type' => $metadata['letter_label'],
@@ -312,8 +333,8 @@ class LetterTaskFeedService
             'status' => $task->status,
             'docx_url' => null,
             'action_at' => $this->formatNullableDate($this->actionTimestamp($task)),
-            'is_overdue' => $task->created_at->diffInHours(now()) > 24,
-            'sort_timestamp' => $task->created_at->timestamp,
+            'is_overdue' => $this->stageEntryAt($task)->diffInHours(now()) > 24,
+            'sort_timestamp' => $this->stageEntryAt($task)->timestamp,
         ], $this->actorFields($task), $this->academicActorFields($task));
     }
 
@@ -323,7 +344,7 @@ class LetterTaskFeedService
 
         return array_merge([
             'id' => $task->id,
-            'submitted_at' => $this->formatDate($task->created_at),
+            'submitted_at' => $this->formatDate($this->stageEntryAt($task)),
             'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? $task->user?->name,
             'nim' => $task->mahasiswaProfile?->nim,
             'type' => $metadata['letter_label'],
@@ -333,8 +354,8 @@ class LetterTaskFeedService
             'status' => $task->status,
             'docx_url' => null,
             'action_at' => $this->formatNullableDate($this->actionTimestamp($task)),
-            'is_overdue' => $task->created_at->diffInHours(now()) > 24,
-            'sort_timestamp' => $task->created_at->timestamp,
+            'is_overdue' => $this->stageEntryAt($task)->diffInHours(now()) > 24,
+            'sort_timestamp' => $this->stageEntryAt($task)->timestamp,
         ], $this->actorFields($task), $this->academicActorFields($task));
     }
 
@@ -344,7 +365,7 @@ class LetterTaskFeedService
 
         return array_merge([
             'id' => $task->id,
-            'submitted_at' => $this->formatDate($task->created_at),
+            'submitted_at' => $this->formatDate($this->stageEntryAt($task)),
             'student_name' => $task->mahasiswaProfile?->nama_lengkap ?? $task->user?->name,
             'nim' => $task->mahasiswaProfile?->nim,
             'type' => $metadata['letter_label'],
@@ -354,8 +375,8 @@ class LetterTaskFeedService
             'status' => $task->status,
             'docx_url' => null,
             'action_at' => $this->formatNullableDate($this->actionTimestamp($task)),
-            'is_overdue' => $task->created_at->diffInHours(now()) > 24,
-            'sort_timestamp' => $task->created_at->timestamp,
+            'is_overdue' => $this->stageEntryAt($task)->diffInHours(now()) > 24,
+            'sort_timestamp' => $this->stageEntryAt($task)->timestamp,
         ], $this->actorFields($task), $this->academicActorFields($task));
     }
 

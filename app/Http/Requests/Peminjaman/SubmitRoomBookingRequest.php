@@ -4,7 +4,7 @@ namespace App\Http\Requests\Peminjaman;
 
 use Illuminate\Foundation\Http\FormRequest;
 
-class CancelRoomBookingRequest extends FormRequest
+class SubmitRoomBookingRequest extends FormRequest
 {
     public function authorize(): bool
     {
@@ -14,7 +14,7 @@ class CancelRoomBookingRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'reason' => ['required', 'string', 'max:5000'],
+            'expected_workflow_version' => ['nullable', 'integer', 'min:1'],
         ];
     }
 }

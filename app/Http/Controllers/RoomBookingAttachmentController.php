@@ -3,16 +3,20 @@
 namespace App\Http\Controllers;
 
 use App\Enums\RoomBookingStatus;
+use App\Enums\UserStatus;
 use App\Http\Controllers\Concerns\HandlesRoomBookingApi;
 use App\Models\RoomBookingRequest;
+use App\Models\User;
 use App\Services\RoomBookingAttachmentService;
 use App\Services\RoomBookingDomainException;
-use App\Services\RoomBookingReviewerResolver;
+use App\Services\RoomBookingLifecycleCapabilityResolver;
+use App\Services\RoomBookingTransitionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
-use RuntimeException;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Throwable;
 
 class RoomBookingAttachmentController extends Controller
 {
@@ -20,7 +24,8 @@ class RoomBookingAttachmentController extends Controller
 
     public function __construct(
         private RoomBookingAttachmentService $attachments,
-        private RoomBookingReviewerResolver $reviewerResolver,
+        private RoomBookingLifecycleCapabilityResolver $capabilityResolver,
+        private RoomBookingTransitionService $transitions,
     ) {}
 
     public function replace(Request $request, RoomBookingRequest $booking): JsonResponse
@@ -28,6 +33,8 @@ class RoomBookingAttachmentController extends Controller
         abort_unless((int) $booking->requester_id === (int) $request->user()->id, 404);
 
         try {
+            // Fast-path denial only; the authoritative recheck runs inside
+            // the storage transaction against the locked booking.
             if ((string) $booking->getRawOriginal('status') !== RoomBookingStatus::RevisionRequested->value) {
                 throw new RoomBookingDomainException(
                     RoomBookingDomainException::INVALID_TRANSITION,
@@ -43,20 +50,34 @@ class RoomBookingAttachmentController extends Controller
                     'mimetypes:application/pdf',
                     'max:'.RoomBookingAttachmentService::MAX_KB,
                 ],
+                'expected_workflow_version' => ['nullable', 'integer', 'min:1'],
             ]);
 
             $file = $validated[RoomBookingAttachmentService::INPUT_SURAT_PEMINJAMAN] ?? null;
             if (! $file instanceof UploadedFile) {
-                throw new RuntimeException('Surat peminjaman wajib diunggah.');
+                throw new RoomBookingDomainException(
+                    RoomBookingDomainException::ATTACHMENT_REQUIRED,
+                    'Surat peminjaman wajib diunggah.',
+                );
             }
+
+            $actor = $request->user();
+            $expectedWorkflowVersion = $validated['expected_workflow_version'] ?? null;
 
             $action = $this->attachments->hasSuratPeminjaman($booking) ? 'replacement' : 'upload';
             $this->attachments->storeSuratPeminjaman(
                 $booking,
                 $file,
-                $request->user(),
+                $actor,
                 $action,
                 $request,
+                lockedGuard: function (RoomBookingRequest $lockedBooking) use ($actor, $expectedWorkflowVersion): void {
+                    $this->assertReplaceableUnderLock(
+                        $lockedBooking,
+                        $actor,
+                        $expectedWorkflowVersion === null ? null : (int) $expectedWorkflowVersion,
+                    );
+                },
             );
 
             return response()->json([
@@ -64,10 +85,49 @@ class RoomBookingAttachmentController extends Controller
                 'data' => $this->bookingPayload($booking->fresh(), includeHistory: true),
             ]);
         } catch (RoomBookingDomainException $exception) {
-            return $this->roomBookingDomainResponse($exception);
-        } catch (RuntimeException $exception) {
-            return response()->json(['message' => $exception->getMessage()], 422);
+            return $this->roomBookingDomainResponse($exception, $booking);
+        } catch (ValidationException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            return $this->roomBookingInfrastructureResponse($exception, $booking);
         }
+    }
+
+    /**
+     * Authoritative replacement guard, evaluated against the locked booking:
+     * ownership, active account, revision status, no pending cancellation
+     * request, and optional workflow-version expectation. Runs before any
+     * metadata is written, so a denial leaves the previous attachment (row
+     * and file) fully intact.
+     */
+    private function assertReplaceableUnderLock(
+        RoomBookingRequest $lockedBooking,
+        User $actor,
+        ?int $expectedWorkflowVersion,
+    ): void {
+        $actor->refresh();
+
+        if (
+            $actor->role !== 'mahasiswa'
+            || (int) $lockedBooking->requester_id !== (int) $actor->id
+            || $actor->status !== UserStatus::Active
+        ) {
+            throw new RoomBookingDomainException(
+                RoomBookingDomainException::UNAUTHORIZED_ACTION,
+                'Anda tidak berwenang mengganti surat peminjaman ini.',
+            );
+        }
+
+        $this->transitions->assertExpectedWorkflowVersion($lockedBooking, $expectedWorkflowVersion);
+
+        if ($lockedBooking->status !== RoomBookingStatus::RevisionRequested) {
+            throw new RoomBookingDomainException(
+                RoomBookingDomainException::INVALID_TRANSITION,
+                'Surat peminjaman hanya dapat diganti saat pengajuan berstatus revision_requested.',
+            );
+        }
+
+        $this->transitions->assertNoPendingCancellationRequest($lockedBooking);
     }
 
     public function preview(Request $request, RoomBookingRequest $booking): StreamedResponse
@@ -92,23 +152,8 @@ class RoomBookingAttachmentController extends Controller
 
     private function canReadAttachment(Request $request, RoomBookingRequest $booking): bool
     {
-        $user = $request->user();
-        if (! $user) {
-            return false;
-        }
-
-        if ($user->role === 'super_admin') {
-            return true;
-        }
-
-        if ($user->role === 'mahasiswa') {
-            return (int) $booking->requester_id === (int) $user->id;
-        }
-
-        if ($user->role === 'tendik') {
-            return $this->reviewerResolver->canRead($user, $booking);
-        }
-
-        return false;
+        // Same policy source as the capabilities payload (C7B1): the
+        // endpoint and the projected can_view_attachment flag cannot drift.
+        return $this->capabilityResolver->canViewAttachment($request->user(), $booking);
     }
 }

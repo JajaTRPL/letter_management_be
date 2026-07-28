@@ -5,6 +5,7 @@ namespace Tests\Feature\Peminjaman;
 use App\Enums\RoomBookingStatus;
 use App\Models\RoomBookingAttachment;
 use App\Models\RoomBookingAuditLog;
+use App\Models\RoomBookingRequest;
 use App\Services\RoomBookingAttachmentService;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
@@ -13,6 +14,171 @@ use RuntimeException;
 
 class RoomBookingAttachmentUploadTest extends RoomBookingApiTestCase
 {
+    public function test_replacement_is_rejected_while_cancellation_request_is_pending(): void
+    {
+        $student = $this->student();
+        $booking = $this->markRevisionRequested($this->classroom(), $student);
+        $existing = $this->createSuratPeminjamanAttachment($booking, $student, 'lama.pdf');
+        $this->actingAsUser($student);
+        $this->postJson(
+            $this->mahasiswaUrl("/requests/{$booking->id}/cancellation-requests"),
+            [
+                'reason' => 'Mohon dibatalkan.',
+                'expected_workflow_version' => 1,
+                'idempotency_key' => 'attach-pending-block-01',
+            ],
+        )->assertCreated();
+        $versionAfterRequest = (int) $booking->fresh()->workflow_version;
+
+        $this->post(
+            $this->mahasiswaUrl("/{$booking->id}/attachment/surat-peminjaman"),
+            ['surat_peminjaman_pdf' => $this->validPdfUpload('baru.pdf')],
+        )->assertConflict()
+            ->assertJsonPath('code', 'pending_cancellation_request');
+
+        // Previous attachment (row and file) fully intact; no orphan file.
+        $fresh = RoomBookingAttachment::query()->findOrFail($existing->id);
+        $this->assertSame('lama.pdf', $fresh->original_name);
+        $this->assertSame($existing->storage_path, $fresh->storage_path);
+        Storage::disk('local')->assertExists($existing->storage_path);
+        $this->assertSame(
+            [$existing->storage_path],
+            Storage::disk('local')->allFiles('room-booking-attachments/surat-peminjaman'),
+        );
+        $this->assertSame(1, RoomBookingAttachment::query()->count());
+        $this->assertSame($versionAfterRequest, (int) $booking->fresh()->workflow_version);
+        $this->assertSame(RoomBookingStatus::RevisionRequested, $booking->fresh()->status);
+    }
+
+    public function test_replacement_orderings_with_cancellation_are_deterministic(): void
+    {
+        // Replacement first, then the cancellation request: both succeed.
+        $student = $this->student();
+        $booking = $this->markRevisionRequested($this->classroom(), $student);
+        $this->createSuratPeminjamanAttachment($booking, $student, 'awal.pdf');
+        $this->actingAsUser($student);
+
+        $this->post(
+            $this->mahasiswaUrl("/{$booking->id}/attachment/surat-peminjaman"),
+            ['surat_peminjaman_pdf' => $this->validPdfUpload('pengganti.pdf')],
+        )->assertOk();
+        $this->postJson(
+            $this->mahasiswaUrl("/requests/{$booking->id}/cancellation-requests"),
+            [
+                'reason' => 'Batal setelah berkas diganti.',
+                'expected_workflow_version' => 1,
+                'idempotency_key' => 'attach-order-replace-first',
+            ],
+        )->assertCreated();
+
+        // Final state reached first: replacement is rejected by the locked
+        // guard even though the fast-path saw revision_requested is bypassed
+        // here by driving the service directly with a stale route model.
+        $finalState = $this->markRevisionRequested($this->classroom(), $student);
+        $staleModel = RoomBookingRequest::query()->findOrFail($finalState->id);
+        $finalState->forceFill(['status' => RoomBookingStatus::Cancelled])->save();
+
+        try {
+            app(RoomBookingAttachmentService::class)->storeSuratPeminjaman(
+                $staleModel,
+                $this->validPdfUpload('terlambat.pdf'),
+                $student,
+                'upload',
+                null,
+                lockedGuard: function (RoomBookingRequest $lockedBooking): void {
+                    if ($lockedBooking->status !== RoomBookingStatus::RevisionRequested) {
+                        throw new \App\Services\RoomBookingDomainException(
+                            \App\Services\RoomBookingDomainException::INVALID_TRANSITION,
+                            'Surat peminjaman hanya dapat diganti saat pengajuan berstatus revision_requested.',
+                        );
+                    }
+                },
+            );
+            $this->fail('Expected the locked guard to refuse the replacement.');
+        } catch (\App\Services\RoomBookingDomainException $exception) {
+            // Domain semantics preserved (not wrapped as infrastructure).
+            $this->assertSame(
+                \App\Services\RoomBookingDomainException::INVALID_TRANSITION,
+                $exception->reason,
+            );
+        }
+
+        $this->assertSame(0, RoomBookingAttachment::query()
+            ->where('room_booking_request_id', $finalState->id)
+            ->count());
+        $this->assertSame([], Storage::disk('local')
+            ->allFiles('room-booking-attachments/surat-peminjaman/'.$finalState->id));
+    }
+
+    public function test_replacement_supports_expected_workflow_version(): void
+    {
+        $student = $this->student();
+        $booking = $this->markRevisionRequested($this->classroom(), $student);
+        $this->createSuratPeminjamanAttachment($booking, $student, 'asli.pdf');
+        $this->actingAsUser($student);
+
+        // Stale version: refused under lock, nothing changes.
+        $this->post(
+            $this->mahasiswaUrl("/{$booking->id}/attachment/surat-peminjaman"),
+            [
+                'surat_peminjaman_pdf' => $this->validPdfUpload('gagal.pdf'),
+                'expected_workflow_version' => 99,
+            ],
+        )->assertConflict()->assertJsonPath('code', 'stale_workflow_version');
+        $this->assertSame('asli.pdf', RoomBookingAttachment::firstOrFail()->original_name);
+
+        // Current version: succeeds. Omitted version stays compatible
+        // (covered by the pre-existing replacement tests).
+        $this->post(
+            $this->mahasiswaUrl("/{$booking->id}/attachment/surat-peminjaman"),
+            [
+                'surat_peminjaman_pdf' => $this->validPdfUpload('sukses.pdf'),
+                'expected_workflow_version' => 1,
+            ],
+        )->assertOk();
+        $this->assertSame('sukses.pdf', RoomBookingAttachment::firstOrFail()->original_name);
+        // Replacement itself never bumps the workflow version.
+        $this->assertSame(1, (int) $booking->fresh()->workflow_version);
+    }
+
+    public function test_unexpected_guard_failure_is_safe_and_preserves_previous_attachment(): void
+    {
+        $student = $this->student();
+        $booking = $this->markRevisionRequested($this->classroom(), $student);
+        $existing = $this->createSuratPeminjamanAttachment($booking, $student, 'tetap.pdf');
+
+        try {
+            app(RoomBookingAttachmentService::class)->storeSuratPeminjaman(
+                $booking,
+                $this->validPdfUpload('rusak.pdf'),
+                $student,
+                'replacement',
+                null,
+                lockedGuard: function (): void {
+                    throw new RuntimeException('Simulated unexpected metadata failure.');
+                },
+            );
+            $this->fail('Expected the wrapped infrastructure failure.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame(
+                'Failed to persist room booking attachment metadata.',
+                $exception->getMessage(),
+            );
+            $this->assertStringNotContainsString(
+                'room-booking-attachments',
+                $exception->getMessage(),
+            );
+        }
+
+        // Old attachment preserved, new file cleaned, rows rolled back.
+        Storage::disk('local')->assertExists($existing->storage_path);
+        $this->assertSame('tetap.pdf', RoomBookingAttachment::firstOrFail()->original_name);
+        $this->assertSame(
+            [$existing->storage_path],
+            Storage::disk('local')->allFiles('room-booking-attachments/surat-peminjaman'),
+        );
+    }
+
     public function test_old_rows_render_safe_empty_attachment_metadata(): void
     {
         $student = $this->student();

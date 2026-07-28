@@ -300,13 +300,14 @@ class LetterRetentionServiceTest extends TestCase
         Storage::disk('local')->assertMissing($plnArtifact->pdf_path);
     }
 
-    public function test_scheduler_is_disabled_by_default(): void
+    public function test_scheduler_task_registered_but_automation_off_by_default(): void
     {
-        $this->assertFalse(config('letter_retention.enabled'));
-
+        // The task is registered unconditionally; the DB automation flag gates it.
         $this->artisan('schedule:list')
-            ->expectsOutputToContain('No scheduled tasks have been defined.')
+            ->expectsOutputToContain('letters:retention')
             ->assertExitCode(0);
+
+        $this->assertFalse(app(\App\Services\LetterRetentionAutomationService::class)->isEnabled());
     }
 
     public function test_command_dry_run_has_no_raw_storage_path_output(): void

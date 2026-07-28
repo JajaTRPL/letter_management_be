@@ -26,6 +26,9 @@
         <env name="DB_CONNECTION" value="sqlite"/>
         <env name="DB_DATABASE" value=":memory:"/>
         <env name="MAIL_MAILER" value="array"/>
+        <!-- Reset ships disabled in production (no stakeholder SMTP); enable it here so the
+             reset-flow tests can exercise the feature. Availability tests override per-case. -->
+        <env name="PASSWORD_RESET_ENABLED" value="true"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>
         <env name="PULSE_ENABLED" value="false"/>

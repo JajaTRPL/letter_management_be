@@ -29,6 +29,12 @@ abstract class RoomBookingPayloadRequest extends FormRequest
             'participant_count' => ['required', 'integer', 'min:1'],
             'start_at' => ['required', 'date_format:Y-m-d\TH:i:sP'],
             'end_at' => ['required', 'date_format:Y-m-d\TH:i:sP'],
+            'booking_mode' => ['sometimes', Rule::in(['single_day', 'consecutive_days'])],
+            'occurrence_end_date' => [
+                Rule::requiredIf(fn () => $this->input('booking_mode', 'single_day') === 'consecutive_days'),
+                'nullable',
+                'date_format:Y-m-d',
+            ],
         ];
     }
 
@@ -52,6 +58,24 @@ abstract class RoomBookingPayloadRequest extends FormRequest
                     'participant_count',
                     'Jumlah peserta melebihi kapasitas ruangan.',
                 );
+            }
+
+            if ($validator->errors()->isNotEmpty()) {
+                return;
+            }
+
+            $timezone = config('app.timezone');
+            $start = \Illuminate\Support\Carbon::parse($this->input('start_at'))->setTimezone($timezone);
+            $lastDate = $this->input('booking_mode', 'single_day') === 'consecutive_days'
+                ? \Illuminate\Support\Carbon::createFromFormat('Y-m-d', (string) $this->input('occurrence_end_date'), $timezone)
+                : $start->copy()->startOfDay();
+            $days = $start->copy()->startOfDay()->diffInDays($lastDate, false) + 1;
+            $maximum = max(1, (int) config('room_booking.maximum_consecutive_days', 14));
+
+            if ($days < 1) {
+                $validator->errors()->add('occurrence_end_date', 'Tanggal selesai harus sama atau setelah tanggal mulai.');
+            } elseif ($days > $maximum) {
+                $validator->errors()->add('occurrence_end_date', "Rentang peminjaman maksimal {$maximum} hari berturut-turut.");
             }
         });
     }

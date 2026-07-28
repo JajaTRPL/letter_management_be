@@ -19,7 +19,7 @@ class StoreRoomPhotoRequest extends FormRequest
                 'file',
                 'mimes:jpg,jpeg,png,webp',
                 'mimetypes:image/jpeg,image/png,image/webp',
-                'max:10240',
+                'max:5120',
             ],
         ];
     }
@@ -30,7 +30,7 @@ class StoreRoomPhotoRequest extends FormRequest
             'photo.required' => 'Foto ruangan wajib diunggah.',
             'photo.mimes' => 'Format foto harus JPG, PNG, atau WebP.',
             'photo.mimetypes' => 'Format foto harus JPG, PNG, atau WebP.',
-            'photo.max' => 'Ukuran foto maksimal 10 MB.',
+            'photo.max' => 'Ukuran foto maksimal 5 MB.',
         ];
     }
 }

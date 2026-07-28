@@ -276,13 +276,20 @@ class RetentionApiTest extends TestCase
         ]);
     }
 
-    public function test_scheduler_remains_disabled_by_default(): void
+    public function test_retention_task_is_registered_but_automation_off_by_default(): void
     {
-        $this->assertFalse(config('letter_retention.enabled'));
-
+        // The scheduled task is registered unconditionally so the UI switch is
+        // the real control; the DB automation flag (default OFF) gates execution.
         $this->artisan('schedule:list')
-            ->expectsOutputToContain('No scheduled tasks have been defined.')
+            ->expectsOutputToContain('letters:retention')
             ->assertExitCode(0);
+
+        Sanctum::actingAs($this->primarySuperAdmin());
+        $this->getJson('/api/super-admin/retention/automation')
+            ->assertOk()
+            ->assertJsonPath('data.enabled', false)
+            ->assertJsonPath('data.health_status', 'disabled')
+            ->assertJsonPath('data.schedule_registered', true);
     }
 
     private function completedScholarship(int $daysAgo): ScholarshipApplication

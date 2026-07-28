@@ -75,7 +75,7 @@ class RoomPermissionResolverTest extends TestCase
         );
     }
 
-    public function test_kepala_lab_edits_own_lab_only_without_lifecycle(): void
+    public function test_kepala_lab_manages_own_lab_incl_deactivate_but_cannot_create(): void
     {
         $kalab = $this->user('tendik', 'kepala_lab', $this->labA->id);
 
@@ -84,13 +84,16 @@ class RoomPermissionResolverTest extends TestCase
         $this->assertTrue($this->resolver->canManageRoomFacilities($kalab, $this->labARoom));
         $this->assertTrue($this->resolver->canManageRoomTemplates($kalab, $this->labARoom));
 
-        // Lifecycle stays with SuperAdmin (and Sarpras for classrooms).
+        // Create stays with SuperAdmin (+ Sarpras classrooms); but Kepala Lab
+        // may now deactivate/remove rooms within their OWN laboratory.
         $this->assertFalse($this->resolver->canCreateRoom($kalab, RoomType::Laboratory->value, $this->labA->id));
-        $this->assertFalse($this->resolver->canDeactivateRoom($kalab, $this->labARoom));
+        $this->assertTrue($this->resolver->canDeactivateRoom($kalab, $this->labARoom));
 
-        // Other lab and classroom are out of scope.
+        // Other lab and classroom are out of scope — no manage, no deactivate.
         $this->assertFalse($this->resolver->canManageRoomInfo($kalab, $this->labBRoom));
+        $this->assertFalse($this->resolver->canDeactivateRoom($kalab, $this->labBRoom));
         $this->assertFalse($this->resolver->canManageRoomInfo($kalab, $this->classroom));
+        $this->assertFalse($this->resolver->canDeactivateRoom($kalab, $this->classroom));
 
         $this->assertSame(
             [$this->labARoom->id],
@@ -150,7 +153,7 @@ class RoomPermissionResolverTest extends TestCase
             'can_manage_media' => true,
             'can_manage_facilities' => true,
             'can_manage_templates' => true,
-            'can_deactivate' => false,
+            'can_deactivate' => true,
         ], $this->resolver->roomManagementFlags($kalab, $this->labARoom));
     }
 

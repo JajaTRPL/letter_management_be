@@ -26,8 +26,17 @@ trait ValidatesRoomBookingSchedule
                 return;
             }
 
-            if ($startAt->toDateString() !== $endAt->toDateString()) {
-                $validator->errors()->add('end_at', 'Kegiatan harus selesai di hari yang sama. Untuk kegiatan yang melewati tengah malam, ajukan jadwal terpisah.');
+            $mode = $this->input('booking_mode', 'single_day');
+            $lastOccurrenceDate = $mode === 'consecutive_days'
+                ? (string) $this->input('occurrence_end_date')
+                : $startAt->toDateString();
+            $dailyEndIsOvernight = $endAt->format('H:i:s') <= $startAt->format('H:i:s');
+            $expectedEndDate = Carbon::parse($lastOccurrenceDate, $timezone)
+                ->addDays($dailyEndIsOvernight ? 1 : 0)
+                ->toDateString();
+
+            if ($endAt->toDateString() !== $expectedEndDate) {
+                $validator->errors()->add('end_at', 'Tanggal/jam selesai tidak sesuai dengan pola penggunaan harian.');
             }
 
             if (! $startAt->greaterThan(Carbon::now($timezone))) {

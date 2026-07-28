@@ -15,6 +15,7 @@ class ReviseRoomBookingRequest extends FormRequest
     {
         return [
             'note' => ['required', 'string', 'max:5000'],
+            'expected_workflow_version' => ['nullable', 'integer', 'min:1'],
         ];
     }
 }

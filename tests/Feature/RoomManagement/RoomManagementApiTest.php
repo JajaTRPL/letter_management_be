@@ -80,25 +80,34 @@ class RoomManagementApiTest extends TestCase
 
     // ─────────────────────────── lifecycle ───────────────────────────
 
-    public function test_lifecycle_is_limited_to_super_admin_and_sarpras_classrooms(): void
+    public function test_room_lifecycle_scope_super_admin_sarpras_and_own_lab_kepala_lab(): void
     {
+        // Sarpras retires classrooms.
         $this->actingAsSarpras();
         $this->postJson("/api/room-management/rooms/{$this->classroom->id}/deactivate")
             ->assertOk()
             ->assertJsonPath('data.is_active', false);
 
-        // Kalab/Laboran can read+edit lab rooms but never lifecycle.
-        $this->actingAsKalab();
-        $this->postJson("/api/room-management/rooms/{$this->labARoom->id}/deactivate")->assertForbidden();
-
-        $this->actingAsLaboran();
-        $this->postJson("/api/room-management/rooms/{$this->labARoom->id}/deactivate")->assertForbidden();
-
-        $this->actingAsSuperAdmin();
-        $this->postJson("/api/room-management/rooms/{$this->labARoom->id}/deactivate")->assertOk();
+        // Kepala Lab may now retire rooms in their OWN laboratory.
+        $this->actingAsKalab(); // laboratory_id = labA
+        $this->postJson("/api/room-management/rooms/{$this->labARoom->id}/deactivate")
+            ->assertOk()
+            ->assertJsonPath('data.is_active', false);
         $this->postJson("/api/room-management/rooms/{$this->labARoom->id}/activate")
             ->assertOk()
             ->assertJsonPath('data.is_active', true);
+
+        // But not another lab's rooms nor classrooms — both hidden (404).
+        $this->postJson("/api/room-management/rooms/{$this->labBRoom->id}/deactivate")->assertNotFound();
+        $this->postJson("/api/room-management/rooms/{$this->classroom->id}/deactivate")->assertNotFound();
+
+        // Laboran can read lab data but never lifecycle (403, not 404).
+        $this->actingAsLaboran();
+        $this->postJson("/api/room-management/rooms/{$this->labARoom->id}/deactivate")->assertForbidden();
+
+        // SuperAdmin retains full lifecycle authority.
+        $this->actingAsSuperAdmin();
+        $this->postJson("/api/room-management/rooms/{$this->labBRoom->id}/deactivate")->assertOk();
 
         $this->assertDatabaseHas('room_audit_logs', [
             'room_id' => $this->labARoom->id,

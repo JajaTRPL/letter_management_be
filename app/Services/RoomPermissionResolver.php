@@ -15,7 +15,7 @@ use Illuminate\Database\Eloquent\Builder;
  * data and approving bookings are different authorities —
  *   SuperAdmin  : manages everything, approves nothing.
  *   Sarpras     : manages classrooms (incl. create/deactivate).
- *   Kepala Lab  : edits own-lab rooms; no create/deactivate.
+ *   Kepala Lab  : manages own-lab rooms incl. deactivate/remove; no create.
  *   Laboran     : edits ALL laboratory rooms' data; no create/deactivate,
  *                 and (unchanged) no booking approval.
  *   Mahasiswa   : reads the active catalog only.
@@ -76,12 +76,40 @@ class RoomPermissionResolver
             return true;
         }
 
-        return $room->type === RoomType::Classroom && $this->canManageClassroom($user);
+        // Sarpras retires classrooms.
+        if ($room->type === RoomType::Classroom) {
+            return $this->canManageClassroom($user);
+        }
+
+        // Kepala Lab retires laboratory rooms within their OWN laboratory only.
+        // Laboran maintains lab data but has no room-removal authority.
+        return $this->isActive($user)
+            && $user->isKalab()
+            && $user->laboratory_id !== null
+            && (int) $room->owning_laboratory_id === (int) $user->laboratory_id;
     }
 
     public function canReadRoomManagement(User $user, Room $room): bool
     {
         return $this->canManageRoomInfo($user, $room);
+    }
+
+    /**
+     * Creating a facility type extends the GLOBAL facility dictionary, so it
+     * is limited to SuperAdmin plus the operational room-data roles (Sarpras,
+     * Kepala Lab, Laboran) who add missing types while assigning facilities.
+     * Other Tendik subroles (e.g. Persuratan) have no room-management surface
+     * and must not grow the dictionary. Rename/archive/delete stay
+     * SuperAdmin-only (enforced in the controller).
+     */
+    public function canCreateFacilityType(User $user): bool
+    {
+        if ($this->canManageAnyRoom($user)) {
+            return true;
+        }
+
+        return $this->isActive($user)
+            && ($user->isTendikSarpras() || $user->isKalab() || $user->isLaboran());
     }
 
     /**

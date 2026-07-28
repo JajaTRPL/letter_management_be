@@ -125,6 +125,10 @@ class UserController extends Controller
             abort(403, 'Unauthorized to create super admin');
         }
 
+        // Normalize the email to lowercase so the uniqueness check and the stored
+        // value stay consistent with the case-insensitive login lookup.
+        $this->normalizeEmailInput($request);
+
         $rules = [
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email',
@@ -297,8 +301,15 @@ class UserController extends Controller
             abort(403, 'Unauthorized to edit or promote to super admin');
         }
 
+        $this->normalizeEmailInput($request);
+
         $oldRole = $user->role;
         $oldRoleLevel = $user->role_level;
+        // Snapshot the provisioning fields so the audit log can record old -> new.
+        $auditBefore = $user->only([
+            'email', 'sub_role', 'tendik_role',
+            'laboratory_id', 'department_id', 'study_program_id', 'status',
+        ]);
         $currentUser = Auth::user();
 
         $targetRoleForPasswordRule = $request->input('role', $user->role);
@@ -447,7 +458,7 @@ class UserController extends Controller
             );
         }
 
-        // LOG ACTION
+        // LOG ACTION — record who changed which provisioning field, old -> new.
         $details = "Update data user.";
         if (isset($validated['role']) && $oldRole !== $validated['role']) {
             $details .= " Perubahan role dari {$oldRole} ke {$validated['role']}.";
@@ -455,6 +466,7 @@ class UserController extends Controller
         if ($user->role === 'super_admin' && $oldRoleLevel !== $user->role_level) {
             $details .= " Perubahan level dari {$oldRoleLevel} ke {$user->role_level}.";
         }
+        $details .= $this->describeProvisioningChanges($auditBefore, $user);
 
         ActivityLogService::log('Update User', $user->email, $details);
 
@@ -511,6 +523,18 @@ class UserController extends Controller
                     ], 403);
                 }
             }
+        }
+
+        // Room-booking evidence (bookings, histories, attachments, snapshots,
+        // workflow events) must survive account removal. The requester FK is
+        // restrictOnDelete at the database level; this guard answers before
+        // the constraint would throw, with a safe domain response.
+        if (\App\Models\RoomBookingRequest::query()->where('requester_id', $user->id)->exists()) {
+            return response()->json([
+                'message' => 'User tidak dapat dihapus karena memiliki riwayat peminjaman ruangan. '
+                    . 'Gunakan suspend/nonaktifkan akun untuk menutup aksesnya tanpa menghapus riwayat.',
+                'code' => 'protected_business_record',
+            ], 409);
         }
 
         $targetEmail = $user->email;
@@ -1123,6 +1147,48 @@ class UserController extends Controller
         $nip = trim((string) $nip);
 
         return $nip !== '' ? $nip : null;
+    }
+
+    /**
+     * Lowercase/trim the email input so provisioning stays consistent with the
+     * case-insensitive login lookup and the uniqueness check runs on the same form.
+     */
+    private function normalizeEmailInput(Request $request): void
+    {
+        $email = $request->input('email');
+        if (is_string($email) && $email !== '') {
+            $request->merge(['email' => Str::lower(trim($email))]);
+        }
+    }
+
+    /**
+     * Human-readable "old -> new" summary of the high-value provisioning fields
+     * that changed, appended to the audit-log details. No secrets are ever included.
+     */
+    private function describeProvisioningChanges(array $before, User $user): string
+    {
+        $labels = [
+            'email' => 'email',
+            'sub_role' => 'sub-role',
+            'tendik_role' => 'peran tendik',
+            'laboratory_id' => 'laboratorium',
+            'department_id' => 'departemen',
+            'study_program_id' => 'program studi',
+            'status' => 'status',
+        ];
+
+        $summary = '';
+        foreach ($labels as $field => $label) {
+            $old = $before[$field] ?? null;
+            $new = $user->{$field};
+            $old = $old instanceof \BackedEnum ? $old->value : $old;
+            $new = $new instanceof \BackedEnum ? $new->value : $new;
+            if ($old !== $new) {
+                $summary .= " Perubahan {$label} dari " . ($old ?? '-') . ' ke ' . ($new ?? '-') . '.';
+            }
+        }
+
+        return $summary;
     }
 
     private function validateRuntimeAcademicScope(array $validated): void

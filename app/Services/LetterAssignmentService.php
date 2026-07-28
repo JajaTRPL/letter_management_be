@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Enums\UserStatus;
 use App\Models\User;
+use App\Services\Notifications\NotificationProjector;
 use App\Support\LetterTypeRegistry;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
@@ -112,6 +113,14 @@ class LetterAssignmentService
         if ($assignedTendik) {
             $application->update(['assigned_to' => $assignedTendik->id]);
         }
+
+        // C7N1: the assignment seam is the single point every letter type reaches
+        // at submit AND resubmit, and it knows the concrete assignee — so the
+        // Persuratan queue-item notification is projected here (resolved via app()
+        // to avoid coupling this widely-used service's constructor). A null
+        // assignee is a SuperAdmin health anomaly, handled inside the projector.
+        app(NotificationProjector::class)
+            ->projectLetterAssigned($application, $letterType, $assignedTendik);
 
         return $assignedTendik;
     }

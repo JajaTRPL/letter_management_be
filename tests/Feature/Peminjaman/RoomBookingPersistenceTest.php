@@ -46,11 +46,17 @@ class RoomBookingPersistenceTest extends TestCase
             'start_at',
             'end_at',
             'status',
+            'workflow_version',
+            'submission_iteration',
+            'review_started_at',
+            'review_started_by',
             'reviewer_id',
             'reviewed_at',
             'revision_note',
             'rejection_reason',
             'cancellation_reason',
+            'cancellation_source',
+            'cancelled_by_role_snapshot',
             'created_at',
             'updated_at',
         ]));
@@ -92,6 +98,33 @@ class RoomBookingPersistenceTest extends TestCase
             'user_agent',
             'created_at',
         ]));
+        $this->assertTrue(Schema::hasColumns('room_booking_cancellation_requests', [
+            'room_booking_request_id',
+            'requested_by',
+            'requester_name_snapshot',
+            'reason',
+            'status',
+            'booking_status_snapshot',
+            'booking_workflow_version_at_request',
+            'requested_at',
+            'decided_by',
+            'decision_note',
+            'active_pending_guard',
+        ]));
+        $this->assertTrue(Schema::hasColumns('room_booking_idempotency_records', [
+            'actor_id',
+            'actor_identity_snapshot',
+            'room_booking_request_id',
+            'action',
+            'subject_key',
+            'idempotency_key_hash',
+            'payload_hash',
+            'result_status_code',
+            'response_schema_version',
+            'safe_response_body',
+            'completed_at',
+            'expires_at',
+        ]));
 
         $this->assertSqliteIndexes('rooms', [
             'rooms_code_unique',
@@ -103,6 +136,8 @@ class RoomBookingPersistenceTest extends TestCase
             'rbr_requester_status_idx',
             'rbr_status_created_idx',
             'rbr_room_start_idx',
+            'rbr_status_review_started_idx',
+            'rbr_review_started_by_idx',
         ]);
         $this->assertSqliteIndexes('room_booking_status_histories', [
             'rbsh_request_created_idx',
@@ -113,6 +148,16 @@ class RoomBookingPersistenceTest extends TestCase
         ]);
         $this->assertSqliteIndexes('room_booking_audit_logs', [
             'rbal_booking_action_idx',
+        ]);
+        $this->assertSqliteIndexes('room_booking_cancellation_requests', [
+            'rbcr_booking_active_pending_unique',
+            'rbcr_status_requested_idx',
+            'rbcr_booking_requested_idx',
+        ]);
+        $this->assertSqliteIndexes('room_booking_idempotency_records', [
+            'rbir_actor_action_subject_key_unique',
+            'rbir_expires_at_idx',
+            'rbir_booking_created_idx',
         ]);
     }
 

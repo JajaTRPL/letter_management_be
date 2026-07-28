@@ -15,6 +15,7 @@ class RejectRoomBookingRequest extends FormRequest
     {
         return [
             'reason' => ['required', 'string', 'max:5000'],
+            'expected_workflow_version' => ['nullable', 'integer', 'min:1'],
         ];
     }
 }

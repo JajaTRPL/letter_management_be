@@ -6,12 +6,15 @@ use App\Enums\RoomBookingStatus;
 use App\Http\Controllers\Concerns\HandlesRoomBookingApi;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Peminjaman\BookingListRequest;
+use App\Http\Requests\Peminjaman\RoomBookingCalendarRequest;
 use App\Http\Requests\Peminjaman\RoomListRequest;
 use App\Http\Requests\Peminjaman\StoreRoomRequest;
 use App\Http\Requests\Peminjaman\UpdateRoomRequest;
 use App\Models\Laboratory;
 use App\Models\Room;
 use App\Models\RoomBookingRequest;
+use App\Services\RoomBookingConflictService;
+use App\Services\RoomBookingCalendarVisibilityService;
 use App\Services\RoomBookingDomainException;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -22,6 +25,11 @@ use InvalidArgumentException;
 class RoomBookingController extends Controller
 {
     use HandlesRoomBookingApi;
+
+    public function __construct(
+        private RoomBookingConflictService $conflictService,
+        private RoomBookingCalendarVisibilityService $calendarVisibility,
+    ) {}
 
     public function laboratories(): JsonResponse
     {
@@ -151,6 +159,7 @@ class RoomBookingController extends Controller
                 ->map(fn (RoomBookingRequest $booking) => $this->bookingPayload(
                     $booking,
                     includeRequester: true,
+                    includeConflicts: true,
                 ))
                 ->all(),
             'meta' => $this->paginationMeta($paginator),
@@ -165,7 +174,71 @@ class RoomBookingController extends Controller
                 $booking,
                 includeRequester: true,
                 includeHistory: true,
+                includeConflicts: true,
             ),
+        ]);
+    }
+
+    public function calendar(RoomBookingCalendarRequest $request): JsonResponse
+    {
+        $filters = $request->validated();
+        [$rangeStart, $rangeEndExclusive, $month] = $this->calendarRange($filters);
+
+        $baseQuery = RoomBookingRequest::query();
+        $this->calendarVisibility->applyRange($baseQuery, $rangeStart, $rangeEndExclusive);
+
+        $query = (clone $baseQuery)
+            ->with([
+                'room.owningLaboratory:id,code,name',
+                'requester:id,name,email',
+                'occurrences' => fn ($occurrence) => $occurrence
+                    ->where('start_at', '<', $rangeEndExclusive)
+                    ->where('end_at', '>', $rangeStart),
+            ])
+            ->orderBy('start_at');
+
+        $this->applyBookingFilters($query, $filters, includeStatus: false);
+        $this->calendarVisibility->apply($query, $filters['status'] ?? null);
+
+        $items = $query
+            ->get()
+            ->flatMap(fn (RoomBookingRequest $booking) => $this->calendarVisibility
+                ->slotRanges($booking)
+                ->filter(fn (array $slot) => $this->calendarVisibility->includesSlot(
+                    $booking->status,
+                    $slot['start_at'],
+                    $slot['end_at'],
+                    $filters['status'] ?? null,
+                ))
+                ->map(fn (array $slot) => $this->calendarItemPayload(
+                    $booking,
+                    $slot['start_at'],
+                    $slot['end_at'],
+                )))
+            ->values();
+
+        $summaryQuery = clone $baseQuery;
+        $this->applyBookingFilters($summaryQuery, $filters, includeStatus: false);
+        $summary = $this->calendarVisibility->summarize($summaryQuery
+            ->with(['occurrences' => fn ($occurrence) => $occurrence
+                ->where('start_at', '<', $rangeEndExclusive)
+                ->where('end_at', '>', $rangeStart)])
+            ->get());
+
+        return response()->json([
+            'message' => 'Kalender peminjaman ruangan berhasil diambil',
+            'month' => $month,
+            'range' => [
+                'start' => $rangeStart->toDateString(),
+                'end' => $rangeEndExclusive->copy()->subDay()->toDateString(),
+            ],
+            'items' => $items->all(),
+            'summary' => [
+                'total' => $items->count(),
+                'active_total' => $summary['active_total'],
+                'history_total' => $summary['history_total'],
+                'counts_by_status' => $summary['counts_by_status'],
+            ],
         ]);
     }
 
@@ -197,9 +270,9 @@ class RoomBookingController extends Controller
     /**
      * @param  array<string, mixed>  $filters
      */
-    private function applyBookingFilters(Builder $query, array $filters): void
+    private function applyBookingFilters(Builder $query, array $filters, bool $includeStatus = true): void
     {
-        if (isset($filters['status'])) {
+        if ($includeStatus && isset($filters['status'])) {
             $query->where('status', $filters['status']);
         }
 
@@ -211,6 +284,13 @@ class RoomBookingController extends Controller
             $query->whereHas(
                 'room',
                 fn (Builder $roomQuery) => $roomQuery->where('type', $filters['room_type']),
+            );
+        }
+
+        if (isset($filters['laboratory_id'])) {
+            $query->whereHas(
+                'room',
+                fn (Builder $roomQuery) => $roomQuery->where('owning_laboratory_id', $filters['laboratory_id']),
             );
         }
 
@@ -237,5 +317,74 @@ class RoomBookingController extends Controller
                 )->addDay()->startOfDay(),
             );
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
+     * @return array{0: Carbon, 1: Carbon, 2: string}
+     */
+    private function calendarRange(array $filters): array
+    {
+        $timezone = config('app.timezone');
+
+        if (isset($filters['month'])) {
+            $start = Carbon::createFromFormat('Y-m', $filters['month'], $timezone)->startOfMonth();
+
+            return [
+                $start,
+                $start->copy()->addMonthNoOverflow()->startOfMonth(),
+                $start->format('Y-m'),
+            ];
+        }
+
+        $start = Carbon::createFromFormat('Y-m-d', $filters['from'], $timezone)->startOfDay();
+        $endExclusive = Carbon::createFromFormat('Y-m-d', $filters['to'], $timezone)
+            ->addDay()
+            ->startOfDay();
+
+        return [$start, $endExclusive, $start->format('Y-m')];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function calendarItemPayload(
+        RoomBookingRequest $booking,
+        Carbon $startAt,
+        Carbon $endAt,
+    ): array
+    {
+        $room = $booking->room;
+
+        return array_merge([
+            'id' => (int) $booking->id,
+            'room_id' => (int) $room->id,
+            'room_code' => $room->code,
+            'room_name' => $room->name,
+            'room_type' => $room->type->value,
+            'laboratory_id' => $room->owningLaboratory ? (int) $room->owningLaboratory->id : null,
+            'laboratory_name' => $room->owningLaboratory?->name,
+            'requester_name' => $booking->requester?->name,
+            'requester_identifier' => $booking->requester?->email,
+            'activity_name' => $booking->activity_name,
+            'purpose' => $booking->purpose,
+            'status' => $booking->status->value,
+            'start_at' => $startAt->toIso8601String(),
+            'end_at' => $endAt->toIso8601String(),
+            'can_view' => true,
+            'can_review' => false,
+            'can_approve' => false,
+            'can_reject' => false,
+            'can_request_revision' => false,
+            'can_cancel' => false,
+            'can_manage_room' => true,
+        ], $this->conflictService->conflictMetadata(
+            $booking,
+            includeRequester: true,
+            includeActivity: true,
+            includePurpose: true,
+            startAt: $startAt,
+            endAt: $endAt,
+        ));
     }
 }

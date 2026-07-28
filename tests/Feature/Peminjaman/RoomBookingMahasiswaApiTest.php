@@ -234,7 +234,7 @@ class RoomBookingMahasiswaApiTest extends RoomBookingApiTestCase
             ->assertJsonPath('code', 'attachment_required');
     }
 
-    public function test_mahasiswa_can_cancel_submitted_and_revision_requested_bookings(): void
+    public function test_legacy_cancel_only_withdraws_eligible_submitted_booking(): void
     {
         $student = $this->student();
         $room = $this->classroom();
@@ -246,21 +246,27 @@ class RoomBookingMahasiswaApiTest extends RoomBookingApiTestCase
         );
         $this->actingAsUser($student);
 
-        foreach ([$submitted, $revision] as $booking) {
-            $this->patchJson(
-                $this->mahasiswaUrl("/requests/{$booking->id}/cancel"),
-                ['reason' => 'Activity cancelled by requester.'],
-            )
-                ->assertOk()
-                ->assertJsonPath(
-                    'data.status',
-                    RoomBookingStatus::Cancelled->value,
-                )
-                ->assertJsonPath(
-                    'data.status_histories.0.to_status',
-                    RoomBookingStatus::Cancelled->value,
-                );
-        }
+        $this->postJson(
+            $this->mahasiswaUrl("/requests/{$submitted->id}/withdraw"),
+            [
+                'reason' => 'Activity cancelled by requester.',
+                'expected_workflow_version' => 1,
+                'idempotency_key' => 'withdraw-mhs-submitted',
+            ],
+        )->assertOk()
+            ->assertJsonPath('data.booking.status', RoomBookingStatus::Cancelled->value)
+            ->assertJsonPath('data.booking.status_histories.0.to_status', RoomBookingStatus::Cancelled->value);
+
+        $this->postJson(
+            $this->mahasiswaUrl("/requests/{$revision->id}/withdraw"),
+            [
+                'reason' => 'Activity cancelled by requester.',
+                'expected_workflow_version' => 1,
+                'idempotency_key' => 'withdraw-mhs-revision',
+            ],
+        )->assertConflict()
+            ->assertJsonPath('code', 'revision_already_requested')
+            ->assertJsonPath('data.capabilities.can_request_cancellation', true);
     }
 
     public function test_mahasiswa_cannot_cancel_approved_booking_at_start_time(): void
@@ -275,11 +281,15 @@ class RoomBookingMahasiswaApiTest extends RoomBookingApiTestCase
         );
         $this->actingAsUser($student);
 
-        $this->patchJson(
-            $this->mahasiswaUrl("/requests/{$booking->id}/cancel"),
-            ['reason' => 'Too late to cancel.'],
+        $this->postJson(
+            $this->mahasiswaUrl("/requests/{$booking->id}/withdraw"),
+            [
+                'reason' => 'Too late to cancel.',
+                'expected_workflow_version' => 1,
+                'idempotency_key' => 'withdraw-approved-at-start',
+            ],
         )
             ->assertConflict()
-            ->assertJsonPath('code', 'invalid_transition');
+            ->assertJsonPath('code', 'requires_cancellation_review');
     }
 }

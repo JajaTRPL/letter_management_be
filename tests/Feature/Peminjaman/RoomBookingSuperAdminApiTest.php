@@ -143,6 +143,208 @@ class RoomBookingSuperAdminApiTest extends RoomBookingApiTestCase
         $this->assertNotNull($response->json('data.0.requester.id'));
     }
 
+    public function test_super_admin_calendar_returns_matching_items_summary_and_capability_flags(): void
+    {
+        $room = $this->classroom(['code' => 'CAL-101', 'name' => 'Calendar Room']);
+        $booking = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-06-22 09:00:00',
+            endAt: '2026-06-22 11:00:00',
+            attributes: [
+                'activity_name' => 'Calendar Activity',
+                'purpose' => 'Calendar monitoring purpose.',
+            ],
+        );
+        $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-23 09:00:00',
+            endAt: '2026-06-23 11:00:00',
+        );
+        $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-07-01 09:00:00',
+            endAt: '2026-07-01 11:00:00',
+        );
+        $this->actingAsUser($this->superAdmin());
+
+        $response = $this->getJson($this->adminUrl('/calendar?month=2026-06&status=approved'));
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('month', '2026-06')
+            ->assertJsonPath('range.start', '2026-06-01')
+            ->assertJsonPath('range.end', '2026-06-30')
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $booking->id)
+            ->assertJsonPath('items.0.room_code', 'CAL-101')
+            ->assertJsonPath('items.0.room_name', 'Calendar Room')
+            ->assertJsonPath('items.0.status', RoomBookingStatus::Approved->value)
+            ->assertJsonPath('items.0.can_view', true)
+            ->assertJsonPath('items.0.can_review', false)
+            ->assertJsonPath('items.0.can_approve', false)
+            ->assertJsonPath('summary.total', 1)
+            ->assertJsonPath('summary.active_total', 2)
+            ->assertJsonPath('summary.counts_by_status.approved', 1)
+            ->assertJsonPath('summary.counts_by_status.submitted', 1)
+            ->assertJsonMissingPath('summary.counts_by_status.diproses');
+    }
+
+    public function test_super_admin_calendar_excludes_rejected_and_cancelled_until_explicitly_filtered(): void
+    {
+        $room = $this->classroom(['code' => 'ADMIN-ACTIVE']);
+        $approved = $this->roomBooking($room, status: RoomBookingStatus::Approved);
+        $submitted = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-21 10:00:00',
+            endAt: '2026-06-21 12:00:00',
+        );
+        $rejected = $this->roomBooking($room, status: RoomBookingStatus::Rejected);
+        $cancelled = $this->roomBooking($room, status: RoomBookingStatus::Cancelled);
+
+        $this->actingAsUser($this->superAdmin());
+        $activeResponse = $this->getJson($this->adminUrl('/calendar?month=2026-06'))
+            ->assertOk()
+            ->assertJsonPath('summary.total', 2)
+            ->assertJsonPath('summary.active_total', 2);
+
+        $this->assertEqualsCanonicalizing(
+            [$approved->id, $submitted->id],
+            collect($activeResponse->json('items'))->pluck('id')->all(),
+        );
+        $this->assertNotContains($rejected->id, collect($activeResponse->json('items'))->pluck('id'));
+        $this->assertNotContains($cancelled->id, collect($activeResponse->json('items'))->pluck('id'));
+
+        $this->getJson($this->adminUrl('/calendar?month=2026-06&status=rejected'))
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $rejected->id);
+        $this->getJson($this->adminUrl('/calendar?month=2026-06&status=cancelled'))
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $cancelled->id);
+    }
+
+    public function test_super_admin_calendar_includes_read_only_conflict_metadata(): void
+    {
+        $room = $this->classroom(['code' => 'CAL-CONFLICT', 'name' => 'Monitoring Conflict Room']);
+        $approved = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-06-20 09:00:00',
+            endAt: '2026-06-20 11:00:00',
+            attributes: ['activity_name' => 'Agenda Disetujui Admin'],
+        );
+        $candidate = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-20 10:00:00',
+            endAt: '2026-06-20 12:00:00',
+        );
+
+        $this->actingAsUser($this->superAdmin());
+        $response = $this->getJson($this->adminUrl('/calendar?month=2026-06&status=submitted'));
+
+        $response
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $candidate->id)
+            ->assertJsonPath('items.0.can_approve', false)
+            ->assertJsonPath('items.0.can_reject', false)
+            ->assertJsonPath('items.0.can_request_revision', false)
+            ->assertJsonPath('items.0.conflict_status', 'approved_overlap')
+            ->assertJsonPath('items.0.has_conflict', true)
+            ->assertJsonPath('items.0.conflict_level', 'blocking')
+            ->assertJsonPath('items.0.conflicts.0.booking_id', $approved->id)
+            ->assertJsonPath('items.0.conflicts.0.activity_name', 'Agenda Disetujui Admin');
+
+        $this->getJson($this->adminUrl("/requests/{$candidate->id}"))
+            ->assertOk()
+            ->assertJsonPath('data.conflict_status', 'approved_overlap')
+            ->assertJsonPath('data.conflicts.0.booking_id', $approved->id);
+    }
+
+    public function test_super_admin_calendar_filters_by_room_type_room_and_laboratory(): void
+    {
+        $targetLaboratory = $this->bookingLaboratory('CAL-A');
+        $otherLaboratory = $this->bookingLaboratory('CAL-B');
+        $targetRoom = $this->laboratoryRoom($targetLaboratory, ['code' => 'LAB-CAL-01']);
+        $otherLabRoom = $this->laboratoryRoom($otherLaboratory, ['code' => 'LAB-CAL-02']);
+        $classroom = $this->classroom(['code' => 'CLS-CAL-01']);
+        $targetBooking = $this->roomBooking(
+            $targetRoom,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-23 09:00:00',
+            endAt: '2026-06-23 11:00:00',
+        );
+        $this->roomBooking($otherLabRoom, status: RoomBookingStatus::Submitted);
+        $this->roomBooking($classroom, status: RoomBookingStatus::Submitted);
+        $this->actingAsUser($this->superAdmin());
+
+        $response = $this->getJson($this->adminUrl(sprintf(
+            '/calendar?from=2026-06-01&to=2026-06-30&status=submitted&room_type=laboratory&laboratory_id=%d&room_id=%d',
+            $targetLaboratory->id,
+            $targetRoom->id,
+        )));
+
+        $response
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $targetBooking->id)
+            ->assertJsonPath('items.0.room_id', $targetRoom->id)
+            ->assertJsonPath('items.0.room_type', 'laboratory')
+            ->assertJsonPath('items.0.laboratory_id', $targetLaboratory->id)
+            ->assertJsonPath('summary.total', 1)
+            ->assertJsonPath('summary.counts_by_status.submitted', 1);
+    }
+
+    public function test_super_admin_calendar_accepts_upcoming_ninety_day_range(): void
+    {
+        $booking = $this->roomBooking(
+            $this->classroom(['code' => 'CAL-90']),
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-09-15 09:00:00',
+            endAt: '2026-09-15 11:00:00',
+        );
+        $this->actingAsUser($this->superAdmin());
+
+        $this->getJson($this->adminUrl('/calendar?from=2026-06-18&to=2026-09-15'))
+            ->assertOk()
+            ->assertJsonPath('range.start', '2026-06-18')
+            ->assertJsonPath('range.end', '2026-09-15')
+            ->assertJsonPath('items.0.id', $booking->id)
+            ->assertJsonPath('summary.counts_by_status.approved', 1);
+    }
+
+    public function test_super_admin_calendar_is_read_only_role_scoped_and_hides_storage_details(): void
+    {
+        $booking = $this->roomBooking($this->classroom(), status: RoomBookingStatus::RevisionRequested);
+        $this->createSuratPeminjamanAttachment($booking);
+
+        $this->actingAsUser($this->persuratan());
+        $this->getJson($this->adminUrl('/calendar?month=2026-06'))
+            ->assertForbidden();
+
+        $this->actingAsUser($this->superAdmin());
+        $response = $this->getJson($this->adminUrl('/calendar?month=2026-06&status=revision_requested'));
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('items.0.id', $booking->id)
+            ->assertJsonPath('items.0.can_review', false)
+            ->assertJsonPath('items.0.can_request_revision', false)
+            ->assertJsonMissingPath('items.0.surat_peminjaman_pdf')
+            ->assertJsonMissingPath('items.0.storage_path');
+
+        $content = $response->getContent();
+        $this->assertStringNotContainsString('/storage/', $content);
+        $this->assertStringNotContainsString('room-booking-attachments', $content);
+        $this->assertSame(RoomBookingStatus::RevisionRequested, $booking->fresh()->status);
+    }
+
     public function test_super_admin_cannot_approve_through_tendik_reviewer_route(): void
     {
         $booking = $this->roomBooking($this->classroom());

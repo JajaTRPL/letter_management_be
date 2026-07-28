@@ -3,9 +3,28 @@
 namespace Tests\Feature\Peminjaman;
 
 use App\Enums\RoomBookingStatus;
+use Illuminate\Support\Carbon;
 
 class RoomBookingReviewerApiTest extends RoomBookingApiTestCase
 {
+    public function test_tendik_calendar_requires_auth_and_supported_reviewer_role(): void
+    {
+        $this->getJson($this->reviewerCalendarUrl('?month=2026-06'))
+            ->assertUnauthorized();
+
+        $this->actingAsUser($this->superAdmin());
+        $this->getJson($this->reviewerCalendarUrl('?month=2026-06'))
+            ->assertForbidden();
+
+        $this->actingAsUser($this->persuratan());
+        $this->getJson($this->reviewerCalendarUrl('?month=2026-06'))
+            ->assertForbidden();
+
+        $this->actingAsUser($this->reviewerUser('arsip'));
+        $this->getJson($this->reviewerCalendarUrl('?month=2026-06'))
+            ->assertForbidden();
+    }
+
     public function test_sarpras_can_list_and_approve_classroom_booking(): void
     {
         $classroomBooking = $this->roomBooking($this->classroom());
@@ -32,6 +51,330 @@ class RoomBookingReviewerApiTest extends RoomBookingApiTestCase
                 'data.status_histories.0.to_status',
                 RoomBookingStatus::Approved->value,
             );
+    }
+
+    public function test_sarpras_calendar_is_classroom_scoped_and_counts_ignore_status_filter(): void
+    {
+        $classroom = $this->classroom(['code' => 'SAR-CAL-01']);
+        $approved = $this->roomBooking(
+            $classroom,
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-06-20 09:00:00',
+            endAt: '2026-06-20 10:00:00',
+        );
+        $submitted = $this->roomBooking(
+            $classroom,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-21 09:00:00',
+            endAt: '2026-06-21 10:00:00',
+        );
+        $laboratory = $this->bookingLaboratory('SAR-CAL');
+        $labBooking = $this->roomBooking(
+            $this->laboratoryRoom($laboratory),
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-22 09:00:00',
+            endAt: '2026-06-22 10:00:00',
+        );
+
+        $this->actingAsUser($this->reviewerUser('sarpras'));
+        $response = $this->getJson($this->reviewerCalendarUrl('?month=2026-06&status=approved'));
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('month', '2026-06')
+            ->assertJsonPath('range.start', '2026-06-01')
+            ->assertJsonPath('range.end', '2026-06-30')
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $approved->id)
+            ->assertJsonPath('items.0.room_type', 'classroom')
+            ->assertJsonPath('items.0.can_view', true)
+            ->assertJsonPath('items.0.can_approve', false)
+            ->assertJsonPath('summary.total', 1)
+            ->assertJsonPath('summary.active_total', 2)
+            ->assertJsonPath('summary.counts_by_status.approved', 1)
+            ->assertJsonPath('summary.counts_by_status.submitted', 1)
+            ->assertJsonMissingPath('summary.counts_by_status.diproses');
+
+        $ids = collect($response->json('items'))->pluck('id')->all();
+        $this->assertNotContains($submitted->id, $ids);
+        $this->assertNotContains($labBooking->id, $ids);
+    }
+
+    public function test_reviewer_calendar_defaults_to_active_demand_and_history_is_explicit(): void
+    {
+        $room = $this->classroom(['code' => 'ACTIVE-CALENDAR']);
+        $approved = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-06-20 08:00:00',
+            endAt: '2026-06-20 09:00:00',
+        );
+        $underReview = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-21 08:00:00',
+            endAt: '2026-06-21 09:00:00',
+            attributes: ['review_started_at' => now(), 'review_started_by' => $this->reviewerUser('sarpras')->id],
+        );
+        $revision = $this->roomBooking($room, status: RoomBookingStatus::RevisionRequested);
+        $rejected = $this->roomBooking($room, status: RoomBookingStatus::Rejected);
+        $cancelled = $this->roomBooking($room, status: RoomBookingStatus::Cancelled);
+        $completed = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-06-17 08:00:00',
+            endAt: '2026-06-17 09:00:00',
+        );
+        $expired = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-18 07:00:00',
+            endAt: '2026-06-18 08:00:00',
+        );
+
+        $this->actingAsUser($this->reviewerUser('sarpras'));
+        $activeResponse = $this->getJson($this->reviewerCalendarUrl('?month=2026-06'))
+            ->assertOk()
+            ->assertJsonPath('summary.total', 2)
+            ->assertJsonPath('summary.active_total', 2)
+            ->assertJsonPath('summary.history_total', 2);
+
+        $this->assertEqualsCanonicalizing(
+            [$approved->id, $underReview->id],
+            collect($activeResponse->json('items'))->pluck('id')->all(),
+        );
+
+        $this->getJson($this->reviewerCalendarUrl('?month=2026-06&status=rejected'))
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $rejected->id);
+
+        $historyResponse = $this->getJson($this->reviewerCalendarUrl('?month=2026-06&status=history'))
+            ->assertOk()
+            ->assertJsonCount(2, 'items');
+        $this->assertEqualsCanonicalizing(
+            [$completed->id, $expired->id],
+            collect($historyResponse->json('items'))->pluck('id')->all(),
+        );
+
+        $defaultIds = collect($activeResponse->json('items'))->pluck('id');
+        foreach ([$revision, $rejected, $cancelled, $completed, $expired] as $inactive) {
+            $this->assertNotContains($inactive->id, $defaultIds);
+        }
+    }
+
+    public function test_active_calendar_uses_each_c7r_occurrence_after_the_first_day_has_ended(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-06-21 12:00:00', config('app.timezone')));
+        $booking = $this->roomBooking(
+            $this->classroom(['code' => 'MULTI-CALENDAR']),
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-06-20 09:00:00',
+            endAt: '2026-06-20 10:00:00',
+            attributes: [
+                'booking_mode' => 'consecutive_days',
+                'occurrence_end_date' => '2026-06-22',
+            ],
+        );
+        foreach ([20, 21, 22] as $index => $day) {
+            $booking->occurrences()->create([
+                'sequence' => $index + 1,
+                'occurrence_date' => "2026-06-{$day}",
+                'start_at' => "2026-06-{$day} 09:00:00",
+                'end_at' => "2026-06-{$day} 10:00:00",
+                'return_due_at' => "2026-06-{$day} 10:30:00",
+            ]);
+        }
+
+        $this->actingAsUser($this->reviewerUser('sarpras'));
+        $this->getJson($this->reviewerCalendarUrl('?month=2026-06'))
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $booking->id)
+            ->assertJsonPath('items.0.start_at', '2026-06-22T09:00:00+07:00')
+            ->assertJsonPath('summary.total', 1)
+            ->assertJsonPath('summary.active_total', 1)
+            ->assertJsonPath('summary.history_total', 2)
+            ->assertJsonPath('summary.counts_by_status.approved', 3);
+    }
+
+    public function test_sarpras_calendar_laboratory_filters_do_not_expand_scope(): void
+    {
+        $this->roomBooking(
+            $this->classroom(),
+            status: RoomBookingStatus::Submitted,
+        );
+        $laboratory = $this->bookingLaboratory('SAR-FILTER');
+        $labRoom = $this->laboratoryRoom($laboratory);
+        $this->roomBooking(
+            $labRoom,
+            status: RoomBookingStatus::Submitted,
+        );
+
+        $this->actingAsUser($this->reviewerUser('sarpras'));
+        $query = sprintf(
+            '?month=2026-06&room_type=laboratory&laboratory_id=%d&room_id=%d',
+            $laboratory->id,
+            $labRoom->id,
+        );
+
+        $this->getJson($this->reviewerCalendarUrl($query))
+            ->assertOk()
+            ->assertJsonCount(0, 'items')
+            ->assertJsonPath('summary.total', 0);
+    }
+
+    public function test_sarpras_calendar_returns_action_capabilities_for_submitted_classroom_bookings(): void
+    {
+        $booking = $this->roomBooking(
+            $this->classroom(['code' => 'SAR-ACTION']),
+            status: RoomBookingStatus::Submitted,
+        );
+        $this->createSuratPeminjamanAttachment($booking);
+        $this->actingAsUser($this->reviewerUser('sarpras'));
+
+        $response = $this->getJson($this->reviewerCalendarUrl('?month=2026-06&status=submitted'));
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('items.0.id', $booking->id)
+            ->assertJsonPath('items.0.can_review', true)
+            ->assertJsonPath('items.0.can_approve', true)
+            ->assertJsonPath('items.0.can_reject', true)
+            ->assertJsonPath('items.0.can_request_revision', true)
+            ->assertJsonPath('items.0.can_cancel', false)
+            ->assertJsonPath('items.0.can_manage_room', true)
+            ->assertJsonPath('items.0.can_update_readiness', false)
+            ->assertJsonPath('items.0.can_resolve_conflict', false)
+            ->assertJsonPath('items.0.can_relocate_booking', false)
+            ->assertJsonMissingPath('items.0.surat_peminjaman_pdf')
+            ->assertJsonMissingPath('items.0.storage_path');
+
+        $content = $response->getContent();
+        $this->assertStringNotContainsString('/storage/', $content);
+        $this->assertStringNotContainsString('room-booking-attachments', $content);
+    }
+
+    public function test_sarpras_calendar_marks_approved_overlap_as_blocking_conflict(): void
+    {
+        $room = $this->classroom(['code' => 'SAR-CONFLICT', 'name' => 'Ruang Bentrok']);
+        $approved = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-06-20 10:00:00',
+            endAt: '2026-06-20 12:00:00',
+            attributes: ['activity_name' => 'Agenda Disetujui'],
+        );
+        $candidate = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-20 11:00:00',
+            endAt: '2026-06-20 13:00:00',
+            attributes: ['activity_name' => 'Agenda Kandidat'],
+        );
+
+        $this->actingAsUser($this->reviewerUser('sarpras'));
+        $response = $this->getJson($this->reviewerCalendarUrl('?month=2026-06&status=submitted'));
+
+        $response
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $candidate->id)
+            ->assertJsonPath('items.0.conflict_status', 'approved_overlap')
+            ->assertJsonPath('items.0.has_conflict', true)
+            ->assertJsonPath('items.0.conflict_level', 'blocking')
+            ->assertJsonPath(
+                'items.0.conflict_message',
+                'Pengajuan ini bentrok dengan peminjaman yang sudah disetujui.',
+            )
+            ->assertJsonPath('items.0.conflicts.0.booking_id', $approved->id)
+            ->assertJsonPath('items.0.conflicts.0.room_id', $room->id)
+            ->assertJsonPath('items.0.conflicts.0.room_name', 'Ruang Bentrok')
+            ->assertJsonPath('items.0.conflicts.0.status', RoomBookingStatus::Approved->value)
+            ->assertJsonPath('items.0.conflicts.0.activity_name', 'Agenda Disetujui');
+
+        $this->getJson($this->reviewerUrl("/{$candidate->id}"))
+            ->assertOk()
+            ->assertJsonPath('data.conflict_status', 'approved_overlap')
+            ->assertJsonPath('data.conflicts.0.booking_id', $approved->id);
+    }
+
+    public function test_tendik_calendar_marks_pending_overlap_as_warning_conflict(): void
+    {
+        $room = $this->classroom(['code' => 'SAR-PENDING']);
+        $first = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-20 09:00:00',
+            endAt: '2026-06-20 11:00:00',
+        );
+        $second = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-20 10:00:00',
+            endAt: '2026-06-20 12:00:00',
+        );
+
+        $this->actingAsUser($this->reviewerUser('sarpras'));
+        $response = $this->getJson($this->reviewerCalendarUrl('?month=2026-06'));
+
+        $response->assertOk();
+        $itemsById = collect($response->json('items'))->keyBy('id');
+
+        $this->assertSame('pending_overlap', $itemsById[$first->id]['conflict_status']);
+        $this->assertSame('warning', $itemsById[$first->id]['conflict_level']);
+        $this->assertSame($second->id, $itemsById[$first->id]['conflicts'][0]['booking_id']);
+        $this->assertSame('pending_overlap', $itemsById[$second->id]['conflict_status']);
+        $this->assertSame('warning', $itemsById[$second->id]['conflict_level']);
+        $this->assertSame($first->id, $itemsById[$second->id]['conflicts'][0]['booking_id']);
+    }
+
+    public function test_approved_booking_is_not_marked_blocking_without_another_approved_overlap(): void
+    {
+        $room = $this->classroom(['code' => 'SAR-APPROVED-SAFE']);
+        $approved = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-06-20 09:00:00',
+            endAt: '2026-06-20 11:00:00',
+        );
+        $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-20 10:00:00',
+            endAt: '2026-06-20 12:00:00',
+        );
+
+        $this->actingAsUser($this->reviewerUser('sarpras'));
+        $this->getJson($this->reviewerCalendarUrl('?month=2026-06&status=approved'))
+            ->assertOk()
+            ->assertJsonPath('items.0.id', $approved->id)
+            ->assertJsonPath('items.0.conflict_status', 'pending_overlap')
+            ->assertJsonPath('items.0.conflict_level', 'warning');
+    }
+
+    public function test_sarpras_conflict_metadata_does_not_leak_laboratory_scope(): void
+    {
+        $classroomBooking = $this->roomBooking(
+            $this->classroom(['code' => 'SAR-SCOPE']),
+            status: RoomBookingStatus::Submitted,
+        );
+        $laboratory = $this->bookingLaboratory('SAR-CONFLICT-HIDDEN');
+        $this->roomBooking(
+            $this->laboratoryRoom($laboratory, ['name' => 'Hidden Lab Room']),
+            status: RoomBookingStatus::Approved,
+        );
+
+        $this->actingAsUser($this->reviewerUser('sarpras'));
+        $response = $this->getJson($this->reviewerCalendarUrl('?month=2026-06'));
+
+        $response
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $classroomBooking->id)
+            ->assertJsonPath('items.0.conflict_status', 'none')
+            ->assertJsonPath('items.0.has_conflict', false)
+            ->assertJsonMissing(['room_name' => 'Hidden Lab Room']);
     }
 
     public function test_sarpras_cannot_action_laboratory_booking(): void
@@ -76,6 +419,96 @@ class RoomBookingReviewerApiTest extends RoomBookingApiTestCase
             ->assertNotFound();
     }
 
+    public function test_kepala_lab_calendar_is_own_lab_scoped_and_filters_cannot_expand_scope(): void
+    {
+        $ownLaboratory = $this->bookingLaboratory('KALAB-CAL-OWN');
+        $otherLaboratory = $this->bookingLaboratory('KALAB-CAL-OTHER');
+        $ownRoom = $this->laboratoryRoom($ownLaboratory, ['code' => 'KALAB-OWN']);
+        $otherRoom = $this->laboratoryRoom($otherLaboratory, ['code' => 'KALAB-OTHER']);
+        $ownBooking = $this->roomBooking(
+            $ownRoom,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-20 09:00:00',
+            endAt: '2026-06-20 10:00:00',
+        );
+        $otherBooking = $this->roomBooking(
+            $otherRoom,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-21 09:00:00',
+            endAt: '2026-06-21 10:00:00',
+        );
+
+        $this->actingAsUser($this->reviewerUser('kepala_lab', $ownLaboratory));
+
+        $response = $this->getJson($this->reviewerCalendarUrl('?month=2026-06'));
+        $response
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $ownBooking->id)
+            ->assertJsonPath('items.0.laboratory_id', $ownLaboratory->id)
+            ->assertJsonPath('items.0.can_approve', true)
+            ->assertJsonPath('summary.counts_by_status.submitted', 1);
+
+        $this->assertNotContains(
+            $otherBooking->id,
+            collect($response->json('items'))->pluck('id')->all(),
+        );
+
+        $this->getJson($this->reviewerCalendarUrl(sprintf(
+            '?month=2026-06&laboratory_id=%d',
+            $otherLaboratory->id,
+        )))
+            ->assertOk()
+            ->assertJsonCount(0, 'items')
+            ->assertJsonPath('summary.total', 0);
+
+        $this->getJson($this->reviewerCalendarUrl(sprintf(
+            '?month=2026-06&room_id=%d',
+            $otherRoom->id,
+        )))
+            ->assertOk()
+            ->assertJsonCount(0, 'items')
+            ->assertJsonPath('summary.total', 0);
+    }
+
+    public function test_kepala_lab_calendar_conflict_metadata_stays_within_own_lab(): void
+    {
+        $ownLaboratory = $this->bookingLaboratory('KALAB-CONFLICT-OWN');
+        $otherLaboratory = $this->bookingLaboratory('KALAB-CONFLICT-OTHER');
+        $ownRoom = $this->laboratoryRoom($ownLaboratory, ['name' => 'Own Lab Room']);
+        $otherRoom = $this->laboratoryRoom($otherLaboratory, ['name' => 'Other Lab Room']);
+        $approved = $this->roomBooking(
+            $ownRoom,
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-06-20 09:00:00',
+            endAt: '2026-06-20 11:00:00',
+        );
+        $candidate = $this->roomBooking(
+            $ownRoom,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-20 10:00:00',
+            endAt: '2026-06-20 12:00:00',
+        );
+        $this->roomBooking(
+            $otherRoom,
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-06-20 10:00:00',
+            endAt: '2026-06-20 12:00:00',
+        );
+
+        $this->actingAsUser($this->reviewerUser('kepala_lab', $ownLaboratory));
+        $response = $this->getJson($this->reviewerCalendarUrl('?month=2026-06&status=submitted'));
+
+        $response
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $candidate->id)
+            ->assertJsonPath('items.0.conflict_status', 'approved_overlap')
+            ->assertJsonPath('items.0.conflicts.0.booking_id', $approved->id)
+            ->assertJsonPath('items.0.conflicts.0.room_name', 'Own Lab Room')
+            ->assertJsonMissing(['room_name' => 'Other Lab Room']);
+    }
+
     public function test_laboran_can_list_and_read_scoped_lab_but_cannot_take_actions(): void
     {
         $laboratory = $this->bookingLaboratory('LABORAN');
@@ -107,6 +540,103 @@ class RoomBookingReviewerApiTest extends RoomBookingApiTestCase
         )
             ->assertForbidden()
             ->assertJsonPath('code', 'unauthorized_action');
+    }
+
+    public function test_laboran_calendar_is_all_lab_read_only_schedule_scope(): void
+    {
+        $ownLaboratory = $this->bookingLaboratory('LABORAN-CAL-OWN');
+        $otherLaboratory = $this->bookingLaboratory('LABORAN-CAL-OTHER');
+        $ownBooking = $this->roomBooking(
+            $this->laboratoryRoom($ownLaboratory, ['code' => 'LABORAN-OWN']),
+            status: RoomBookingStatus::Approved,
+        );
+        $otherBooking = $this->roomBooking(
+            $this->laboratoryRoom($otherLaboratory, ['code' => 'LABORAN-OTHER']),
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-21 10:00:00',
+            endAt: '2026-06-21 12:00:00',
+        );
+        $classroomBooking = $this->roomBooking(
+            $this->classroom(['code' => 'LABORAN-CLASS']),
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-22 10:00:00',
+            endAt: '2026-06-22 12:00:00',
+        );
+
+        $this->actingAsUser($this->reviewerUser('laboran', $ownLaboratory));
+        $response = $this->getJson($this->reviewerCalendarUrl('?month=2026-06'));
+
+        $response
+            ->assertOk()
+            ->assertJsonCount(2, 'items')
+            ->assertJsonPath('items.0.can_view', true)
+            ->assertJsonPath('items.0.can_review', false)
+            ->assertJsonPath('items.0.can_approve', false)
+            ->assertJsonPath('items.0.can_reject', false)
+            ->assertJsonPath('items.0.can_request_revision', false)
+            ->assertJsonPath('items.0.can_cancel', false)
+            ->assertJsonPath('items.0.can_manage_room', true)
+            ->assertJsonPath('items.0.can_update_readiness', false)
+            ->assertJsonPath('items.0.can_resolve_conflict', false)
+            ->assertJsonPath('items.0.can_relocate_booking', false)
+            ->assertJsonPath('summary.total', 2)
+            ->assertJsonPath('summary.counts_by_status.approved', 1)
+            ->assertJsonPath('summary.counts_by_status.submitted', 1);
+
+        $ids = collect($response->json('items'))->pluck('id')->all();
+        $this->assertEqualsCanonicalizing([$ownBooking->id, $otherBooking->id], $ids);
+        $this->assertNotContains($classroomBooking->id, $ids);
+
+        $filteredResponse = $this->getJson($this->reviewerCalendarUrl(sprintf(
+            '?month=2026-06&laboratory_id=%d',
+            $ownLaboratory->id,
+        )));
+
+        $filteredResponse
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $ownBooking->id)
+            ->assertJsonPath('summary.total', 1)
+            ->assertJsonPath('summary.counts_by_status.approved', 1);
+
+        $this->getJson($this->reviewerCalendarUrl('?month=2026-06&room_type=classroom'))
+            ->assertOk()
+            ->assertJsonCount(0, 'items')
+            ->assertJsonPath('summary.total', 0);
+    }
+
+    public function test_laboran_calendar_shows_all_lab_conflicts_as_read_only(): void
+    {
+        $ownLaboratory = $this->bookingLaboratory('LABORAN-CONFLICT-OWN');
+        $otherLaboratory = $this->bookingLaboratory('LABORAN-CONFLICT-OTHER');
+        $otherRoom = $this->laboratoryRoom($otherLaboratory, ['name' => 'Other Lab Schedule Room']);
+        $approved = $this->roomBooking(
+            $otherRoom,
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-06-20 09:00:00',
+            endAt: '2026-06-20 11:00:00',
+        );
+        $candidate = $this->roomBooking(
+            $otherRoom,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-20 10:00:00',
+            endAt: '2026-06-20 12:00:00',
+        );
+
+        $this->actingAsUser($this->reviewerUser('laboran', $ownLaboratory));
+        $response = $this->getJson($this->reviewerCalendarUrl('?month=2026-06&status=submitted'));
+
+        $response
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $candidate->id)
+            ->assertJsonPath('items.0.can_approve', false)
+            ->assertJsonPath('items.0.can_reject', false)
+            ->assertJsonPath('items.0.can_request_revision', false)
+            ->assertJsonPath('items.0.can_resolve_conflict', false)
+            ->assertJsonPath('items.0.conflict_status', 'approved_overlap')
+            ->assertJsonPath('items.0.conflict_level', 'blocking')
+            ->assertJsonPath('items.0.conflicts.0.booking_id', $approved->id);
     }
 
     public function test_persuratan_tendik_cannot_access_reviewer_endpoints(): void
@@ -153,6 +683,27 @@ class RoomBookingReviewerApiTest extends RoomBookingApiTestCase
         $this->patchJson($this->reviewerUrl("/{$booking->id}/reject"))
             ->assertUnprocessable()
             ->assertJsonValidationErrors('reason');
+    }
+
+    public function test_tendik_calendar_preserves_ninety_day_range_limit(): void
+    {
+        $booking = $this->roomBooking(
+            $this->classroom(['code' => 'CAL-90-TENDIK']),
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-09-15 09:00:00',
+            endAt: '2026-09-15 11:00:00',
+        );
+        $this->actingAsUser($this->reviewerUser('sarpras'));
+
+        $this->getJson($this->reviewerCalendarUrl('?from=2026-06-18&to=2026-09-15'))
+            ->assertOk()
+            ->assertJsonPath('range.start', '2026-06-18')
+            ->assertJsonPath('range.end', '2026-09-15')
+            ->assertJsonPath('items.0.id', $booking->id);
+
+        $this->getJson($this->reviewerCalendarUrl('?from=2026-06-18&to=2026-09-16'))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('to');
     }
 
     public function test_reviewer_invalid_transition_maps_to_409(): void

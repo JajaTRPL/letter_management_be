@@ -12,10 +12,12 @@ class FacilityType extends Model
         'name',
         'slug',
         'is_predefined',
+        'is_active',
     ];
 
     protected $casts = [
         'is_predefined' => 'boolean',
+        'is_active' => 'boolean',
     ];
 
     public function roomFacilities(): HasMany
@@ -26,5 +28,10 @@ class FacilityType extends Model
     public function scopePredefined(Builder $query): Builder
     {
         return $query->where('is_predefined', true);
+    }
+
+    public function scopeActive(Builder $query): Builder
+    {
+        return $query->where('is_active', true);
     }
 }

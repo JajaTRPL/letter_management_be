@@ -31,6 +31,41 @@ class RoomBookingDomainException extends RuntimeException
 
     public const ATTACHMENT_REQUIRED = 'attachment_required';
 
+    public const INVALID_ATTACHMENT = 'invalid_attachment';
+
+    public const BOOKING_START_PASSED = 'booking_start_passed';
+
+    public const PROTECTED_BUSINESS_RECORD = 'protected_business_record';
+
+    public const STALE_WORKFLOW_VERSION = 'stale_workflow_version';
+
+    public const PENDING_CANCELLATION_REQUEST = 'pending_cancellation_request';
+
+    public const REVIEW_ALREADY_STARTED = 'review_already_started';
+
+    public const WITHDRAWAL_CUTOFF_PASSED = 'cutoff_passed';
+
+    public const REVISION_ALREADY_REQUESTED = 'revision_already_requested';
+
+    public const REQUIRES_CANCELLATION_REVIEW = 'requires_cancellation_review';
+
+    public const FINAL_BOOKING_STATE = 'final_booking_state';
+
+    public const BOOKING_EXPIRED = 'booking_expired';
+
+    public const CANCELLATION_REQUEST_NOT_ALLOWED = 'cancellation_request_not_allowed';
+
+    public const CANCELLATION_REQUEST_ALREADY_RESOLVED = 'cancellation_request_already_resolved';
+
+    public const IDEMPOTENCY_KEY_REUSED = 'idempotency_key_reused';
+
+    public const OCCURRENCE_NOT_READY = 'occurrence_not_ready';
+    public const KEY_NOT_ISSUED = 'key_not_issued';
+    public const RETURN_ALREADY_ACTIVE = 'return_already_active';
+    public const RETURN_ALREADY_ACCEPTED = 'return_already_accepted';
+    public const STALE_OCCURRENCE_VERSION = 'stale_occurrence_version';
+    public const STALE_RETURN_VERSION = 'stale_return_version';
+
     /**
      * @param  array<string, mixed>  $context
      */
