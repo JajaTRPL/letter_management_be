@@ -468,8 +468,10 @@ class RoomBookingCancellationTest extends RoomBookingApiTestCase
         }
 
         $this->actingAsUser($student);
-        $this->patchJson($this->mahasiswaUrl("/requests/{$booking->id}/cancel"), [
-            'reason' => 'Legacy attempt.',
+        $this->postJson($this->mahasiswaUrl("/requests/{$booking->id}/withdraw"), [
+            'reason' => 'Withdrawal attempt.',
+            'expected_workflow_version' => (int) $booking->fresh()->workflow_version,
+            'idempotency_key' => 'withdraw-pending-cancel',
         ])->assertConflict()->assertJsonPath('code', 'pending_cancellation_request');
     }
 

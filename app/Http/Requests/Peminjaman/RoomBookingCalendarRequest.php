@@ -4,6 +4,7 @@ namespace App\Http\Requests\Peminjaman;
 
 use App\Enums\RoomBookingStatus;
 use App\Enums\RoomType;
+use App\Services\RoomBookingCalendarVisibilityService;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Carbon;
 use Illuminate\Validation\Rule;
@@ -21,7 +22,11 @@ class RoomBookingCalendarRequest extends FormRequest
             'month' => ['nullable', 'date_format:Y-m'],
             'from' => ['nullable', 'required_without:month', 'date_format:Y-m-d'],
             'to' => ['nullable', 'required_without:month', 'date_format:Y-m-d', 'after_or_equal:from'],
-            'status' => ['nullable', Rule::enum(RoomBookingStatus::class)],
+            'status' => ['nullable', Rule::in([
+                RoomBookingCalendarVisibilityService::SCOPE_ACTIVE,
+                RoomBookingCalendarVisibilityService::SCOPE_HISTORY,
+                ...RoomBookingStatus::values(),
+            ])],
             'room_type' => ['nullable', Rule::enum(RoomType::class)],
             'room_id' => ['nullable', 'integer', 'exists:rooms,id'],
             'laboratory_id' => ['nullable', 'integer', 'exists:laboratories,id'],

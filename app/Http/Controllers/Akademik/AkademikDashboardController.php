@@ -12,8 +12,6 @@ use App\Models\SuratKeteranganAktifApplication;
 use App\Models\SuratPengantarMagangApplication;
 use App\Models\SuratTugasApplication;
 use App\Models\User;
-use App\Notifications\ScholarshipStatusNotification;
-use App\Enums\UserStatus;
 use App\Services\AcademicRoutingService;
 use App\Services\AcademicSignatoryService;
 use App\Services\BeasiswaPreviewGenerationException;
@@ -23,10 +21,10 @@ use App\Services\LetterRetentionSummaryService;
 use App\Services\LetterTaskCursorFeedService;
 use App\Services\LetterTaskFeedService;
 use App\Services\MahasiswaProfileDataService;
+use App\Support\Workflow\LetterReviewStageClock;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Notification;
 use RuntimeException;
 
 class AkademikDashboardController extends Controller
@@ -160,7 +158,7 @@ class AkademikDashboardController extends Controller
                 'stats' => [
                     'total_incoming' => $matchingTaskCount,
                     'needs_verification' => $matchingTaskCount,
-                    'finished_this_month' => $this->finishedThisMonthCount(),
+                    'finished_this_month' => $this->finishedThisMonthCount($user, $applyAcademicScope),
                 ],
                 'tasks' => $taskRows,
                 'meta' => array_merge([
@@ -218,7 +216,7 @@ class AkademikDashboardController extends Controller
             'stats' => [
                 'total_incoming' => $matchingTaskCount,
                 'needs_verification' => $matchingTaskCount,
-                'finished_this_month' => $this->finishedThisMonthCount(),
+                'finished_this_month' => $this->finishedThisMonthCount($user, $applyAcademicScope),
             ],
             'tasks' => $taskRows,
             'meta' => [
@@ -260,14 +258,44 @@ class AkademikDashboardController extends Controller
         ];
     }
 
-    private function finishedThisMonthCount(): int
+    /**
+     * How many letters THIS reviewer signed off this month.
+     *
+     * Previously this counted every ScholarshipApplication in the faculty whose
+     * `updated_at` fell in the current month — no scoping to the reviewer's
+     * study program or department, no coverage of the other four letter types,
+     * and `updated_at` moves for reasons that have nothing to do with a decision.
+     * Every Kaprodi and Kadep therefore saw the same number, mostly made up of
+     * other people's work.
+     *
+     * Now it counts the reviewer's OWN stage-exit timestamp — `kaprodi_approved_at`
+     * for a Prodi approver, `kadep_approved_at` for a Departemen one — across all
+     * five letter types, narrowed by the same scope helper the queue uses. The
+     * column comes from LetterReviewStageClock so this figure, the review-SLA
+     * reminders and the analytics all agree on what "finished a stage" means.
+     */
+    private function finishedThisMonthCount(User $user, ?callable $applyAcademicScope): int
     {
-        return ScholarshipApplication::whereIn('status', [
-            ScholarshipApplication::STATUS_APPROVED_KAPRODI,
-            ScholarshipApplication::STATUS_COMPLETED,
-        ])
-            ->whereMonth('updated_at', now()->month)
-            ->count();
+        if (! $applyAcademicScope) {
+            return 0;
+        }
+
+        $stage = $this->academicRoutingService->isDepartmentApprover($user)
+            ? LetterReviewStageClock::STAGE_DEPARTEMEN
+            : LetterReviewStageClock::STAGE_PRODI;
+        $column = LetterReviewStageClock::exitAttributeForStage($stage);
+        if (! $column) {
+            return 0;
+        }
+
+        $start = now(config('app.timezone'))->startOfMonth();
+        $end = now(config('app.timezone'))->endOfMonth();
+
+        return collect($this->academicDashboardModels())->sum(
+            fn (string $modelClass): int => $applyAcademicScope(
+                $modelClass::query()->whereBetween($column, [$start, $end]),
+            )->count(),
+        );
     }
 
     private function academicDashboardRelations(): array
@@ -403,20 +431,10 @@ class AkademikDashboardController extends Controller
                     'message' => 'Pengajuan sudah berubah dan tidak dapat disetujui ulang oleh Prodi.',
                 ], 409);
             }
-            
-            // Notify Kadep and Sekdep
-            $kadeps = User::where('role', 'akademik')
-                ->whereIn('sub_role', ['kadep', 'sekdep'])
-                ->where('status', UserStatus::Active)
-                ->get();
-            
-            if ($kadeps->count() > 0) {
-                Notification::send($kadeps, new ScholarshipStatusNotification(
-                    $application,
-                    "Pendaftaran beasiswa telah disetujui Kaprodi/Sekprodi dan kini menunggu persetujuan akhir Anda."
-                ));
-            }
 
+            // Kadep/Sekdep are notified by the shared C7N1 letter observer from the
+            // status transition above (scoped department routing + unified email) —
+            // no manual dispatch here.
             return response()->json(['message' => 'Pendaftaran disetujui dan diteruskan ke Kadep/Sekdep']);
         }
 
@@ -489,12 +507,8 @@ class AkademikDashboardController extends Controller
             ], 409);
         }
 
-        // Notify Student
-        $approvedApplication->user->notify(new ScholarshipStatusNotification(
-            $approvedApplication,
-            "Pendaftaran beasiswa Anda telah disetujui. Silakan review dokumen sebelum menyelesaikan pengajuan."
-        ));
-
+        // The applicant is notified (in-app + email) by the C7N1 letter observer
+        // from the READY_FOR_STUDENT_REVIEW transition above.
         return response()->json(['message' => 'Pendaftaran berhasil disetujui dan menunggu review mahasiswa']);
     }
 
@@ -521,12 +535,9 @@ class AkademikDashboardController extends Controller
             $updateData['rejection_reason'] = $request->input('reason');
         }
 
+        // The applicant is notified (in-app + email) by the C7N1 letter observer
+        // from the REJECTED transition above.
         $application->update($updateData);
-        $application->load('user');
-        $application->user->notify(new ScholarshipStatusNotification(
-            $application,
-            "Maaf, pendaftaran beasiswa Anda ditolak oleh pihak pimpinan Fakultas/Prodi."
-        ));
         return response()->json(['message' => 'Pendaftaran berhasil ditolak']);
     }
 
@@ -553,12 +564,9 @@ class AkademikDashboardController extends Controller
             $updateData['revision_note'] = $request->input('note');
         }
 
+        // The applicant is notified (in-app + email) by the C7N1 letter observer
+        // from the REVISION transition above.
         $application->update($updateData);
-        $application->load('user');
-        $application->user->notify(new ScholarshipStatusNotification(
-            $application,
-            "Pendaftaran beasiswa Anda memerlukan revisi dari Kaprodi/Sekprodi/Kadep."
-        ));
         return response()->json(['message' => 'Permintaan revisi berhasil dikirim']);
     }
 }

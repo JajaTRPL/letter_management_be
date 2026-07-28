@@ -196,16 +196,19 @@ class RoomBookingWithdrawalTest extends RoomBookingApiTestCase
         ])->assertConflict()->assertJsonPath('code', 'idempotency_key_reused');
     }
 
-    public function test_legacy_cancel_uses_direct_policy_and_never_creates_review_request(): void
+    public function test_direct_withdrawal_uses_direct_policy_and_never_creates_review_request(): void
     {
         $student = $this->student();
         $this->actingAsUser($student);
         $eligible = $this->roomBooking($this->classroom(), $student);
 
-        $this->patchJson($this->mahasiswaUrl("/requests/{$eligible->id}/cancel"), [
-            'reason' => 'Legacy caller still eligible.',
+        $this->postJson($this->mahasiswaUrl("/requests/{$eligible->id}/withdraw"), [
+            'reason' => 'Direct withdrawal still eligible.',
+            'expected_workflow_version' => 1,
+            'idempotency_key' => 'withdraw-direct-eligible',
         ])->assertOk()
-            ->assertJsonPath('data.status', 'cancelled');
+            ->assertJsonPath('data.effective_status', 'cancelled')
+            ->assertJsonPath('data.booking.status', 'cancelled');
         $this->assertDatabaseHas('room_booking_workflow_events', [
             'room_booking_request_id' => $eligible->id,
             'event_type' => RoomBookingWorkflowEvent::EVENT_BOOKING_WITHDRAWN,
@@ -216,9 +219,10 @@ class RoomBookingWithdrawalTest extends RoomBookingApiTestCase
             $student,
             RoomBookingStatus::Approved,
         );
-        $this->patchJson($this->mahasiswaUrl("/requests/{$approved->id}/cancel"), [
+        $this->postJson($this->mahasiswaUrl("/requests/{$approved->id}/withdraw"), [
             'reason' => 'Must be reviewed.',
             'expected_workflow_version' => 1,
+            'idempotency_key' => 'withdraw-approved-review',
         ])->assertConflict()
             ->assertJsonPath('code', 'requires_cancellation_review')
             ->assertJsonPath('data.capabilities.can_request_cancellation', true);

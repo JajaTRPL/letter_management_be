@@ -4,10 +4,12 @@ namespace Tests\Feature\Peminjaman;
 
 use App\Enums\RoomBookingStatus;
 use App\Models\RoomBookingRequest;
+use App\Models\User;
 use App\Services\RoomBookingDomainException;
 use App\Services\RoomBookingTransitionService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class RoomBookingTransitionServiceTest extends TestCase
@@ -33,6 +35,29 @@ class RoomBookingTransitionServiceTest extends TestCase
         Carbon::setTestNow();
 
         parent::tearDown();
+    }
+
+    /**
+     * Canonical requester withdrawal (the unified path that replaced the legacy
+     * cancel). Threads a fresh idempotency key + the booking's current workflow
+     * version, then returns the refreshed booking so success assertions read
+     * committed state; domain exceptions propagate exactly as the /withdraw
+     * endpoint surfaces them.
+     */
+    private function directWithdraw(
+        RoomBookingRequest $booking,
+        User $actor,
+        string $reason,
+    ): RoomBookingRequest {
+        $this->transitions->withdraw(
+            $booking,
+            $actor,
+            $reason,
+            max(1, (int) ($booking->workflow_version ?? 1)),
+            (string) Str::uuid(),
+        );
+
+        return $booking->fresh();
     }
 
     public function test_new_booking_submission_validates_and_writes_initial_history(): void
@@ -167,7 +192,7 @@ class RoomBookingTransitionServiceTest extends TestCase
     {
         $missingReasonBooking = $this->roomBooking($this->classroom());
         $missingReason = $this->captureDomainException(
-            fn () => $this->transitions->cancel(
+            fn () => $this->directWithdraw(
                 $missingReasonBooking,
                 $missingReasonBooking->requester,
                 ' ',
@@ -177,7 +202,7 @@ class RoomBookingTransitionServiceTest extends TestCase
 
         $requester = $this->bookingUser();
         $submitted = $this->roomBooking($this->classroom(), $requester);
-        $cancelled = $this->transitions->cancel(
+        $cancelled = $this->directWithdraw(
             $submitted,
             $requester,
             'The activity was cancelled.',
@@ -190,7 +215,7 @@ class RoomBookingTransitionServiceTest extends TestCase
             $requester,
             RoomBookingStatus::RevisionRequested,
         );
-        $exception = $this->captureDomainException(fn () => $this->transitions->cancel(
+        $exception = $this->captureDomainException(fn () => $this->directWithdraw(
             $revision,
             $requester,
             'Must be reviewed.',
@@ -210,7 +235,7 @@ class RoomBookingTransitionServiceTest extends TestCase
             '2026-06-20 12:00:00',
         );
 
-        $beforeException = $this->captureDomainException(fn () => $this->transitions->cancel(
+        $beforeException = $this->captureDomainException(fn () => $this->directWithdraw(
             $beforeStart,
             $requester,
             'The approved activity was cancelled.',
@@ -228,7 +253,7 @@ class RoomBookingTransitionServiceTest extends TestCase
             '2026-06-18 11:00:00',
         );
         $exception = $this->captureDomainException(
-            fn () => $this->transitions->cancel(
+            fn () => $this->directWithdraw(
                 $atStart,
                 $requester,
                 'Too late.',
@@ -299,7 +324,7 @@ class RoomBookingTransitionServiceTest extends TestCase
         );
     }
 
-    public function test_new_submission_rejects_invalid_cross_midnight_and_non_future_times(): void
+    public function test_new_submission_accepts_overnight_but_rejects_invalid_and_non_future_times(): void
     {
         $requester = $this->bookingUser();
         $room = $this->classroom();
@@ -323,12 +348,8 @@ class RoomBookingTransitionServiceTest extends TestCase
             '2026-06-20 23:00:00',
             '2026-06-21 01:00:00',
         );
-        $this->assertSame(
-            RoomBookingDomainException::CROSS_MIDNIGHT,
-            $this->captureDomainException(
-                fn () => $this->transitions->submit($crossMidnight, $requester),
-            )->reason,
-        );
+        $submittedOvernight = $this->transitions->submit($crossMidnight, $requester);
+        $this->assertSame(RoomBookingStatus::Submitted, $submittedOvernight->status);
 
         $past = $this->newBooking(
             $requester->id,

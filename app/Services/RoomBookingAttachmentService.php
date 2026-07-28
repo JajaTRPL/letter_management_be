@@ -46,6 +46,35 @@ class RoomBookingAttachmentService
     }
 
     /**
+     * Canonical identity of a validated initial-submission upload. The raw
+     * path and bytes never leave this method; callers persist only the hash of
+     * the complete request identity in the idempotency record.
+     *
+     * @return array{checksum_sha256: string, size_bytes: int, mime_type: string}
+     */
+    public function canonicalUploadIdentity(UploadedFile $file): array
+    {
+        $this->validatePdf($file);
+
+        $path = $file->getRealPath();
+        $size = $file->getSize();
+        if (! is_string($path) || $path === '' || $size === false) {
+            throw new RuntimeException('Failed to read room booking upload identity.');
+        }
+
+        $checksum = hash_file('sha256', $path);
+        if (! is_string($checksum) || strlen($checksum) !== 64) {
+            throw new RuntimeException('Failed to checksum room booking upload.');
+        }
+
+        return [
+            'checksum_sha256' => $checksum,
+            'size_bytes' => (int) $size,
+            'mime_type' => self::MIME_TYPE,
+        ];
+    }
+
+    /**
      * @return array{
      *     exists: bool,
      *     has_surat_peminjaman_pdf: bool,

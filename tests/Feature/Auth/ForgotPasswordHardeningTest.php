@@ -24,6 +24,9 @@ class ForgotPasswordHardeningTest extends TestCase
         Mail::fake();
         config([
             'app.env' => 'testing',
+            // These tests exercise the reset flow's behaviour WHEN it is enabled;
+            // availability gating (disabled → 503) is covered separately.
+            'password_reset.enabled' => true,
             'password_reset.simulation' => false,
             'password_reset.otp_expiry_minutes' => 10,
             'password_reset.reset_token_expiry_minutes' => 10,
@@ -173,6 +176,11 @@ class ForgotPasswordHardeningTest extends TestCase
 
     public function test_resend_cooldown_blocks_the_same_email_and_ip_for_60_seconds(): void
     {
+        // Freeze the clock so the two requests share one instant: seconds_left is
+        // then exactly the configured cooldown, not cooldown-minus-elapsed. Under
+        // full-suite load the unfrozen clock drifts ~1s and reports 59.
+        $this->freezeTime();
+
         $user = User::factory()->create();
         $request = fn () => $this->withServerVariables(['REMOTE_ADDR' => '10.0.4.4'])
             ->postJson('/api/forgot-password', ['email' => $user->email]);
@@ -468,6 +476,7 @@ class ForgotPasswordHardeningTest extends TestCase
         Mail::assertSent(ResetPasswordTokenMail::class, function (ResetPasswordTokenMail $mail) use ($email, &$code) {
             if ($mail->hasTo($email)) {
                 $code = $mail->code;
+
                 return true;
             }
 

@@ -59,6 +59,13 @@ class RoomBookingDomainException extends RuntimeException
 
     public const IDEMPOTENCY_KEY_REUSED = 'idempotency_key_reused';
 
+    public const OCCURRENCE_NOT_READY = 'occurrence_not_ready';
+    public const KEY_NOT_ISSUED = 'key_not_issued';
+    public const RETURN_ALREADY_ACTIVE = 'return_already_active';
+    public const RETURN_ALREADY_ACCEPTED = 'return_already_accepted';
+    public const STALE_OCCURRENCE_VERSION = 'stale_occurrence_version';
+    public const STALE_RETURN_VERSION = 'stale_return_version';
+
     /**
      * @param  array<string, mixed>  $context
      */

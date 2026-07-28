@@ -170,7 +170,7 @@ class RoomBookingIdempotencyTest extends RoomBookingApiTestCase
         )->assertOk()->assertHeader('Idempotent-Replay', 'false');
         $originalBody = $original->json();
         $record = RoomBookingIdempotencyRecord::query()->firstOrFail();
-        $this->assertSame(1, $record->response_schema_version);
+        $this->assertSame(2, $record->response_schema_version);
         $this->assertSame(200, $record->result_status_code);
         $this->assertSame($originalBody, $record->safe_response_body);
 

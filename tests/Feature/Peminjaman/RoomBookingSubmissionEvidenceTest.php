@@ -263,6 +263,7 @@ class RoomBookingSubmissionEvidenceTest extends RoomBookingApiTestCase
             RoomBookingWorkflowEvent::EVENT_BOOKING_SUBMITTED,
             RoomBookingWorkflowEvent::EVENT_REVISION_REQUESTED,
             RoomBookingWorkflowEvent::EVENT_BOOKING_RESUBMITTED,
+            RoomBookingWorkflowEvent::EVENT_OCCURRENCE_CREATED,
             RoomBookingWorkflowEvent::EVENT_BOOKING_APPROVED,
             RoomBookingWorkflowEvent::EVENT_CANCELLATION_REQUESTED,
             RoomBookingWorkflowEvent::EVENT_CANCELLATION_APPROVED,
@@ -296,12 +297,12 @@ class RoomBookingSubmissionEvidenceTest extends RoomBookingApiTestCase
         $this->assertSame(2, $resubmitted->submission_iteration);
         $this->assertSame(3, $resubmitted->workflow_version_after);
 
-        $requestedCancellation = $events[4];
+        $requestedCancellation = $events[5];
         $this->assertSame('approved', $requestedCancellation->previous_status);
         $this->assertSame('approved', $requestedCancellation->resulting_status);
         $this->assertSame(5, $requestedCancellation->workflow_version_after);
 
-        $cancelled = $events[5];
+        $cancelled = $events[6];
         $this->assertSame('approved', $cancelled->previous_status);
         $this->assertSame('cancelled', $cancelled->resulting_status);
         $this->assertSame('Kegiatan batal.', $cancelled->public_note);

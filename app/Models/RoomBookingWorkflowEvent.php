@@ -42,6 +42,20 @@ class RoomBookingWorkflowEvent extends Model
 
     public const EVENT_CANCELLATION_REJECTED = 'cancellation_rejected';
 
+    public const EVENT_OCCURRENCE_CREATED = 'occurrence_created';
+    public const EVENT_KEY_ISSUED = 'key_issued';
+    public const EVENT_USAGE_STARTED = 'usage_started';
+    public const EVENT_USAGE_ENDED = 'usage_ended';
+    public const EVENT_RETURN_DUE = 'return_due';
+    public const EVENT_RETURN_SUBMITTED = 'return_submitted';
+    public const EVENT_RETURN_RESUBMITTED = 'return_resubmitted';
+    public const EVENT_RETURN_REVISION_REQUESTED = 'return_revision_requested';
+    public const EVENT_RETURN_ACCEPTED = 'return_accepted';
+    public const EVENT_RETURN_REJECTED = 'return_rejected';
+    public const EVENT_RETURN_WITHDRAWN = 'return_withdrawn';
+    public const EVENT_RETURN_OVERDUE = 'return_overdue';
+    public const EVENT_KEY_RECEIVED_TIME_ADJUSTED = 'key_received_time_adjusted';
+
     public const EVENT_TYPES = [
         self::EVENT_BOOKING_SUBMITTED,
         self::EVENT_REVISION_REQUESTED,
@@ -56,10 +70,24 @@ class RoomBookingWorkflowEvent extends Model
         self::EVENT_CANCELLATION_REQUEST_WITHDRAWN,
         self::EVENT_CANCELLATION_APPROVED,
         self::EVENT_CANCELLATION_REJECTED,
+        self::EVENT_OCCURRENCE_CREATED,
+        self::EVENT_KEY_ISSUED,
+        self::EVENT_USAGE_STARTED,
+        self::EVENT_USAGE_ENDED,
+        self::EVENT_RETURN_DUE,
+        self::EVENT_RETURN_SUBMITTED,
+        self::EVENT_RETURN_RESUBMITTED,
+        self::EVENT_RETURN_REVISION_REQUESTED,
+        self::EVENT_RETURN_ACCEPTED,
+        self::EVENT_RETURN_REJECTED,
+        self::EVENT_RETURN_WITHDRAWN,
+        self::EVENT_RETURN_OVERDUE,
+        self::EVENT_KEY_RECEIVED_TIME_ADJUSTED,
     ];
 
     protected $fillable = [
         'room_booking_request_id',
+        'room_booking_occurrence_id',
         'event_type',
         'actor_id',
         'actor_name_snapshot',
@@ -67,6 +95,8 @@ class RoomBookingWorkflowEvent extends Model
         'actor_subrole_snapshot',
         'actor_scope_type',
         'actor_scope_id',
+        'recipient_user_id',
+        'recipient_role',
         'previous_status',
         'resulting_status',
         'workflow_version_before',
@@ -81,8 +111,10 @@ class RoomBookingWorkflowEvent extends Model
 
     protected $casts = [
         'room_booking_request_id' => 'integer',
+        'room_booking_occurrence_id' => 'integer',
         'actor_id' => 'integer',
         'actor_scope_id' => 'integer',
+        'recipient_user_id' => 'integer',
         'workflow_version_before' => 'integer',
         'workflow_version_after' => 'integer',
         'submission_iteration' => 'integer',
@@ -108,5 +140,10 @@ class RoomBookingWorkflowEvent extends Model
     public function actor()
     {
         return $this->belongsTo(User::class, 'actor_id');
+    }
+
+    public function occurrence()
+    {
+        return $this->belongsTo(RoomBookingOccurrence::class, 'room_booking_occurrence_id');
     }
 }

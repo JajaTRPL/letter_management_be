@@ -15,6 +15,7 @@ use App\Models\RoomBookingRequest;
 use App\Services\RoomBookingConflictService;
 use App\Services\RoomBookingDomainException;
 use App\Services\RoomBookingLifecycleCapabilityResolver;
+use App\Services\RoomBookingCalendarVisibilityService;
 use App\Services\RoomBookingReviewerResolver;
 use App\Services\RoomBookingReviewService;
 use App\Services\RoomBookingTransitionService;
@@ -23,7 +24,6 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
 use Throwable;
 
 class RoomBookingController extends Controller
@@ -37,6 +37,7 @@ class RoomBookingController extends Controller
         private RoomBookingConflictService $conflictService,
         private RoomBookingLifecycleCapabilityResolver $capabilityResolver,
         private RoomBookingReviewService $reviewService,
+        private RoomBookingCalendarVisibilityService $calendarVisibility,
     ) {}
 
     public function index(BookingListRequest $request): JsonResponse
@@ -90,9 +91,8 @@ class RoomBookingController extends Controller
         $filters = $request->validated();
         [$rangeStart, $rangeEndExclusive, $month] = $this->calendarRange($filters);
 
-        $baseQuery = RoomBookingRequest::query()
-            ->where('start_at', '<', $rangeEndExclusive)
-            ->where('end_at', '>', $rangeStart);
+        $baseQuery = RoomBookingRequest::query();
+        $this->calendarVisibility->applyRange($baseQuery, $rangeStart, $rangeEndExclusive);
 
         $this->scopeCalendarBookings($baseQuery, $request);
 
@@ -100,27 +100,40 @@ class RoomBookingController extends Controller
             ->with([
                 'room.owningLaboratory:id,code,name',
                 'requester:id,name,email',
+                'occurrences' => fn ($occurrence) => $occurrence
+                    ->where('start_at', '<', $rangeEndExclusive)
+                    ->where('end_at', '>', $rangeStart),
             ])
             ->orderBy('start_at');
 
         $this->applyCalendarFilters($query, $filters);
+        $this->calendarVisibility->apply($query, $filters['status'] ?? null);
 
         $items = $query
             ->get()
-            ->map(fn (RoomBookingRequest $booking) => $this->calendarItemPayload(
-                $booking,
-                $request,
-            ))
+            ->flatMap(fn (RoomBookingRequest $booking) => $this->calendarVisibility
+                ->slotRanges($booking)
+                ->filter(fn (array $slot) => $this->calendarVisibility->includesSlot(
+                    $booking->status,
+                    $slot['start_at'],
+                    $slot['end_at'],
+                    $filters['status'] ?? null,
+                ))
+                ->map(fn (array $slot) => $this->calendarItemPayload(
+                    $booking,
+                    $request,
+                    $slot['start_at'],
+                    $slot['end_at'],
+                )))
             ->values();
 
         $summaryQuery = clone $baseQuery;
-        $this->applyCalendarFilters($summaryQuery, $filters, includeStatus: false);
-        $countsByStatus = $summaryQuery
-            ->select('status', DB::raw('count(*) as aggregate'))
-            ->groupBy('status')
-            ->pluck('aggregate', 'status')
-            ->map(fn ($count) => (int) $count)
-            ->all();
+        $this->applyCalendarFilters($summaryQuery, $filters);
+        $summary = $this->calendarVisibility->summarize($summaryQuery
+            ->with(['occurrences' => fn ($occurrence) => $occurrence
+                ->where('start_at', '<', $rangeEndExclusive)
+                ->where('end_at', '>', $rangeStart)])
+            ->get());
 
         return response()->json([
             'message' => 'Kalender review peminjaman ruangan berhasil diambil',
@@ -131,8 +144,10 @@ class RoomBookingController extends Controller
             ],
             'items' => $items->all(),
             'summary' => [
-                'total' => array_sum($countsByStatus),
-                'counts_by_status' => $countsByStatus,
+                'total' => $items->count(),
+                'active_total' => $summary['active_total'],
+                'history_total' => $summary['history_total'],
+                'counts_by_status' => $summary['counts_by_status'],
             ],
         ]);
     }
@@ -293,12 +308,8 @@ class RoomBookingController extends Controller
     /**
      * @param  array<string, mixed>  $filters
      */
-    private function applyCalendarFilters(Builder $query, array $filters, bool $includeStatus = true): void
+    private function applyCalendarFilters(Builder $query, array $filters): void
     {
-        if ($includeStatus && isset($filters['status'])) {
-            $query->where('status', $filters['status']);
-        }
-
         if (isset($filters['room_id'])) {
             $query->where('room_id', $filters['room_id']);
         }
@@ -363,7 +374,12 @@ class RoomBookingController extends Controller
     /**
      * @return array<string, mixed>
      */
-    private function calendarItemPayload(RoomBookingRequest $booking, Request $request): array
+    private function calendarItemPayload(
+        RoomBookingRequest $booking,
+        Request $request,
+        Carbon $startAt,
+        Carbon $endAt,
+    ): array
     {
         $room = $booking->room;
         $capabilities = $this->capabilityResolver->capabilitiesFor(
@@ -384,8 +400,8 @@ class RoomBookingController extends Controller
             'activity_name' => $booking->activity_name,
             'purpose' => $booking->purpose,
             'status' => $booking->status->value,
-            'start_at' => $booking->start_at->toIso8601String(),
-            'end_at' => $booking->end_at->toIso8601String(),
+            'start_at' => $startAt->toIso8601String(),
+            'end_at' => $endAt->toIso8601String(),
             'can_view' => $this->canViewCalendarBooking($booking, $request),
             'can_review' => $capabilities['can_review'],
             'can_start_review' => $capabilities['can_start_review'],
@@ -406,6 +422,8 @@ class RoomBookingController extends Controller
             includeRequester: true,
             includeActivity: true,
             includePurpose: true,
+            startAt: $startAt,
+            endAt: $endAt,
         ));
     }
 

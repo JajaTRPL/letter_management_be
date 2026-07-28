@@ -75,8 +75,13 @@ class GoogleAuthController extends Controller
             ], 403);
         }
 
-        // Lookup by email (primary identifier) — NOT by google_id
-        $user = User::where('email', $email)->first();
+        // Lookup by email (primary identifier) — NOT by google_id.
+        // Case-insensitive: the verified Google email is normalized to lowercase,
+        // but a pre-provisioned account may have been stored with mixed case by an
+        // admin. Mirrors the case-insensitive lookup used by password login
+        // (AuthController), so a matching account is found rather than wrongly
+        // rejected as "belum terdaftar" or duplicated as a new mahasiswa.
+        $user = User::whereRaw('LOWER(email) = ?', [$email])->first();
         $isNewUser = false;
 
         if ($user) {
@@ -329,10 +334,24 @@ class GoogleAuthController extends Controller
     }
 
     /**
+     * Accepted issuer values for a Google-signed OpenID Connect ID token.
+     *
+     * @see https://developers.google.com/identity/openid-connect/openid-connect#validatinganidtoken
+     */
+    private const ALLOWED_ISSUERS = ['https://accounts.google.com', 'accounts.google.com'];
+
+    /**
      * Verify Google ID token via Google's tokeninfo endpoint.
      *
-     * Security: Checks that 'aud' matches our configured GOOGLE_CLIENT_ID.
-     * This prevents tokens issued for other Google apps from being accepted.
+     * The tokeninfo endpoint validates the signature and expiry server-side (a
+     * non-successful response means the token is invalid/expired). On top of that
+     * we explicitly assert the two claims that bind the token to THIS app and to
+     * Google as the issuer:
+     *  - 'aud' must match our configured GOOGLE_CLIENT_ID (prevents token reuse from
+     *    another Google app);
+     *  - 'iss' must be a Google issuer (defense-in-depth: the check no longer relies
+     *    solely on the transport being tokeninfo, so it stays correct even if the
+     *    verification mechanism is later swapped for local JWK validation).
      */
     private function verifyIdToken(string $idToken): ?array
     {
@@ -353,6 +372,14 @@ class GoogleAuthController extends Controller
                 \Log::warning('Google auth: aud mismatch or missing client_id', [
                     'expected' => $clientId,
                     'got'      => $payload['aud'] ?? 'none',
+                ]);
+                return null;
+            }
+
+            // CRITICAL: Verify the issuer is Google.
+            if (!in_array($payload['iss'] ?? '', self::ALLOWED_ISSUERS, true)) {
+                \Log::warning('Google auth: unexpected issuer', [
+                    'got' => $payload['iss'] ?? 'none',
                 ]);
                 return null;
             }

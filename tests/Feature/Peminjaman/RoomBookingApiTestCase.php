@@ -12,6 +12,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use Tests\Feature\Workflow\WorkflowTestHelpers;
 use Tests\TestCase;
@@ -92,6 +93,7 @@ abstract class RoomBookingApiTestCase extends TestCase
     protected function validBookingPayloadWithPdf(Room $room, array $overrides = []): array
     {
         return array_merge(
+            ['idempotency_key' => 'initial-submit-'.Str::uuid()],
             $this->validBookingPayload($room, $overrides),
             ['surat_peminjaman_pdf' => $this->validPdfUpload()]
         );

@@ -185,10 +185,47 @@ class RoomBookingSuperAdminApiTest extends RoomBookingApiTestCase
             ->assertJsonPath('items.0.can_view', true)
             ->assertJsonPath('items.0.can_review', false)
             ->assertJsonPath('items.0.can_approve', false)
-            ->assertJsonPath('summary.total', 2)
+            ->assertJsonPath('summary.total', 1)
+            ->assertJsonPath('summary.active_total', 2)
             ->assertJsonPath('summary.counts_by_status.approved', 1)
             ->assertJsonPath('summary.counts_by_status.submitted', 1)
             ->assertJsonMissingPath('summary.counts_by_status.diproses');
+    }
+
+    public function test_super_admin_calendar_excludes_rejected_and_cancelled_until_explicitly_filtered(): void
+    {
+        $room = $this->classroom(['code' => 'ADMIN-ACTIVE']);
+        $approved = $this->roomBooking($room, status: RoomBookingStatus::Approved);
+        $submitted = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-21 10:00:00',
+            endAt: '2026-06-21 12:00:00',
+        );
+        $rejected = $this->roomBooking($room, status: RoomBookingStatus::Rejected);
+        $cancelled = $this->roomBooking($room, status: RoomBookingStatus::Cancelled);
+
+        $this->actingAsUser($this->superAdmin());
+        $activeResponse = $this->getJson($this->adminUrl('/calendar?month=2026-06'))
+            ->assertOk()
+            ->assertJsonPath('summary.total', 2)
+            ->assertJsonPath('summary.active_total', 2);
+
+        $this->assertEqualsCanonicalizing(
+            [$approved->id, $submitted->id],
+            collect($activeResponse->json('items'))->pluck('id')->all(),
+        );
+        $this->assertNotContains($rejected->id, collect($activeResponse->json('items'))->pluck('id'));
+        $this->assertNotContains($cancelled->id, collect($activeResponse->json('items'))->pluck('id'));
+
+        $this->getJson($this->adminUrl('/calendar?month=2026-06&status=rejected'))
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $rejected->id);
+        $this->getJson($this->adminUrl('/calendar?month=2026-06&status=cancelled'))
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $cancelled->id);
     }
 
     public function test_super_admin_calendar_includes_read_only_conflict_metadata(): void
@@ -292,7 +329,7 @@ class RoomBookingSuperAdminApiTest extends RoomBookingApiTestCase
             ->assertForbidden();
 
         $this->actingAsUser($this->superAdmin());
-        $response = $this->getJson($this->adminUrl('/calendar?month=2026-06'));
+        $response = $this->getJson($this->adminUrl('/calendar?month=2026-06&status=revision_requested'));
 
         $response
             ->assertOk()

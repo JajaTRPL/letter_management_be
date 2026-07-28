@@ -112,4 +112,20 @@ return [
 
     'password_timeout' => env('AUTH_PASSWORD_TIMEOUT', 10800),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Login Throttle
+    |--------------------------------------------------------------------------
+    |
+    | Max password-login attempts per minute PER (email + IP). Deliberately
+    | scoped to the account+IP pair — never a broad IP ban and never an account
+    | lockout — so brute-forcing one account is slowed without punishing other
+    | people on a shared campus/NAT IP, and a normal mistake (a few retries on
+    | your own account) is never blocked. It is a temporary per-minute rate
+    | limit that resets each minute, not a lock.
+    |
+    */
+
+    'login_throttle_per_minute' => (int) env('LOGIN_THROTTLE_PER_MINUTE', 10),
+
 ];

@@ -7,12 +7,18 @@ use App\Models\User;
 use App\Models\ActivityLog;
 use App\Models\ScholarshipApplication;
 use App\Enums\UserStatus;
+use App\Services\Analytics\ReviewPerformanceService;
+use App\Services\Notifications\WorkflowReviewSlaPolicyService;
+use App\Support\Analytics\ReviewAnalyticsPeriod;
+use App\Support\Workflow\LetterReviewStageClock;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 
 class DashboardController extends Controller
 {
+    public function __construct(private ReviewPerformanceService $performance) {}
+
     public function getStats()
     {
         return response()->json([
@@ -201,37 +207,53 @@ class DashboardController extends Controller
         return ['labels' => $days, 'data' => $data];
     }
 
+    /**
+     * @deprecated Superseded by GET /api/super-admin/review-performance, which
+     * reports all five review stages across both workflow domains with sample
+     * confidence and SLA context. Kept for one release so the dashboard keeps
+     * rendering during the frontend cutover; delete this method, formatDuration(),
+     * and the `approval_durations` key together once nothing reads them.
+     *
+     * Rewritten to delegate rather than query. The previous implementation had two
+     * defects that made it permanently useless: it read `akademik_approved_at`, a
+     * column no code has written since the workflow moved to Kaprodi/Kadep (so the
+     * "Akademik" box could only ever show zero), and it used Postgres-only
+     * `EXTRACT(EPOCH …)`, which throws on the sqlite test connection — which is
+     * why neither defect was ever caught by a test.
+     *
+     * The legacy shape only has two slots, so it reports the first two letter
+     * stages: `tendik` = Persuratan, `akademik` = Prodi (the stage that actually
+     * follows Tendik). Departemen and both room-booking stages are visible only on
+     * the new endpoint.
+     */
     private function getApprovalDurations()
     {
-        $tendikAvg = ScholarshipApplication::whereNotNull('submitted_at')
-            ->whereNotNull('tendik_approved_at')
-            ->select(DB::raw('AVG(EXTRACT(EPOCH FROM (tendik_approved_at - submitted_at))) as avg_time'))
-            ->first()->avg_time;
+        $summary = $this->performance->summary(ReviewAnalyticsPeriod::resolve(ReviewAnalyticsPeriod::DEFAULT));
 
-        $akademikAvg = ScholarshipApplication::whereNotNull('tendik_approved_at')
-            ->whereNotNull('akademik_approved_at')
-            ->select(DB::raw('AVG(EXTRACT(EPOCH FROM (akademik_approved_at - tendik_approved_at))) as avg_time'))
-            ->first()->avg_time;
+        $stages = collect($summary['scopes'])
+            ->firstWhere('scope', WorkflowReviewSlaPolicyService::SCOPE_LETTER)['stages'] ?? [];
+        $byStage = collect($stages)->keyBy('stage');
 
         return [
-            'tendik' => $this->formatDuration($tendikAvg),
-            'akademik' => $this->formatDuration($akademikAvg),
+            'tendik' => $this->formatDuration($byStage[LetterReviewStageClock::STAGE_PERSURATAN]['metric']['median_seconds'] ?? null),
+            'akademik' => $this->formatDuration($byStage[LetterReviewStageClock::STAGE_PRODI]['metric']['median_seconds'] ?? null),
+            'deprecated' => true,
         ];
     }
 
+    /** @deprecated Retired together with getApprovalDurations(). */
     private function formatDuration($seconds)
     {
-        if (!$seconds)
+        if (! $seconds) {
             return ['days' => 0, 'hours' => 0, 'minutes' => 0];
+        }
 
-        $days = floor($seconds / 86400);
-        $hours = floor(($seconds % 86400) / 3600);
-        $minutes = floor(($seconds % 3600) / 60);
+        $seconds = (int) $seconds;
 
         return [
-            'days' => $days,
-            'hours' => $hours,
-            'minutes' => $minutes,
+            'days' => intdiv($seconds, 86400),
+            'hours' => intdiv($seconds % 86400, 3600),
+            'minutes' => intdiv($seconds % 3600, 60),
         ];
     }
 }

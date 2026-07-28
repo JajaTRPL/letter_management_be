@@ -37,6 +37,7 @@ class RoomBookingErrorSemanticsTest extends RoomBookingApiTestCase
         $this->assertStringNotContainsString('private', $response->getContent());
         $this->assertDatabaseCount('room_booking_requests', 0);
         $this->assertDatabaseCount('room_booking_attachments', 0);
+        $this->assertDatabaseCount('room_booking_idempotency_records', 0);
         $this->assertSame([], Storage::disk('local')->allFiles('room-booking-attachments'));
     }
 
@@ -57,7 +58,7 @@ class RoomBookingErrorSemanticsTest extends RoomBookingApiTestCase
         $student = $this->student();
         $room = $this->classroom();
         $this->actingAsUser($student);
-        $this->mock(
+        $this->partialMock(
             RoomBookingAttachmentService::class,
             fn (MockInterface $mock) => $mock->shouldReceive('storeSuratPeminjaman')
                 ->once()
@@ -75,6 +76,7 @@ class RoomBookingErrorSemanticsTest extends RoomBookingApiTestCase
         $this->assertStringNotContainsString('private', $response->getContent());
         $this->assertDatabaseCount('room_booking_requests', 0);
         $this->assertDatabaseCount('room_booking_attachments', 0);
+        $this->assertDatabaseCount('room_booking_idempotency_records', 0);
     }
 
     public function test_unexpected_reviewer_transition_failure_returns_safe_500(): void
@@ -107,14 +109,18 @@ class RoomBookingErrorSemanticsTest extends RoomBookingApiTestCase
         $this->actingAsUser($student);
         $this->mock(
             RoomBookingTransitionService::class,
-            fn (MockInterface $mock) => $mock->shouldReceive('cancel')
+            fn (MockInterface $mock) => $mock->shouldReceive('withdraw')
                 ->once()
-                ->andThrow(new RuntimeException('Unexpected legacy transition internals.')),
+                ->andThrow(new RuntimeException('Unexpected transition internals.')),
         );
 
-        $response = $this->patchJson(
-            $this->mahasiswaUrl("/requests/{$booking->id}/cancel"),
-            ['reason' => 'Legacy cancellation.'],
+        $response = $this->postJson(
+            $this->mahasiswaUrl("/requests/{$booking->id}/withdraw"),
+            [
+                'reason' => 'Withdrawal attempt.',
+                'expected_workflow_version' => 1,
+                'idempotency_key' => 'withdraw-error-500',
+            ],
         )->assertStatus(500)->assertJsonPath('code', 'infrastructure_error');
 
         $this->assertStringNotContainsString('internals', $response->getContent());

@@ -59,6 +59,7 @@ class AuthController extends Controller
             Auth::logout();
 
             return response()->json([
+                'code' => 'INITIAL_PASSWORD_RETIRED',
                 'message' => 'Password awal tidak lagi berlaku. Gunakan Google UGM atau Lupa Kata Sandi.',
             ], 401);
         }
@@ -121,6 +122,10 @@ class AuthController extends Controller
      */
     public function forgotPassword(Request $request)
     {
+        if ($unavailable = $this->passwordResetUnavailableResponse()) {
+            return $unavailable;
+        }
+
         $validated = $request->validate([
             'email' => 'required|email',
         ]);
@@ -139,7 +144,11 @@ class AuthController extends Controller
             ->whereRaw('LOWER(email) = ?', [$email])
             ->first();
 
-        // Unknown and ineligible accounts deliberately follow the same response path.
+        // Unknown and ineligible accounts deliberately follow the same response
+        // path. NOTE: a Google-only (password-less) Active account is intentionally
+        // eligible here — setting a local password via VERIFIED email reset is a
+        // supported, deliberate opt-in (see ForgotPasswordHardeningTest), not an
+        // accidental password path. Do not silently exclude it.
         if (!$user || $user->status !== UserStatus::Active) {
             return response()->json(['message' => self::RESET_REQUEST_MESSAGE]);
         }
@@ -193,6 +202,10 @@ class AuthController extends Controller
      */
     public function verifyToken(Request $request)
     {
+        if ($unavailable = $this->passwordResetUnavailableResponse()) {
+            return $unavailable;
+        }
+
         $validated = $request->validate([
             'email' => 'required|email',
             'token' => 'required|digits:6',
@@ -277,6 +290,10 @@ class AuthController extends Controller
      */
     public function resetPassword(Request $request)
     {
+        if ($unavailable = $this->passwordResetUnavailableResponse()) {
+            return $unavailable;
+        }
+
         $validated = $request->validate([
             'email' => 'required|email',
             'reset_token' => 'required|string|size:64',
@@ -375,6 +392,41 @@ class AuthController extends Controller
         return response()->json([
             'message' => 'Logout berhasil',
         ]);
+    }
+
+    /**
+     * Public, unauthenticated auth capabilities the login screen needs to render
+     * honestly — e.g. whether the email-based password-reset path is operational.
+     * The frontend uses this to HIDE the "Lupa Kata Sandi" affordance rather than
+     * offer a flow that cannot complete (no SMTP → the code never arrives).
+     */
+    public function publicConfig()
+    {
+        return response()->json([
+            'password_reset_enabled' => $this->passwordResetEnabled(),
+        ]);
+    }
+
+    private function passwordResetEnabled(): bool
+    {
+        return (bool) config('password_reset.enabled', false);
+    }
+
+    /**
+     * When email-based reset is not operationally available, every reset endpoint
+     * returns one clear, humane, non-misleading "unavailable" response instead of
+     * pretending to send a code. Returns null when the feature IS available.
+     */
+    private function passwordResetUnavailableResponse(): ?\Illuminate\Http\JsonResponse
+    {
+        if ($this->passwordResetEnabled()) {
+            return null;
+        }
+
+        return response()->json([
+            'code' => 'PASSWORD_RESET_UNAVAILABLE',
+            'message' => 'Reset kata sandi lewat email belum tersedia. Silakan masuk dengan akun Google UGM, atau hubungi admin jika perlu bantuan.',
+        ], 503);
     }
 
     private function normalizeEmail(string $email): string

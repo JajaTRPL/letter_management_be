@@ -11,8 +11,6 @@ use App\Models\SuratKeteranganAktifApplication;
 use App\Models\SuratPengantarMagangApplication;
 use App\Models\SuratTugasApplication;
 use App\Models\User;
-use App\Notifications\ScholarshipStatusNotification;
-use App\Enums\UserStatus;
 use App\Services\BeasiswaPreviewGenerationException;
 use App\Services\BeasiswaPreviewGenerationService;
 use App\Services\LetterAssignmentService;
@@ -25,7 +23,6 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Validator;
 use RuntimeException;
 
@@ -255,20 +252,9 @@ class TendikDashboardController extends Controller
             ], 409);
         }
 
-        // Notify Kaprodi and Sekprodi
-        $academics = User::where('role', 'akademik')
-            ->whereIn('sub_role', ['kaprodi', 'sekprodi'])
-            ->where('status', UserStatus::Active)
-            ->get();
-
-        if ($academics->count() > 0) {
-            $application->load('mahasiswaProfile');
-            Notification::send($academics, new ScholarshipStatusNotification(
-                $application,
-                "Pendaftaran beasiswa baru telah diverifikasi Tendik dan memerlukan persetujuan Anda."
-            ));
-        }
-
+        // Kaprodi/Sekprodi are notified by the shared C7N1 letter observer from the
+        // APPROVED_TENDIK transition above (scoped prodi routing + unified email) —
+        // no manual dispatch here.
         return response()->json(['message' => 'Pendaftaran berhasil diverifikasi dan diteruskan ke Kaprodi/Sekprodi']);
     }
 
@@ -290,12 +276,9 @@ class TendikDashboardController extends Controller
             $updateData['rejection_reason'] = $request->input('reason');
         }
 
+        // The applicant is notified (in-app + email) by the C7N1 letter observer
+        // from the REJECTED transition above.
         $application->update($updateData);
-        $application->load('user');
-        $application->user->notify(new ScholarshipStatusNotification(
-            $application,
-            "Maaf, pendaftaran beasiswa Anda ditolak oleh staf verifikator."
-        ));
         return response()->json(['message' => 'Pendaftaran berhasil ditolak']);
     }
 
@@ -317,12 +300,9 @@ class TendikDashboardController extends Controller
             $updateData['revision_note'] = $request->input('note');
         }
 
+        // The applicant is notified (in-app + email) by the C7N1 letter observer
+        // from the REVISION transition above.
         $application->update($updateData);
-        $application->load('user');
-        $application->user->notify(new ScholarshipStatusNotification(
-            $application,
-            "Pendaftaran beasiswa Anda memerlukan revisi. Silakan cek catatan di dashboard mahasiswa."
-        ));
         return response()->json(['message' => 'Permintaan revisi berhasil dikirim']);
     }
 

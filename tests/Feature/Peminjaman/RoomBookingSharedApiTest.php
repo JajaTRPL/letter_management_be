@@ -24,11 +24,11 @@ class RoomBookingSharedApiTest extends RoomBookingApiTestCase
             ->assertJsonMissing(['id' => $inactive->id]);
     }
 
-    public function test_availability_returns_only_approved_bookings_with_privacy_safe_shape(): void
+    public function test_availability_returns_approved_and_pending_demand_with_privacy_safe_shape(): void
     {
         $room = $this->classroom(['code' => 'API-AVAIL']);
         $reviewer = $this->reviewerUser('sarpras');
-        $approved = $this->roomBooking(
+        $this->roomBooking(
             $room,
             status: RoomBookingStatus::Approved,
             attributes: [
@@ -38,11 +38,12 @@ class RoomBookingSharedApiTest extends RoomBookingApiTestCase
                 'revision_note' => 'Private revision note.',
             ],
         );
-        $submitted = $this->roomBooking(
+        $this->roomBooking(
             $room,
             status: RoomBookingStatus::Submitted,
             startAt: '2026-06-20 13:00:00',
             endAt: '2026-06-20 14:00:00',
+            attributes: ['activity_name' => 'Diskusi Publik'],
         );
         $this->actingAsUser($this->student());
 
@@ -52,13 +53,17 @@ class RoomBookingSharedApiTest extends RoomBookingApiTestCase
 
         $response
             ->assertOk()
-            ->assertJsonCount(1, 'data')
-            ->assertJsonPath('data.0.booking_id', $approved->id)
-            ->assertJsonPath('data.0.status', RoomBookingStatus::Approved->value)
-            ->assertJsonMissing(['booking_id' => $submitted->id]);
+            ->assertJsonCount(2, 'data')
+            ->assertJsonPath('data.0.lifecycle_category', 'approved')
+            ->assertJsonPath('data.1.lifecycle_category', 'pending')
+            ->assertJsonPath('data.1.activity_titles.0', 'Diskusi Publik')
+            ->assertJsonMissingPath('data.0.booking_id')
+            ->assertJsonMissingPath('data.0.requester_id')
+            ->assertJsonMissingPath('data.0.reviewer_id')
+            ->assertJsonMissing(['purpose' => 'Private approved purpose.']);
 
         $this->assertSame(
-            ['booking_id', 'room', 'start_at', 'end_at', 'status'],
+            ['room', 'start_at', 'end_at', 'lifecycle_category', 'activity_titles', 'request_count'],
             array_keys($response->json('data.0')),
         );
         $this->assertSame(
@@ -91,7 +96,7 @@ class RoomBookingSharedApiTest extends RoomBookingApiTestCase
         $laboratory = $this->bookingLaboratory('FILTER');
         $labRoom = $this->laboratoryRoom($laboratory, ['code' => 'API-LAB']);
 
-        $targetBooking = $this->roomBooking(
+        $this->roomBooking(
             $target,
             status: RoomBookingStatus::Approved,
         );
@@ -112,7 +117,6 @@ class RoomBookingSharedApiTest extends RoomBookingApiTestCase
         $response
             ->assertOk()
             ->assertJsonCount(1, 'data')
-            ->assertJsonPath('data.0.booking_id', $targetBooking->id)
             ->assertJsonPath('data.0.room.id', $target->id)
             ->assertJsonPath('data.0.room.type', 'classroom');
     }

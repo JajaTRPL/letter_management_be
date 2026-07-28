@@ -421,10 +421,9 @@ class ScholarshipController extends Controller
             ], 409);
         }
 
-        if ($assignedTendik) {
-            $application->load('mahasiswaProfile');
-            $assignedTendik->notify(new \App\Notifications\ScholarshipSubmittedNotification($application));
-        }
+        // The assigned Tendik's "review this application" notification (in-app +
+        // email) is projected by the C7N1 assignment seam inside assignApplication()
+        // above — no manual dispatch here.
 
         return response()->json([
             'message' => 'Aplikasi berhasil dikirim dan sedang diproses oleh staf beasiswa.',

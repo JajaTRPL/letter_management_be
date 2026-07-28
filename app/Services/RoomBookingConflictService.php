@@ -27,12 +27,35 @@ class RoomBookingConflictService
         return RoomBookingRequest::query()
             ->where('room_id', $roomId)
             ->where('status', RoomBookingStatus::Approved->value)
-            ->where('start_at', '<', $endAt)
-            ->where('end_at', '>', $startAt)
+            ->where(function (Builder $query) use ($startAt, $endAt): void {
+                $query->whereHas('occurrences', function (Builder $occurrence) use ($startAt, $endAt): void {
+                    $occurrence->where('start_at', '<', $endAt)
+                        ->where('end_at', '>', $startAt);
+                })->orWhere(function (Builder $legacy) use ($startAt, $endAt): void {
+                    $legacy->whereDoesntHave('occurrences')
+                        ->where('start_at', '<', $endAt)
+                        ->where('end_at', '>', $startAt);
+                });
+            })
             ->when(
                 $ignoreBookingId !== null,
                 fn (Builder $query) => $query->whereKeyNot($ignoreBookingId),
             );
+    }
+
+    /** @param list<array{start_at:DateTimeInterface,end_at:DateTimeInterface}> $ranges */
+    public function hasConflictForAny(
+        int $roomId,
+        array $ranges,
+        ?int $ignoreBookingId = null,
+    ): bool {
+        foreach ($ranges as $range) {
+            if ($this->hasConflict($roomId, $range['start_at'], $range['end_at'], $ignoreBookingId)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function hasConflict(
@@ -97,15 +120,20 @@ class RoomBookingConflictService
         bool $includeRequester = false,
         bool $includeActivity = false,
         bool $includePurpose = false,
+        ?DateTimeInterface $startAt = null,
+        ?DateTimeInterface $endAt = null,
     ): array {
         if (! $booking->room_id || ! $booking->start_at || ! $booking->end_at) {
             return $this->emptyConflictMetadata();
         }
 
+        $startAt ??= $booking->start_at;
+        $endAt ??= $booking->end_at;
+
         $approvedConflicts = $this->overlappingApprovedQuery(
             (int) $booking->room_id,
-            $booking->start_at,
-            $booking->end_at,
+            $startAt,
+            $endAt,
             (int) $booking->id,
         )
             ->with(['room:id,name', 'requester:id,name'])
@@ -126,8 +154,8 @@ class RoomBookingConflictService
 
         $pendingConflicts = $this->overlappingPendingQuery(
             (int) $booking->room_id,
-            $booking->start_at,
-            $booking->end_at,
+            $startAt,
+            $endAt,
             (int) $booking->id,
         )
             ->with(['room:id,name', 'requester:id,name'])
@@ -157,12 +185,17 @@ class RoomBookingConflictService
     ): Builder {
         return RoomBookingRequest::query()
             ->where('room_id', $roomId)
-            ->whereIn('status', [
-                RoomBookingStatus::Submitted->value,
-                RoomBookingStatus::RevisionRequested->value,
-            ])
-            ->where('start_at', '<', $endAt)
-            ->where('end_at', '>', $startAt)
+            ->where('status', RoomBookingStatus::Submitted->value)
+            ->where(function (Builder $query) use ($startAt, $endAt): void {
+                $query->whereHas('occurrences', function (Builder $occurrence) use ($startAt, $endAt): void {
+                    $occurrence->where('start_at', '<', $endAt)
+                        ->where('end_at', '>', $startAt);
+                })->orWhere(function (Builder $legacy) use ($startAt, $endAt): void {
+                    $legacy->whereDoesntHave('occurrences')
+                        ->where('start_at', '<', $endAt)
+                        ->where('end_at', '>', $startAt);
+                });
+            })
             ->when(
                 $ignoreBookingId !== null,
                 fn (Builder $query) => $query->whereKeyNot($ignoreBookingId),

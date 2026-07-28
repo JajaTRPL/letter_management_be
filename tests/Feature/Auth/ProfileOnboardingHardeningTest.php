@@ -564,6 +564,7 @@ class ProfileOnboardingHardeningTest extends TestCase
             }
 
             return Http::response(array_merge([
+                'iss' => 'accounts.google.com',
                 'aud' => 'test-client-id',
                 'email_verified' => 'true',
                 'name' => 'Google User',

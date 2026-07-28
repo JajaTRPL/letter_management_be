@@ -17,8 +17,13 @@ use App\Http\Controllers\ProfileController;
 |--------------------------------------------------------------------------
 */
 Route::middleware('throttle:api')->group(function () {
-    Route::post('/login', [AuthController::class, 'login']);
+    // Password login carries an extra per-(email+IP) brute-force throttle on top
+    // of the shared per-IP ceiling; scoped so it never IP-bans or locks accounts.
+    Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:login');
     Route::post('/auth/google', [\App\Http\Controllers\GoogleAuthController::class, 'login']);
+    // Public capability probe: lets the login screen render honestly (e.g. hide
+    // the reset link when email-based reset is not operationally available).
+    Route::get('/auth/config', [AuthController::class, 'publicConfig']);
     Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
     Route::post('/verify-token', [AuthController::class, 'verifyToken']);
     Route::post('/reset-password', [AuthController::class, 'resetPassword']);
@@ -123,6 +128,18 @@ Route::middleware('throttle:api')->group(function () {
 
         Route::post('/auth/complete-profile', [\App\Http\Controllers\GoogleAuthController::class, 'completeProfile']);
 
+        // C7N1 durable in-app notifications — recipient-owned for EVERY
+        // authenticated role. Each handler scopes strictly to the caller's own
+        // records (IDOR-safe); resolve state stays domain-controlled (no public
+        // resolve endpoint). Read-state is the only user-mutable field.
+        Route::prefix('notifications')->group(function () {
+            Route::get('/', [\App\Http\Controllers\NotificationController::class, 'index']);
+            Route::get('/unread-count', [\App\Http\Controllers\NotificationController::class, 'unreadCount']);
+            Route::patch('/read-all', [\App\Http\Controllers\NotificationController::class, 'markAllRead']);
+            Route::patch('/{notification}/read', [\App\Http\Controllers\NotificationController::class, 'markRead']);
+            Route::patch('/{notification}/unread', [\App\Http\Controllers\NotificationController::class, 'markUnread']);
+        });
+
         // Surat Analytics (accessible by all authenticated users)
         Route::get('/surat/average-duration', function () {
             $service = new \App\Services\SuratAnalyticsService();
@@ -176,6 +193,12 @@ Route::middleware('throttle:api')->group(function () {
             ->group(function () {
                 Route::get('/preview', [\App\Http\Controllers\RoomBookingAttachmentController::class, 'preview']);
                 Route::get('/download', [\App\Http\Controllers\RoomBookingAttachmentController::class, 'download']);
+            });
+        Route::middleware('throttle:peminjaman-attachment')
+            ->prefix('peminjaman-ruangan/returns/{returnRequest}/evidence')
+            ->group(function () {
+                Route::get('/preview', [\App\Http\Controllers\RoomBookingReturnEvidenceController::class, 'preview']);
+                Route::get('/download', [\App\Http\Controllers\RoomBookingReturnEvidenceController::class, 'download']);
             });
 
         // Authenticated room photo delivery (catalog content): id+variant
@@ -261,6 +284,23 @@ Route::middleware('throttle:api')->group(function () {
                 Route::post('/archives/{artifact}/purge', [\App\Http\Controllers\SuperAdmin\RetentionController::class, 'purge']);
             });
 
+            // Workflow review-SLA governance. Super Admin only; database-managed
+            // so policy changes need no code deploy. Ships disabled per scope.
+            Route::prefix('review-sla')->group(function () {
+                Route::get('/{scope}', [\App\Http\Controllers\SuperAdmin\WorkflowReviewSlaController::class, 'show']);
+                Route::put('/{scope}', [\App\Http\Controllers\SuperAdmin\WorkflowReviewSlaController::class, 'update']);
+            });
+
+            // Review-speed analytics ("Kinerja Pemeriksaan"). Read-only, judged
+            // against the review-SLA policy above so there is exactly one
+            // definition of "too slow" in the system. Reports on stages and
+            // organisational units — never on individual reviewers.
+            Route::prefix('review-performance')->group(function () {
+                Route::get('/', [\App\Http\Controllers\SuperAdmin\ReviewPerformanceController::class, 'index']);
+                Route::get('/breakdown', [\App\Http\Controllers\SuperAdmin\ReviewPerformanceController::class, 'breakdown']);
+                Route::get('/trend', [\App\Http\Controllers\SuperAdmin\ReviewPerformanceController::class, 'trend']);
+            });
+
             // Template Operations
             Route::post('/templates/update-pdf', [\App\Http\Controllers\SuperAdmin\TemplateController::class, 'updatePdf']);
             Route::get('/templates', [\App\Http\Controllers\SuperAdmin\TemplateManagementController::class, 'index']);
@@ -326,6 +366,9 @@ Route::middleware('throttle:api')->group(function () {
         |----------------------------------------------------------------------
         */
         Route::middleware('role:tendik')->prefix('tendik')->group(function () {
+            // Own-stage review summary. Scope is derived from the authenticated
+            // user; the request carries no stage or unit to tamper with.
+            Route::get('/review-performance/me', [\App\Http\Controllers\ReviewPerformanceSelfController::class, 'show']);
             Route::get('/dashboard/tasks', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'getDashboardData']);
             Route::get('/riwayat', [\App\Http\Controllers\Tendik\TendikDashboardController::class, 'getRiwayatData']);
 
@@ -337,6 +380,11 @@ Route::middleware('throttle:api')->group(function () {
 
             Route::get('/peminjaman-ruangan/calendar', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'calendar']);
 
+            // Dashboard feed for Sarpras / Kepala Lab / Laboran. The letter
+            // dashboard endpoint is structurally empty for these roles, so they
+            // get their own. Role and scope are resolved from the session.
+            Route::get('/peminjaman-ruangan/dashboard', [\App\Http\Controllers\Tendik\RoomBookingDashboardController::class, 'index']);
+
             Route::prefix('peminjaman-ruangan/requests')->group(function () {
                 Route::get('/', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'index']);
                 Route::get('/{booking}', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'show']);
@@ -347,6 +395,17 @@ Route::middleware('throttle:api')->group(function () {
                 Route::patch('/{booking}/revise', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'revise'])
                     ->middleware('throttle:room-booking-mutation');
                 Route::patch('/{booking}/reject', [\App\Http\Controllers\Tendik\RoomBookingController::class, 'reject'])
+                    ->middleware('throttle:room-booking-mutation');
+            });
+            Route::prefix('peminjaman-ruangan/operations')->group(function () {
+                Route::get('/', [\App\Http\Controllers\Tendik\RoomBookingOccurrenceController::class, 'index']);
+                Route::post('/{occurrence}/issue-key', [\App\Http\Controllers\Tendik\RoomBookingOccurrenceController::class, 'issueKey'])
+                    ->middleware('throttle:room-booking-mutation');
+                Route::post('/{occurrence}/return/accept', [\App\Http\Controllers\Tendik\RoomBookingOccurrenceController::class, 'accept'])
+                    ->middleware('throttle:room-booking-mutation');
+                Route::post('/{occurrence}/return/revise', [\App\Http\Controllers\Tendik\RoomBookingOccurrenceController::class, 'revise'])
+                    ->middleware('throttle:room-booking-mutation');
+                Route::post('/{occurrence}/return/reject', [\App\Http\Controllers\Tendik\RoomBookingOccurrenceController::class, 'reject'])
                     ->middleware('throttle:room-booking-mutation');
             });
 
@@ -416,6 +475,9 @@ Route::middleware('throttle:api')->group(function () {
 
         // Akademik (Kaprodi/Sekprodi) Routes
         Route::middleware('role:akademik')->prefix('akademik')->group(function () {
+            // Own-stage review summary — Prodi for Kaprodi/Sekprodi, Departemen
+            // for Kadep/Sekdep, resolved from the user, never from the request.
+            Route::get('/review-performance/me', [\App\Http\Controllers\ReviewPerformanceSelfController::class, 'show']);
             Route::get('/dashboard/tasks', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'getDashboardData']);
             Route::get('/riwayat', [\App\Http\Controllers\Akademik\AkademikDashboardController::class, 'getRiwayatData']);
 
@@ -499,8 +561,6 @@ Route::middleware('throttle:api')->group(function () {
                     Route::put('/{booking}', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'update']);
                     Route::patch('/{booking}/submit', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'submit'])
                         ->middleware('throttle:room-booking-mutation');
-                    Route::patch('/{booking}/cancel', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'cancel'])
-                        ->middleware('throttle:room-booking-mutation');
                     Route::post('/{booking}/withdraw', [\App\Http\Controllers\Mahasiswa\RoomBookingController::class, 'withdraw'])
                         ->middleware('throttle:room-booking-mutation');
                     Route::post('/{booking}/cancellation-requests', [\App\Http\Controllers\Mahasiswa\RoomBookingCancellationRequestController::class, 'store'])
@@ -513,6 +573,10 @@ Route::middleware('throttle:api')->group(function () {
                     '/{booking}/attachment/surat-peminjaman',
                     [\App\Http\Controllers\RoomBookingAttachmentController::class, 'replace']
                 )->middleware('throttle:peminjaman-attachment');
+                Route::post('/occurrences/{occurrence}/return', [\App\Http\Controllers\Mahasiswa\RoomBookingOccurrenceController::class, 'submitReturn'])
+                    ->middleware(['throttle:peminjaman-attachment', 'throttle:room-booking-mutation']);
+                Route::post('/occurrences/{occurrence}/return/withdraw', [\App\Http\Controllers\Mahasiswa\RoomBookingOccurrenceController::class, 'withdrawReturn'])
+                    ->middleware('throttle:room-booking-mutation');
             });
 
             // Scholarship Application Routes

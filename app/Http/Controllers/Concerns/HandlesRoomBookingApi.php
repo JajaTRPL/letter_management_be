@@ -10,6 +10,7 @@ use App\Services\RoomBookingConflictService;
 use App\Services\RoomBookingDomainException;
 use App\Services\RoomBookingIdempotencyOutcome;
 use App\Services\RoomBookingLifecycleCapabilityResolver;
+use App\Services\RoomBookingOccurrenceService;
 use App\Services\RoomBookingWithdrawalPolicy;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
@@ -39,6 +40,12 @@ trait HandlesRoomBookingApi
             RoomBookingDomainException::CANCELLATION_REQUEST_NOT_ALLOWED,
             RoomBookingDomainException::CANCELLATION_REQUEST_ALREADY_RESOLVED,
             RoomBookingDomainException::IDEMPOTENCY_KEY_REUSED,
+            RoomBookingDomainException::OCCURRENCE_NOT_READY,
+            RoomBookingDomainException::KEY_NOT_ISSUED,
+            RoomBookingDomainException::RETURN_ALREADY_ACTIVE,
+            RoomBookingDomainException::RETURN_ALREADY_ACCEPTED,
+            RoomBookingDomainException::STALE_OCCURRENCE_VERSION,
+            RoomBookingDomainException::STALE_RETURN_VERSION,
             RoomBookingDomainException::INACTIVE_ROOM => 409,
             RoomBookingDomainException::UNAUTHORIZED_ACTION => 403,
             default => 422,
@@ -100,12 +107,22 @@ trait HandlesRoomBookingApi
         bool $includeHistory = false,
         bool $includeConflicts = false,
     ): array {
+        $applicantProjection = auth()->user()?->role === 'mahasiswa'
+            && ! $includeRequester;
         $booking->loadMissing([
             'room.owningLaboratory:id,code,name',
-            'reviewer:id,name,email',
+            $applicantProjection ? 'reviewer:id,name' : 'reviewer:id,name,email',
             'suratPeminjamanAttachment',
             'activeCancellationRequest',
             'revisionRequestHistory',
+        ]);
+        if ($booking->exists && ! $booking->occurrences()->exists()) {
+            app(RoomBookingOccurrenceService::class)->ensureLegacyOccurrence($booking);
+        }
+        $booking->loadMissing([
+            'occurrences.activeReturnRequest',
+            'occurrences.acceptedReturnRequest',
+            'occurrences.returnRequests',
         ]);
 
         if ($includeRequester) {
@@ -124,6 +141,9 @@ trait HandlesRoomBookingApi
             'participant_count' => (int) $booking->participant_count,
             'start_at' => $booking->start_at->toIso8601String(),
             'end_at' => $booking->end_at->toIso8601String(),
+            'booking_mode' => $booking->booking_mode ?? 'single_day',
+            'occurrence_end_date' => $booking->occurrence_end_date?->toDateString()
+                ?? $booking->start_at->toDateString(),
             'status' => $booking->status->value,
             'stored_status' => $booking->status->value,
             // C7B1 additive lifecycle projection: the stored five-status
@@ -142,21 +162,67 @@ trait HandlesRoomBookingApi
             ),
             'capabilities' => app(RoomBookingLifecycleCapabilityResolver::class)
                 ->capabilitiesFor(auth()->user(), $booking),
-            'reviewer' => $booking->reviewer ? [
-                'id' => (int) $booking->reviewer->id,
-                'name' => $booking->reviewer->name,
-            ] : null,
+            'reviewer' => $booking->reviewer
+                ? ($applicantProjection
+                    ? ['name' => $booking->reviewer->name]
+                    : [
+                        'id' => (int) $booking->reviewer->id,
+                        'name' => $booking->reviewer->name,
+                    ])
+                : null,
             'reviewed_at' => $booking->reviewed_at?->toIso8601String(),
             'revision_note' => $booking->revision_note,
             'rejection_reason' => $booking->rejection_reason,
             'cancellation_reason' => $booking->cancellation_reason,
             'cancellation_source' => $booking->cancellation_source,
-            'cancelled_by_role_snapshot' => $booking->cancelled_by_role_snapshot,
             'created_at' => $booking->created_at?->toIso8601String(),
             'updated_at' => $booking->updated_at?->toIso8601String(),
             'surat_peminjaman_pdf' => app(RoomBookingAttachmentService::class)
                 ->publicMetadata($booking),
         ];
+
+        $occurrenceService = app(RoomBookingOccurrenceService::class);
+        $occurrences = $booking->occurrences
+            ->map(fn ($occurrence) => $occurrenceService->payload(
+                $occurrence,
+                staff: ! $applicantProjection,
+            ))
+            ->values();
+        $completed = $occurrences->whereIn('operational_status', [
+            'returned_on_time', 'returned_late', 'cancelled',
+        ])->count();
+        $next = $occurrences->first(fn (array $occurrence) => ! in_array(
+            $occurrence['operational_status'],
+            ['returned_on_time', 'returned_late', 'cancelled'],
+            true,
+        ));
+        $payload['occurrences'] = $occurrences->all();
+        $payload['occurrence_summary'] = [
+            'total' => $occurrences->count(),
+            'completed' => $completed,
+            'progress_label' => "{$completed} dari {$occurrences->count()} penggunaan selesai",
+            'next_action' => $next['operational_status'] ?? null,
+            'nearest_deadline' => $next['return_due_at'] ?? null,
+        ];
+        $payload['usage_timeline'] = $booking->workflowEvents()
+            ->whereNotNull('room_booking_occurrence_id')
+            ->orderBy('occurred_at')
+            ->get()
+            ->map(fn ($event) => [
+                'type' => $event->event_type,
+                'occurred_at' => $event->occurred_at?->toIso8601String(),
+                'label' => $event->public_note,
+                'actor' => [
+                    'name' => $event->actor_name_snapshot,
+                    'role' => $event->actor_role_snapshot,
+                ],
+                'occurrence_ref' => $event->occurrence?->public_id
+                    ?? ($event->safe_metadata['occurrence_public_id'] ?? null),
+            ])->all();
+
+        if (! $applicantProjection) {
+            $payload['cancelled_by_role_snapshot'] = $booking->cancelled_by_role_snapshot;
+        }
 
         if ($includeRequester) {
             $payload['requester'] = $booking->requester ? [
@@ -174,10 +240,14 @@ trait HandlesRoomBookingApi
                     'id' => (int) $history->id,
                     'from_status' => $history->from_status?->value,
                     'to_status' => $history->to_status->value,
-                    'actor' => $history->actor ? [
-                        'id' => (int) $history->actor->id,
-                        'name' => $history->actor->name,
-                    ] : null,
+                    'actor' => $history->actor
+                        ? ($applicantProjection
+                            ? ['name' => $history->actor->name]
+                            : [
+                                'id' => (int) $history->actor->id,
+                                'name' => $history->actor->name,
+                            ])
+                        : null,
                     'note' => $history->note,
                     'created_at' => $history->created_at?->toIso8601String(),
                 ])
@@ -322,6 +392,25 @@ trait HandlesRoomBookingApi
                 $data[$field] = $result[$field];
             }
         }
+
+        return [
+            'message' => $result['message'],
+            'data' => $data,
+        ];
+    }
+
+    /**
+     * Initial submission preserves the existing direct booking envelope while
+     * adding a correlation id. The complete body is stored for exact replay.
+     *
+     * @param  array<string, mixed>  $result
+     * @return array<string, mixed>
+     */
+    protected function roomBookingInitialSubmissionResponseBody(array $result): array
+    {
+        $booking = RoomBookingRequest::query()->findOrFail($result['booking_id']);
+        $data = $this->bookingPayload($booking, includeHistory: true);
+        $data['correlation_id'] = $result['correlation_id'];
 
         return [
             'message' => $result['message'],

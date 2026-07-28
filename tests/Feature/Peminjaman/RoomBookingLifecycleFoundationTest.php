@@ -8,6 +8,7 @@ use App\Models\RoomBookingWorkflowEvent;
 use App\Services\RoomBookingDomainException;
 use App\Services\RoomBookingLifecycleCapabilityResolver;
 use App\Services\RoomBookingTransitionService;
+use Illuminate\Support\Str;
 
 /**
  * C7B1 lifecycle foundation: monotonic workflow_version, submission
@@ -74,7 +75,13 @@ class RoomBookingLifecycleFoundationTest extends RoomBookingApiTestCase
         $this->assertSame(4, $booking->workflow_version);
 
         try {
-            $service->cancel($booking, $student, 'Kegiatan dibatalkan panitia.');
+            $service->withdraw(
+                $booking,
+                $student,
+                'Kegiatan dibatalkan panitia.',
+                (int) $booking->workflow_version,
+                (string) Str::uuid(),
+            );
             $this->fail('Approved booking must use reviewed cancellation.');
         } catch (RoomBookingDomainException $exception) {
             $this->assertSame(

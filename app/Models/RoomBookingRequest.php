@@ -35,6 +35,8 @@ class RoomBookingRequest extends Model
         'participant_count',
         'start_at',
         'end_at',
+        'booking_mode',
+        'occurrence_end_date',
     ];
 
     protected $casts = [
@@ -43,6 +45,7 @@ class RoomBookingRequest extends Model
         'participant_count' => 'integer',
         'start_at' => 'datetime',
         'end_at' => 'datetime',
+        'occurrence_end_date' => 'date:Y-m-d',
         'status' => RoomBookingStatus::class,
         'workflow_version' => 'integer',
         'submission_iteration' => 'integer',
@@ -140,6 +143,12 @@ class RoomBookingRequest extends Model
     public function cancellationRequests()
     {
         return $this->hasMany(RoomBookingCancellationRequest::class);
+    }
+
+    public function occurrences()
+    {
+        return $this->hasMany(RoomBookingOccurrence::class)
+            ->orderBy('sequence');
     }
 
     public function activeCancellationRequest()

@@ -3,6 +3,7 @@
 namespace Tests\Feature\Peminjaman;
 
 use App\Enums\RoomBookingStatus;
+use Illuminate\Support\Carbon;
 
 class RoomBookingReviewerApiTest extends RoomBookingApiTestCase
 {
@@ -88,7 +89,8 @@ class RoomBookingReviewerApiTest extends RoomBookingApiTestCase
             ->assertJsonPath('items.0.room_type', 'classroom')
             ->assertJsonPath('items.0.can_view', true)
             ->assertJsonPath('items.0.can_approve', false)
-            ->assertJsonPath('summary.total', 2)
+            ->assertJsonPath('summary.total', 1)
+            ->assertJsonPath('summary.active_total', 2)
             ->assertJsonPath('summary.counts_by_status.approved', 1)
             ->assertJsonPath('summary.counts_by_status.submitted', 1)
             ->assertJsonMissingPath('summary.counts_by_status.diproses');
@@ -96,6 +98,104 @@ class RoomBookingReviewerApiTest extends RoomBookingApiTestCase
         $ids = collect($response->json('items'))->pluck('id')->all();
         $this->assertNotContains($submitted->id, $ids);
         $this->assertNotContains($labBooking->id, $ids);
+    }
+
+    public function test_reviewer_calendar_defaults_to_active_demand_and_history_is_explicit(): void
+    {
+        $room = $this->classroom(['code' => 'ACTIVE-CALENDAR']);
+        $approved = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-06-20 08:00:00',
+            endAt: '2026-06-20 09:00:00',
+        );
+        $underReview = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-21 08:00:00',
+            endAt: '2026-06-21 09:00:00',
+            attributes: ['review_started_at' => now(), 'review_started_by' => $this->reviewerUser('sarpras')->id],
+        );
+        $revision = $this->roomBooking($room, status: RoomBookingStatus::RevisionRequested);
+        $rejected = $this->roomBooking($room, status: RoomBookingStatus::Rejected);
+        $cancelled = $this->roomBooking($room, status: RoomBookingStatus::Cancelled);
+        $completed = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-06-17 08:00:00',
+            endAt: '2026-06-17 09:00:00',
+        );
+        $expired = $this->roomBooking(
+            $room,
+            status: RoomBookingStatus::Submitted,
+            startAt: '2026-06-18 07:00:00',
+            endAt: '2026-06-18 08:00:00',
+        );
+
+        $this->actingAsUser($this->reviewerUser('sarpras'));
+        $activeResponse = $this->getJson($this->reviewerCalendarUrl('?month=2026-06'))
+            ->assertOk()
+            ->assertJsonPath('summary.total', 2)
+            ->assertJsonPath('summary.active_total', 2)
+            ->assertJsonPath('summary.history_total', 2);
+
+        $this->assertEqualsCanonicalizing(
+            [$approved->id, $underReview->id],
+            collect($activeResponse->json('items'))->pluck('id')->all(),
+        );
+
+        $this->getJson($this->reviewerCalendarUrl('?month=2026-06&status=rejected'))
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $rejected->id);
+
+        $historyResponse = $this->getJson($this->reviewerCalendarUrl('?month=2026-06&status=history'))
+            ->assertOk()
+            ->assertJsonCount(2, 'items');
+        $this->assertEqualsCanonicalizing(
+            [$completed->id, $expired->id],
+            collect($historyResponse->json('items'))->pluck('id')->all(),
+        );
+
+        $defaultIds = collect($activeResponse->json('items'))->pluck('id');
+        foreach ([$revision, $rejected, $cancelled, $completed, $expired] as $inactive) {
+            $this->assertNotContains($inactive->id, $defaultIds);
+        }
+    }
+
+    public function test_active_calendar_uses_each_c7r_occurrence_after_the_first_day_has_ended(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-06-21 12:00:00', config('app.timezone')));
+        $booking = $this->roomBooking(
+            $this->classroom(['code' => 'MULTI-CALENDAR']),
+            status: RoomBookingStatus::Approved,
+            startAt: '2026-06-20 09:00:00',
+            endAt: '2026-06-20 10:00:00',
+            attributes: [
+                'booking_mode' => 'consecutive_days',
+                'occurrence_end_date' => '2026-06-22',
+            ],
+        );
+        foreach ([20, 21, 22] as $index => $day) {
+            $booking->occurrences()->create([
+                'sequence' => $index + 1,
+                'occurrence_date' => "2026-06-{$day}",
+                'start_at' => "2026-06-{$day} 09:00:00",
+                'end_at' => "2026-06-{$day} 10:00:00",
+                'return_due_at' => "2026-06-{$day} 10:30:00",
+            ]);
+        }
+
+        $this->actingAsUser($this->reviewerUser('sarpras'));
+        $this->getJson($this->reviewerCalendarUrl('?month=2026-06'))
+            ->assertOk()
+            ->assertJsonCount(1, 'items')
+            ->assertJsonPath('items.0.id', $booking->id)
+            ->assertJsonPath('items.0.start_at', '2026-06-22T09:00:00+07:00')
+            ->assertJsonPath('summary.total', 1)
+            ->assertJsonPath('summary.active_total', 1)
+            ->assertJsonPath('summary.history_total', 2)
+            ->assertJsonPath('summary.counts_by_status.approved', 3);
     }
 
     public function test_sarpras_calendar_laboratory_filters_do_not_expand_scope(): void
@@ -210,7 +310,7 @@ class RoomBookingReviewerApiTest extends RoomBookingApiTestCase
         );
         $second = $this->roomBooking(
             $room,
-            status: RoomBookingStatus::RevisionRequested,
+            status: RoomBookingStatus::Submitted,
             startAt: '2026-06-20 10:00:00',
             endAt: '2026-06-20 12:00:00',
         );

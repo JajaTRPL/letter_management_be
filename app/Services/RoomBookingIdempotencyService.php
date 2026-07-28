@@ -17,7 +17,7 @@ use RuntimeException;
  */
 class RoomBookingIdempotencyService
 {
-    public const RESPONSE_SCHEMA_VERSION = 1;
+    public const RESPONSE_SCHEMA_VERSION = 2;
 
     private const REPLAY_STRING_MAX = 10000;
 
@@ -65,9 +65,12 @@ class RoomBookingIdempotencyService
         array $canonicalPayload,
         callable $operation,
         ?callable $responseBody = null,
+        int $transactionAttempts = 3,
     ): RoomBookingIdempotencyOutcome {
         $keyHash = hash_hmac('sha256', $idempotencyKey, $this->hashKey());
         $payloadHash = $this->payloadHash($canonicalPayload);
+        $initialBookingId = $booking->exists ? (int) $booking->id : null;
+        $applicantProjection = $actor->role === 'mahasiswa';
         $responseBody ??= fn (array $result): array => $this->defaultResponseBody($result);
         $scope = [
             'actor_identity_snapshot' => 'user:'.$actor->id,
@@ -85,12 +88,14 @@ class RoomBookingIdempotencyService
             $payloadHash,
             $operation,
             $responseBody,
+            $initialBookingId,
+            $applicantProjection,
         ) {
             $now = $this->now();
 
             RoomBookingIdempotencyRecord::query()->insertOrIgnore(array_merge($scope, [
                 'actor_id' => $actor->id,
-                'room_booking_request_id' => $booking->id,
+                'room_booking_request_id' => $initialBookingId,
                 'payload_hash' => $payloadHash,
                 'expires_at' => $now->copy()->addHours(max(
                     1,
@@ -113,7 +118,15 @@ class RoomBookingIdempotencyService
             }
 
             if ($record->completed_at !== null) {
-                $body = $this->validatedStoredResponse($record, (int) $booking->id);
+                $storedBookingId = (int) ($record->room_booking_request_id ?? 0);
+                if ($storedBookingId < 1) {
+                    throw new RuntimeException('Invalid stored room-booking idempotency subject.');
+                }
+                $body = $this->validatedStoredResponse(
+                    $record,
+                    $storedBookingId,
+                    $applicantProjection,
+                );
 
                 return new RoomBookingIdempotencyOutcome(
                     body: $body,
@@ -126,13 +139,22 @@ class RoomBookingIdempotencyService
             $result = $operation($correlationId);
             $resultPayload = $result['payload'];
             $resultPayload['correlation_id'] = $correlationId;
+            $resultBookingId = (int) ($resultPayload['booking_id'] ?? 0);
+            if (
+                $resultBookingId < 1
+                || ($initialBookingId !== null && $resultBookingId !== $initialBookingId)
+            ) {
+                throw new RuntimeException('Invalid room-booking idempotency result subject.');
+            }
             $statusCode = $this->validatedStatusCode($result['status_code'] ?? null);
             $safeBody = $this->validatedResponseBody(
                 $responseBody($resultPayload),
-                (int) $booking->id,
+                $resultBookingId,
+                $applicantProjection,
             );
 
             $record->forceFill([
+                'room_booking_request_id' => $resultBookingId,
                 'result_status_code' => $statusCode,
                 'response_schema_version' => self::RESPONSE_SCHEMA_VERSION,
                 'safe_response_body' => $safeBody,
@@ -144,7 +166,7 @@ class RoomBookingIdempotencyService
                 statusCode: $statusCode,
                 replayed: false,
             );
-        }, 3);
+        }, max(1, $transactionAttempts));
     }
 
     /** @param array<string, mixed> $payload */
@@ -198,9 +220,11 @@ class RoomBookingIdempotencyService
     private function validatedStoredResponse(
         RoomBookingIdempotencyRecord $record,
         int $bookingId,
+        bool $applicantProjection,
     ): array {
+        $schemaVersion = $record->response_schema_version;
         if (
-            $record->response_schema_version !== self::RESPONSE_SCHEMA_VERSION
+            ! in_array($schemaVersion, [1, self::RESPONSE_SCHEMA_VERSION], true)
             || ! is_int($record->result_status_code)
             || $record->result_status_code < 200
             || $record->result_status_code >= 300
@@ -210,7 +234,82 @@ class RoomBookingIdempotencyService
             throw new RuntimeException('Invalid stored room-booking idempotency outcome.');
         }
 
-        return $this->validatedResponseBody($record->safe_response_body, $bookingId);
+        $body = $record->safe_response_body;
+        if ($schemaVersion === 1 && $applicantProjection) {
+            $body = $this->minimizeLegacyApplicantResponse($body);
+        }
+        $validated = $this->validatedResponseBody(
+            $body,
+            $bookingId,
+            $applicantProjection,
+        );
+
+        if ($schemaVersion !== self::RESPONSE_SCHEMA_VERSION) {
+            $record->forceFill([
+                'response_schema_version' => self::RESPONSE_SCHEMA_VERSION,
+                'safe_response_body' => $validated,
+            ])->save();
+        }
+
+        return $validated;
+    }
+
+    /**
+     * One-time fail-safe upgrade for pre-C7B3 applicant outcomes. Operational
+     * staff bodies retain their authorized fields; applicant bodies lose
+     * internal identities before they can be replayed or persisted as v2.
+     *
+     * @param  array<string, mixed>  $body
+     * @return array<string, mixed>
+     */
+    private function minimizeLegacyApplicantResponse(array $body): array
+    {
+        if (! isset($body['data']) || ! is_array($body['data'])) {
+            return $body;
+        }
+
+        $booking = array_key_exists('booking', $body['data'])
+            ? ($body['data']['booking'] ?? null)
+            : $body['data'];
+        if (! is_array($booking)) {
+            return $body;
+        }
+
+        unset(
+            $booking['cancelled_by_role_snapshot'],
+            $booking['requester'],
+        );
+        if (isset($booking['reviewer']) && is_array($booking['reviewer'])) {
+            unset($booking['reviewer']['id']);
+        }
+        if (isset($booking['status_histories']) && is_array($booking['status_histories'])) {
+            foreach ($booking['status_histories'] as &$history) {
+                if (is_array($history) && isset($history['actor']) && is_array($history['actor'])) {
+                    unset($history['actor']['id']);
+                }
+            }
+            unset($history);
+        }
+        if (isset($booking['conflicts']) && is_array($booking['conflicts'])) {
+            foreach ($booking['conflicts'] as &$conflict) {
+                if (is_array($conflict)) {
+                    unset(
+                        $conflict['requester_name'],
+                        $conflict['activity_name'],
+                        $conflict['purpose'],
+                    );
+                }
+            }
+            unset($conflict);
+        }
+
+        if (array_key_exists('booking', $body['data'])) {
+            $body['data']['booking'] = $booking;
+        } else {
+            $body['data'] = $booking;
+        }
+
+        return $body;
     }
 
     private function validatedStatusCode(mixed $statusCode): int
@@ -249,23 +348,32 @@ class RoomBookingIdempotencyService
      * @param  array<string, mixed>  $body
      * @return array<string, mixed>
      */
-    private function validatedResponseBody(array $body, int $bookingId): array
+    private function validatedResponseBody(
+        array $body,
+        int $bookingId,
+        bool $applicantProjection,
+    ): array
     {
+        $data = $body['data'] ?? null;
+        $mutationShape = is_array($data) && array_key_exists('booking', $data);
+        $responseBooking = $mutationShape ? ($data['booking'] ?? null) : $data;
         if (
             array_keys($body) !== ['message', 'data']
             || ! is_string($body['message'])
             || trim($body['message']) === ''
-            || ! is_array($body['data'])
-            || ! isset($body['data']['booking'])
-            || ! is_array($body['data']['booking'])
-            || (int) ($body['data']['booking']['id'] ?? 0) !== $bookingId
-            || ! is_string($body['data']['correlation_id'] ?? null)
-            || ! Str::isUuid($body['data']['correlation_id'])
+            || ! is_array($data)
+            || ! is_array($responseBooking)
+            || (int) ($responseBooking['id'] ?? 0) !== $bookingId
+            || ! is_string($data['correlation_id'] ?? null)
+            || ! Str::isUuid($data['correlation_id'])
         ) {
             throw new RuntimeException('Invalid room-booking idempotency response schema.');
         }
 
-        $this->assertReplaySchema($body, $this->replaySchema(), 'body');
+        $schema = $mutationShape
+            ? $this->replaySchema($applicantProjection)
+            : $this->initialSubmissionReplaySchema($applicantProjection);
+        $this->assertReplaySchema($body, $schema, 'body');
         $json = json_encode(
             $body,
             JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
@@ -283,7 +391,8 @@ class RoomBookingIdempotencyService
     }
 
     /**
-     * Fail-closed positive schema for response_schema_version 1. Every
+     * Fail-closed positive schema for response_schema_version 2. Applicant
+     * replays use a narrower projection than authorized staff replays. Every
      * associative key must be declared here; unknown keys are rejected, so
      * nested sensitive content cannot pass under alternate or unlisted names.
      * All declared keys are optional-but-typed: both the compact service
@@ -295,9 +404,54 @@ class RoomBookingIdempotencyService
      *
      * @return array<string, mixed>
      */
-    private function replaySchema(): array
+    private function replaySchema(bool $applicantProjection): array
     {
-        $capabilities = ['@object' => [
+        $capabilities = $this->capabilitiesReplaySchema();
+        $cancellationRequest = $this->cancellationRequestReplaySchema();
+        $booking = ['@object' => $this->bookingReplayFields(
+            $applicantProjection,
+            $capabilities,
+            $cancellationRequest,
+        )];
+
+        return ['@object' => [
+            'message' => 'str',
+            'data' => ['@object' => [
+                'booking' => $booking,
+                'stored_status' => 'str',
+                'effective_status' => 'str',
+                'workflow_version' => 'int',
+                'capabilities' => $capabilities,
+                'cancellation_request' => $cancellationRequest,
+                'cancellation_pending' => 'bool',
+                'notification_state' => 'str',
+                'correlation_id' => 'uuid',
+                'cancellation_request_id' => 'int?',
+                'cancellation_request_status' => 'str?',
+            ]],
+        ]];
+    }
+
+    /** @return array<string, mixed> */
+    private function initialSubmissionReplaySchema(bool $applicantProjection): array
+    {
+        $fields = $this->bookingReplayFields(
+            $applicantProjection,
+            $this->capabilitiesReplaySchema(),
+            $this->cancellationRequestReplaySchema(),
+        );
+        $fields['correlation_id'] = 'uuid';
+
+        return ['@object' => [
+            'message' => 'str',
+            'data' => ['@object' => $fields],
+        ]];
+    }
+
+    /** @return array<string, mixed> */
+    private function capabilitiesReplaySchema(): array
+    {
+        return ['@object' => [
             'can_edit' => 'bool',
             'can_resubmit' => 'bool',
             'can_cancel' => 'bool',
@@ -314,7 +468,12 @@ class RoomBookingIdempotencyService
             'withdrawal_block_reason' => 'str?',
             'next_action' => 'str?',
         ]];
-        $cancellationRequest = ['@nullable' => ['@object' => [
+    }
+
+    /** @return array<string, mixed> */
+    private function cancellationRequestReplaySchema(): array
+    {
+        return ['@nullable' => ['@object' => [
             'id' => 'int',
             'status' => 'str',
             'reason' => 'str?',
@@ -324,7 +483,26 @@ class RoomBookingIdempotencyService
             'responsible_role' => 'str',
             'available_applicant_action' => 'str?',
         ]]];
-        $booking = ['@object' => [
+    }
+
+    /**
+     * @param  array<string, mixed>  $capabilities
+     * @param  array<string, mixed>  $cancellationRequest
+     * @return array<string, mixed>
+     */
+    private function bookingReplayFields(
+        bool $applicantProjection,
+        array $capabilities,
+        array $cancellationRequest,
+    ): array {
+        $reviewerFields = $applicantProjection
+            ? ['name' => 'str']
+            : ['id' => 'int', 'name' => 'str'];
+        $historyActorFields = $applicantProjection
+            ? ['name' => 'str']
+            : ['id' => 'int', 'name' => 'str'];
+
+        $fields = [
             'id' => 'int',
             'room' => ['@object' => [
                 'id' => 'int',
@@ -346,6 +524,8 @@ class RoomBookingIdempotencyService
             'participant_count' => 'int',
             'start_at' => 'str',
             'end_at' => 'str',
+            'booking_mode' => 'str',
+            'occurrence_end_date' => 'str',
             'status' => 'str',
             'stored_status' => 'str',
             'workflow_version' => 'int',
@@ -357,13 +537,12 @@ class RoomBookingIdempotencyService
             'cancellation_pending' => 'bool',
             'cancellation_request' => $cancellationRequest,
             'capabilities' => $capabilities,
-            'reviewer' => ['@nullable' => ['@object' => ['id' => 'int', 'name' => 'str']]],
+            'reviewer' => ['@nullable' => ['@object' => $reviewerFields]],
             'reviewed_at' => 'str?',
             'revision_note' => 'str?',
             'rejection_reason' => 'str?',
             'cancellation_reason' => 'str?',
             'cancellation_source' => 'str?',
-            'cancelled_by_role_snapshot' => 'str?',
             'created_at' => 'str?',
             'updated_at' => 'str?',
             'surat_peminjaman_pdf' => ['@nullable' => ['@object' => [
@@ -375,18 +554,30 @@ class RoomBookingIdempotencyService
                 'preview_url' => 'str?',
                 'download_url' => 'str?',
             ]]],
+            'occurrences' => ['@list' => ['@object' => $this->occurrenceReplayFields(
+                $applicantProjection,
+            )]],
+            'occurrence_summary' => ['@object' => [
+                'total' => 'int',
+                'completed' => 'int',
+                'progress_label' => 'str',
+                'next_action' => 'str?',
+                'nearest_deadline' => 'str?',
+            ]],
+            'usage_timeline' => ['@list' => ['@object' => [
+                'type' => 'str',
+                'occurred_at' => 'str?',
+                'label' => 'str?',
+                'actor' => ['@object' => ['name' => 'str', 'role' => 'str']],
+                'occurrence_ref' => 'str?',
+            ]]],
             'status_histories' => ['@list' => ['@object' => [
                 'id' => 'int',
                 'from_status' => 'str?',
                 'to_status' => 'str',
-                'actor' => ['@nullable' => ['@object' => ['id' => 'int', 'name' => 'str']]],
+                'actor' => ['@nullable' => ['@object' => $historyActorFields]],
                 'note' => 'str?',
                 'created_at' => 'str?',
-            ]]],
-            'requester' => ['@nullable' => ['@object' => [
-                'id' => 'int',
-                'name' => 'str',
-                'email' => 'str',
             ]]],
             'conflict_status' => 'str',
             'has_conflict' => 'bool',
@@ -399,28 +590,86 @@ class RoomBookingIdempotencyService
                 'start_at' => 'str',
                 'end_at' => 'str',
                 'status' => 'str',
-                'requester_name' => 'str?',
-                'activity_name' => 'str?',
-                'purpose' => 'str?',
             ]]],
-        ]];
+        ];
 
-        return ['@object' => [
-            'message' => 'str',
-            'data' => ['@object' => [
-                'booking' => $booking,
-                'stored_status' => 'str',
-                'effective_status' => 'str',
-                'workflow_version' => 'int',
-                'capabilities' => $capabilities,
-                'cancellation_request' => $cancellationRequest,
-                'cancellation_pending' => 'bool',
-                'notification_state' => 'str',
-                'correlation_id' => 'uuid',
-                'cancellation_request_id' => 'int?',
-                'cancellation_request_status' => 'str?',
+        if (! $applicantProjection) {
+            $fields['cancelled_by_role_snapshot'] = 'str?';
+            $fields['requester'] = ['@nullable' => ['@object' => [
+                'id' => 'int',
+                'name' => 'str',
+                'email' => 'str',
+            ]]];
+            $fields['conflicts']['@list']['@object'] = array_merge(
+                $fields['conflicts']['@list']['@object'],
+                [
+                    'requester_name' => 'str?',
+                    'activity_name' => 'str?',
+                    'purpose' => 'str?',
+                ],
+            );
+        }
+
+        return $fields;
+    }
+
+    /** @return array<string, mixed> */
+    private function occurrenceReplayFields(bool $applicantProjection): array
+    {
+        $returnFields = [
+            'return_ref' => 'str',
+            'status' => 'str',
+            'version' => 'int',
+            'submitted_at' => 'str',
+            'decision_note' => 'str?',
+            'key_received_at' => 'str?',
+            'verified_at' => 'str?',
+            'evidence' => ['@object' => [
+                'original_name' => 'str',
+                'mime' => 'str',
+                'size_bytes' => 'int',
+                'preview_url' => 'str',
+                'download_url' => 'str',
             ]],
-        ]];
+        ];
+        if (! $applicantProjection) {
+            $returnFields['verified_by'] = ['@nullable' => ['@object' => [
+                'name' => 'str?', 'role' => 'str?',
+            ]]];
+            $returnFields['received_time_change_reason'] = 'str?';
+        }
+
+        $fields = [
+            'occurrence_ref' => 'str',
+            'sequence' => 'int',
+            'date' => 'str',
+            'start_at' => 'str',
+            'end_at' => 'str',
+            'return_due_at' => 'str',
+            'version' => 'int',
+            'operational_status' => 'str',
+            'key_issuance' => ['@object' => [
+                'issued' => 'bool',
+                'issued_at' => 'str?',
+                'issued_by' => ['@nullable' => ['@object' => [
+                    'name' => 'str?', 'role' => 'str?',
+                ]]],
+            ]],
+            'return' => ['@nullable' => ['@object' => $returnFields]],
+            'capabilities' => ['@object' => [
+                'can_submit_return' => 'bool',
+                'can_withdraw_return' => 'bool',
+                'can_resubmit_return' => 'bool',
+            ]],
+            'event_hooks' => ['@list' => ['@object' => [
+                'type' => 'str', 'at' => 'str',
+            ]]],
+        ];
+        if (! $applicantProjection) {
+            $fields['return_history'] = ['@list' => ['@object' => $returnFields]];
+        }
+
+        return $fields;
     }
 
     private function assertReplaySchema(mixed $value, mixed $spec, string $path): void

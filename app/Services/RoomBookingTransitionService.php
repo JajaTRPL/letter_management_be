@@ -22,6 +22,7 @@ class RoomBookingTransitionService
         private RoomBookingSubmissionSnapshotService $submissionSnapshots,
         private RoomBookingWithdrawalPolicy $withdrawalPolicy,
         private RoomBookingIdempotencyService $idempotency,
+        private RoomBookingOccurrenceService $occurrences,
     ) {}
 
     public function submit(
@@ -61,6 +62,7 @@ class RoomBookingTransitionService
                 ],
                 submissionIteration: (int) $lockedBooking->submission_iteration + 1,
             );
+            $this->occurrences->replaceForBooking($resubmitted, $actor);
 
             // The resubmitted payload becomes authoritative now, so its
             // immutable evidence is written in the same transaction. The
@@ -253,10 +255,12 @@ class RoomBookingTransitionService
                 );
             }
 
-            if ($this->conflictService->hasConflict(
+            $ranges = $this->occurrences->rangesFromAttributes($lockedBooking->only([
+                'start_at', 'end_at', 'booking_mode', 'occurrence_end_date',
+            ]));
+            if ($this->conflictService->hasConflictForAny(
                 $room->id,
-                $lockedBooking->start_at,
-                $lockedBooking->end_at,
+                $ranges,
                 $lockedBooking->id,
             )) {
                 throw new RoomBookingDomainException(
@@ -331,41 +335,6 @@ class RoomBookingTransitionService
                 ],
                 $reason,
             );
-        });
-    }
-
-    /**
-     * Deprecated compatibility method. It now performs only an eligible
-     * direct requester withdrawal; it never creates a cancellation request.
-     */
-    public function cancel(
-        RoomBookingRequest $booking,
-        User $actor,
-        string $reason,
-        ?int $expectedWorkflowVersion = null,
-    ): RoomBookingRequest {
-        return $this->legacyWithdraw($booking, $actor, $reason, $expectedWorkflowVersion);
-    }
-
-    public function legacyWithdraw(
-        RoomBookingRequest $booking,
-        User $actor,
-        string $reason,
-        ?int $expectedWorkflowVersion = null,
-    ): RoomBookingRequest {
-        $reason = trim($reason);
-        if ($reason === '') {
-            throw new RoomBookingDomainException(
-                RoomBookingDomainException::REASON_REQUIRED,
-                'Alasan pembatalan wajib diisi.',
-            );
-        }
-
-        return DB::transaction(function () use ($booking, $actor, $reason, $expectedWorkflowVersion) {
-            $lockedBooking = $this->lockBooking($booking);
-            $this->assertExpectedWorkflowVersion($lockedBooking, $expectedWorkflowVersion);
-
-            return $this->performDirectWithdrawalLocked($lockedBooking, $actor, $reason);
         });
     }
 
@@ -776,12 +745,16 @@ class RoomBookingTransitionService
 
         $timezone = config('app.timezone');
         $localStart = $startAt->copy()->setTimezone($timezone);
-        $localEnd = $endAt->copy()->setTimezone($timezone);
 
-        if ($localStart->toDateString() !== $localEnd->toDateString()) {
+        $ranges = $this->occurrences->rangesFromAttributes($booking->only([
+            'start_at', 'end_at', 'booking_mode', 'occurrence_end_date',
+        ]));
+        if ($ranges === [] || collect($ranges)->contains(
+            fn (array $range) => ! $range['start_at']->lessThan($range['end_at']),
+        )) {
             throw new RoomBookingDomainException(
-                RoomBookingDomainException::CROSS_MIDNIGHT,
-                'Kegiatan harus selesai di hari yang sama. Untuk kegiatan yang melewati tengah malam, ajukan jadwal terpisah.',
+                RoomBookingDomainException::INVALID_TIME_RANGE,
+                'Pola waktu penggunaan harian tidak valid.',
             );
         }
 
