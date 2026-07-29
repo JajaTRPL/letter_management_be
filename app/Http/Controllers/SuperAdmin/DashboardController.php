@@ -86,17 +86,29 @@ class DashboardController extends Controller
             ->orderBy('submitted_at', 'desc')
             ->get()
             ->map(function ($app) {
-                $daysOverdue = Carbon::parse($app->submitted_at)->diffInDays(now());
+                $daysOverdue = (int) Carbon::parse($app->submitted_at)->diffInDays(now());
+                $statusLabels = [
+                    'Draft' => 'Draft Pengajuan',
+                    'Submitted' => 'Menunggu Verifikasi Persuratan',
+                    'Revision' => 'Perlu Perbaikan (Revisi)',
+                    'Rejected' => 'Pengajuan Ditolak',
+                    'Approved_Tendik' => 'Diverifikasi — Menunggu Paraf Prodi',
+                    'Approved_Kaprodi' => 'Diparaf — Menunggu Tanda Tangan Departemen',
+                    'Ready_For_Student_Review' => 'Siap Ditinjau Mahasiswa',
+                    'Completed' => 'Surat Selesai & Terbit',
+                ];
                 return [
                     'id' => $app->id,
                     'submitted_at' => Carbon::parse($app->submitted_at)->format('d M Y, H.i'),
                     'student_name' => $app->mahasiswaProfile?->nama_lengkap ?? $app->user?->name ?? '-',
                     'nim' => $app->mahasiswaProfile?->nim ?? '-',
                     'status' => $app->status,
+                    'status_label' => $statusLabels[$app->status] ?? $app->status,
                     'assigned_to_name' => $app->assignedUser?->name ?? '-',
                     'days_overdue' => $daysOverdue,
-                    'type' => $app->scholarship_name ?? 'Beasiswa',
+                    'type' => $app->scholarship_name ?? 'Surat Permohonan Beasiswa',
                     'letter_type' => ScholarshipApplication::LETTER_TYPE,
+                    'letter_type_label' => 'Surat Permohonan Beasiswa',
                 ];
             });
 
