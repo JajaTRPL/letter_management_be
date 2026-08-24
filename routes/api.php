@@ -357,6 +357,15 @@ Route::middleware('throttle:api')->group(function () {
                 Route::get('/requests', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'requests']);
                 Route::get('/requests/{booking}', [\App\Http\Controllers\SuperAdmin\RoomBookingController::class, 'showRequest']);
             });
+
+            // Master Laboratorium (Kelola Laboratorium). Distinct from the
+            // read-only `/laboratories` dropdown feed above (RoomBookingController).
+            Route::prefix('laboratories')->group(function () {
+                Route::get('/', [\App\Http\Controllers\SuperAdmin\LaboratoryController::class, 'index']);
+                Route::post('/', [\App\Http\Controllers\SuperAdmin\LaboratoryController::class, 'store']);
+                Route::patch('/{laboratory}', [\App\Http\Controllers\SuperAdmin\LaboratoryController::class, 'update']);
+                Route::delete('/{laboratory}', [\App\Http\Controllers\SuperAdmin\LaboratoryController::class, 'destroy']);
+            });
         });
 
 
