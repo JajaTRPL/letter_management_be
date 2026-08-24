@@ -24,6 +24,17 @@ class GoogleAuthController extends Controller
     private const ALLOWED_DOMAINS = ['mail.ugm.ac.id', 'ugm.ac.id'];
 
     /**
+     * Specific non-UGM email addresses exempted from the domain restriction
+     * above — e.g. a super admin account provisioned on a Gmail address
+     * outside the university domain. Deliberately an explicit address
+     * allowlist (never a wildcard domain like "gmail.com") to keep the
+     * exception as narrow as possible. An exempted email still goes through
+     * the normal "must already be pre-provisioned" path below (see
+     * STUDENT_SELF_REGISTRATION_DOMAIN) — it never triggers auto-create.
+     */
+    private const ALLOWED_EMAIL_OVERRIDES = ['superadminlms.dtedi@gmail.com'];
+
+    /**
      * Only the UGM student domain may create a new Mahasiswa account.
      * Staff-domain accounts must be pre-provisioned by Super Admin.
      */
@@ -67,9 +78,13 @@ class GoogleAuthController extends Controller
             ], 401);
         }
 
-        // Domain restriction
+        // Domain restriction — an explicitly allowlisted email bypasses the
+        // domain check entirely (see ALLOWED_EMAIL_OVERRIDES); every other
+        // address must match an allowed university domain.
         $domain = strtolower((string) substr(strrchr($email, '@') ?: '', 1));
-        if (!in_array($domain, self::ALLOWED_DOMAINS, true)) {
+        $isAllowedDomain = in_array($domain, self::ALLOWED_DOMAINS, true);
+        $isAllowedOverride = in_array($email, self::ALLOWED_EMAIL_OVERRIDES, true);
+        if (!$isAllowedDomain && !$isAllowedOverride) {
             return response()->json([
                 'message' => 'Hanya email @mail.ugm.ac.id dan @ugm.ac.id yang diizinkan.',
             ], 403);

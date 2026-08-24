@@ -12,8 +12,6 @@ class DatabaseSeeder extends Seeder
             AcademicStructureSeeder::class,
             FacultySeeder::class,
             SuperAdminSeeder::class,
-            AdminSeeder::class,
-            UserSeeder::class,
             FacilityTypeSeeder::class,
         ]);
     }
