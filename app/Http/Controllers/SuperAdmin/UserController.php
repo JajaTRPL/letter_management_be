@@ -43,7 +43,12 @@ class UserController extends Controller
      * Query params:
      *   page, per_page (max 100, default 25)
      *   role, status, study_program_id, department_id
-     *   search  — matches name, email, nip, or mahasiswaProfile.nim
+     *   search    — matches name, email, nip, or mahasiswaProfile.nim
+     *   sort_by   — 'created_at' (default) or 'angkatan' (derived from the
+     *               first 2 digits of mahasiswaProfile.nim, matching
+     *               NimHelper::deriveAngkatan — rows without a NIM sort last
+     *               regardless of direction)
+     *   sort_dir  — 'asc' or 'desc' (default 'desc')
      */
     public function index(Request $request)
     {
@@ -53,6 +58,8 @@ class UserController extends Controller
         $status     = $request->get('status');
         $studyProgramId = $request->get('study_program_id');
         $departmentId   = $request->get('department_id');
+        $sortBy     = $request->get('sort_by', 'created_at');
+        $sortDir    = strtolower((string) $request->get('sort_dir', 'desc')) === 'asc' ? 'asc' : 'desc';
 
         $query = User::with([
             'mahasiswaProfile:id,user_id,nim,tanggal_lahir',
@@ -65,8 +72,25 @@ class UserController extends Controller
             'department.faculty:id,code,name',
             'laboratory:id,code,name',
         ])
-        ->select('id', 'name', 'email', 'nip', 'role', 'sub_role', 'tendik_role', 'laboratory_id', 'study_program_id', 'department_id', 'role_level', 'status', 'assigned_tasks', 'created_at')
-        ->orderBy('created_at', 'desc');
+        ->select(
+            'users.id', 'users.name', 'users.email', 'users.nip', 'users.role', 'users.sub_role',
+            'users.tendik_role', 'users.laboratory_id', 'users.study_program_id', 'users.department_id',
+            'users.role_level', 'users.status', 'users.assigned_tasks', 'users.created_at',
+        );
+
+        if ($sortBy === 'angkatan') {
+            // Sorting by the raw 2-digit NIM prefix (not the century-adjusted
+            // year NimHelper::deriveAngkatan returns) is intentional: every
+            // NIM in active use is 20xx, so lexical order on the prefix ("05"
+            // < "24" < "99") already matches chronological order without a
+            // CAST that would error on a malformed/non-numeric NIM in
+            // Postgres. Ties broken by created_at so the order stays stable.
+            $query->leftJoin('mahasiswa_profiles', 'mahasiswa_profiles.user_id', '=', 'users.id')
+                ->orderByRaw("substr(mahasiswa_profiles.nim, 1, 2) {$sortDir} NULLS LAST")
+                ->orderBy('users.created_at', 'desc');
+        } else {
+            $query->orderBy('users.created_at', $sortDir);
+        }
 
         if ($role) {
             $query->where('role', $role);
