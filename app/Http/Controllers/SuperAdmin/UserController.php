@@ -47,7 +47,9 @@ class UserController extends Controller
      *   sort_by   — 'created_at' (default) or 'angkatan' (derived from the
      *               first 2 digits of mahasiswaProfile.nim, matching
      *               NimHelper::deriveAngkatan — rows without a NIM sort last
-     *               regardless of direction)
+     *               regardless of direction). Ties within the same angkatan
+     *               are broken alphabetically by name (A-Z), independent of
+     *               sort_dir, so each angkatan group always reads A-Z.
      *   sort_dir  — 'asc' or 'desc' (default 'desc')
      */
     public function index(Request $request)
@@ -84,10 +86,12 @@ class UserController extends Controller
             // NIM in active use is 20xx, so lexical order on the prefix ("05"
             // < "24" < "99") already matches chronological order without a
             // CAST that would error on a malformed/non-numeric NIM in
-            // Postgres. Ties broken by created_at so the order stays stable.
+            // Postgres. Ties broken alphabetically by name (always A-Z,
+            // regardless of sort_dir) so each angkatan reads A-Z on the
+            // Mahasiswa tab, including when filtered by study_program_id.
             $query->leftJoin('mahasiswa_profiles', 'mahasiswa_profiles.user_id', '=', 'users.id')
                 ->orderByRaw("substr(mahasiswa_profiles.nim, 1, 2) {$sortDir} NULLS LAST")
-                ->orderBy('users.created_at', 'desc');
+                ->orderBy('users.name', 'asc');
         } else {
             $query->orderBy('users.created_at', $sortDir);
         }

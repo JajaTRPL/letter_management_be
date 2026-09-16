@@ -68,6 +68,24 @@ class UserAngkatanSortTest extends TestCase
         $this->assertSame([$withNim->id, $withoutNim->id], $ids);
     }
 
+    public function test_sort_by_angkatan_breaks_ties_alphabetically_by_name(): void
+    {
+        $this->actingAsSuperAdmin();
+
+        [$zara] = $this->completeMahasiswa(['name' => 'Zara'], ['nim' => '22/111111/SV/11111']);
+        [$amir] = $this->completeMahasiswa(['name' => 'Amir'], ['nim' => '22/222222/SV/22222']);
+        [$budi] = $this->completeMahasiswa(['name' => 'Budi'], ['nim' => '23/333333/SV/33333']);
+
+        $resp = $this->getJson('/api/super-admin/users?role=mahasiswa&sort_by=angkatan&sort_dir=asc');
+
+        $resp->assertOk();
+        $ids = collect($resp->json('data'))->pluck('id')->all();
+
+        // Angkatan 22 (Amir, Zara — A-Z) before angkatan 23 (Budi), even
+        // though sort_dir=asc puts the smaller angkatan first.
+        $this->assertSame([$amir->id, $zara->id, $budi->id], $ids);
+    }
+
     public function test_default_sort_is_unaffected_by_angkatan_join(): void
     {
         $this->actingAsSuperAdmin();
