@@ -16,7 +16,7 @@ use Mockery\MockInterface;
 
 class RoomBookingOccurrenceReturnApiTest extends RoomBookingApiTestCase
 {
-    public function test_single_multi_day_and_overnight_occurrences_are_generated(): void
+    public function test_single_and_multi_day_occurrences_are_generated(): void
     {
         $student = $this->student();
         $room = $this->classroom();
@@ -36,14 +36,50 @@ class RoomBookingOccurrenceReturnApiTest extends RoomBookingApiTestCase
             'end_at' => '2026-06-22T12:00:00+07:00',
         ]))->assertCreated();
         $this->assertSame(['2026-06-20', '2026-06-21', '2026-06-22'], collect($multi->json('data.occurrences'))->pluck('date')->all());
+    }
+
+    public function test_overnight_time_range_is_rejected_outside_operational_hours(): void
+    {
+        $student = $this->student();
+        $room = $this->classroom();
+        $this->actingAsUser($student);
 
         $overnight = $this->post($this->mahasiswaUrl('/requests'), $this->validBookingPayloadWithPdf($room, [
             'idempotency_key' => 'c7r-overnight-occurrence',
             'start_at' => '2026-06-20T20:00:00+07:00',
             'end_at' => '2026-06-21T02:00:00+07:00',
-        ]))->assertCreated();
-        $this->assertCount(1, $overnight->json('data.occurrences'));
-        $this->assertSame('2026-06-21T02:00:00+07:00', $overnight->json('data.occurrences.0.end_at'));
+        ]))->assertStatus(422);
+        $overnight->assertJsonValidationErrors(['end_at']);
+    }
+
+    public function test_start_time_before_operational_hours_is_rejected(): void
+    {
+        $this->actingAsUser($this->student());
+        $room = $this->classroom();
+
+        $response = $this->post($this->mahasiswaUrl('/requests'), $this->validBookingPayloadWithPdf($room, [
+            'idempotency_key' => 'c7r-before-hours',
+            'start_at' => '2026-06-20T06:00:00+07:00',
+            'end_at' => '2026-06-20T08:00:00+07:00',
+        ]));
+
+        $response->assertStatus(422);
+        $response->assertJsonValidationErrors(['start_at']);
+    }
+
+    public function test_end_time_after_operational_hours_is_rejected(): void
+    {
+        $this->actingAsUser($this->student());
+        $room = $this->classroom();
+
+        $response = $this->post($this->mahasiswaUrl('/requests'), $this->validBookingPayloadWithPdf($room, [
+            'idempotency_key' => 'c7r-after-hours',
+            'start_at' => '2026-06-20T21:00:00+07:00',
+            'end_at' => '2026-06-20T23:00:00+07:00',
+        ]));
+
+        $response->assertStatus(422);
+        $response->assertJsonValidationErrors(['end_at']);
     }
 
     public function test_multi_day_conflict_on_any_date_blocks_but_pending_demand_does_not(): void
