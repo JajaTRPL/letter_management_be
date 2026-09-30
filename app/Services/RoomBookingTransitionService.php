@@ -720,7 +720,7 @@ class RoomBookingTransitionService
 
     private function assertApprover(User $actor, RoomBookingRequest $booking): void
     {
-        if (! $this->reviewerResolver->canActAsApprover($actor, $booking)) {
+        if (! $this->reviewerResolver->canApproveBooking($actor, $booking)) {
             throw new RoomBookingDomainException(
                 RoomBookingDomainException::UNAUTHORIZED_ACTION,
                 'Anda tidak berwenang meninjau pengajuan ini.',

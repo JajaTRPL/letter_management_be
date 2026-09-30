@@ -66,22 +66,23 @@ class NotificationRoomBookingMatrixTest extends RoomBookingApiTestCase
         $this->assertSame((string) $booking->id, $note->subject_public_id);
     }
 
-    public function test_laboratory_submission_notifies_the_owning_kepala_lab_not_other_labs(): void
+    public function test_laboratory_submission_notifies_the_owning_kepala_lab_and_laboran_not_other_labs(): void
     {
         $lab = $this->bookingLaboratory('A');
         $otherLab = $this->bookingLaboratory('B');
         $kalab = $this->reviewerUser('kepala_lab', $lab);
         $otherKalab = $this->reviewerUser('kepala_lab', $otherLab);
         $laboran = $this->reviewerUser('laboran', $lab);
+        $otherLaboran = $this->reviewerUser('laboran', $otherLab);
         $student = $this->student();
         $booking = $this->roomBooking($this->laboratoryRoom($lab), $student, RoomBookingStatus::Submitted);
 
         $this->emit($booking, Ev::EVENT_BOOKING_SUBMITTED, $student, 'submitted');
 
-        $this->assertRecipients('booking-review:', [$kalab->id]);
+        // The own-lab Laboran may approve too, so they get the review action.
+        $this->assertRecipients('booking-review:', [$kalab->id, $laboran->id]);
         $this->assertNoNotificationFor($otherKalab->id, 'booking-review:');
-        // Laboran must never receive routine booking-approval/review notifications.
-        $this->assertNoNotificationFor($laboran->id, 'booking-review:');
+        $this->assertNoNotificationFor($otherLaboran->id, 'booking-review:');
         $this->assertSame(
             'kalab.booking.review',
             AppNotification::where('recipient_user_id', $kalab->id)->value('action_route_key'),

@@ -85,6 +85,26 @@ class RoomBookingReviewerResolver
         return $user->isKalab() && $this->isScopedLaboratoryRoom($user, $room);
     }
 
+    /**
+     * Who may start review / approve / request revision / reject a booking.
+     * Same as canActAsApprover, plus the lab's own Laboran. Cancellation
+     * decisions deliberately stay on canActAsApprover.
+     */
+    public function canApproveBooking(User $user, RoomBookingRequest $booking): bool
+    {
+        if ($this->canActAsApprover($user, $booking)) {
+            return true;
+        }
+
+        if (! $this->isActive($user) || ! $user->isLaboran()) {
+            return false;
+        }
+
+        $room = $this->roomFor($booking);
+
+        return $room !== null && $this->isScopedLaboratoryRoom($user, $room);
+    }
+
     public function canCancel(User $user, RoomBookingRequest $booking): bool
     {
         return $user->role === 'mahasiswa'

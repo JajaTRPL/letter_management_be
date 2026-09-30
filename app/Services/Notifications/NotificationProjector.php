@@ -96,7 +96,10 @@ class NotificationProjector
     {
         $booking = $this->booking($event);
         $approver = $this->recipients->bookingApprover($booking);
-        if (! $approver) {
+        // Laboratory bookings may also be approved by the lab's own Laboran.
+        $laboran = $this->recipients->activeLaboran($this->roomOf($booking));
+        $reviewers = array_values(array_filter([$approver, $laboran]));
+        if ($reviewers === []) {
             $this->healthMissingRecipient(
                 'booking_approver',
                 'booking',
@@ -115,8 +118,20 @@ class NotificationProjector
             $this->writer->resolveBySubject('booking', (string) $booking->id, [Ev::EVENT_REVISION_REQUESTED]);
         }
 
+        foreach ($reviewers as $reviewer) {
+            $this->writeBookingReviewIntent($event, $booking, $reviewer, $isResubmission, $iteration);
+        }
+    }
+
+    private function writeBookingReviewIntent(
+        Ev $event,
+        RoomBookingRequest $booking,
+        User $reviewer,
+        bool $isResubmission,
+        int $iteration,
+    ): void {
         $this->writer->write(new NotificationIntent(
-            recipient: $approver,
+            recipient: $reviewer,
             eventType: $event->event_type,
             category: NotificationCategory::ActionRequired,
             priority: NotificationPriority::High,

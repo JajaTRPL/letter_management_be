@@ -509,10 +509,21 @@ class RoomBookingReviewerApiTest extends RoomBookingApiTestCase
             ->assertJsonMissing(['room_name' => 'Other Lab Room']);
     }
 
-    public function test_laboran_can_list_and_read_scoped_lab_but_cannot_take_actions(): void
+    public function test_laboran_can_list_read_and_decide_scoped_lab_bookings(): void
     {
         $laboratory = $this->bookingLaboratory('LABORAN');
+        $otherLaboratory = $this->bookingLaboratory('LABORAN-OTHER');
         $booking = $this->roomBooking($this->laboratoryRoom($laboratory));
+        $otherBooking = $this->roomBooking(
+            $this->laboratoryRoom($otherLaboratory),
+            startAt: '2026-06-21 10:00:00',
+            endAt: '2026-06-21 12:00:00',
+        );
+        $classroomBooking = $this->roomBooking(
+            $this->classroom(),
+            startAt: '2026-06-22 10:00:00',
+            endAt: '2026-06-22 12:00:00',
+        );
         $laboran = $this->reviewerUser('laboran', $laboratory);
         $this->actingAsUser($laboran);
 
@@ -526,18 +537,14 @@ class RoomBookingReviewerApiTest extends RoomBookingApiTestCase
             ->assertJsonPath('data.id', $booking->id);
 
         $this->patchJson($this->reviewerUrl("/{$booking->id}/approve"))
+            ->assertOk()
+            ->assertJsonPath('data.status', RoomBookingStatus::Approved->value);
+
+        // Scope stays limited to the Laboran's own laboratory.
+        $this->patchJson($this->reviewerUrl("/{$otherBooking->id}/approve"))
             ->assertForbidden()
             ->assertJsonPath('code', 'unauthorized_action');
-        $this->patchJson(
-            $this->reviewerUrl("/{$booking->id}/revise"),
-            ['note' => 'Laboran must not revise.'],
-        )
-            ->assertForbidden()
-            ->assertJsonPath('code', 'unauthorized_action');
-        $this->patchJson(
-            $this->reviewerUrl("/{$booking->id}/reject"),
-            ['reason' => 'Laboran must not reject.'],
-        )
+        $this->patchJson($this->reviewerUrl("/{$classroomBooking->id}/approve"))
             ->assertForbidden()
             ->assertJsonPath('code', 'unauthorized_action');
     }

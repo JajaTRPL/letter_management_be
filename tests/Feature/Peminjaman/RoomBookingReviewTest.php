@@ -108,11 +108,21 @@ class RoomBookingReviewTest extends RoomBookingApiTestCase
             'idempotency_key' => 'review-lab-other',
         ])->assertNotFound();
 
+        // A Laboran may start review for their own lab only.
         $laboran = $this->reviewerUser('laboran', $otherLab);
         $this->actingAsUser($laboran);
         $this->patchJson($this->reviewerUrl("/{$otherBooking->id}/start-review"), [
             'expected_workflow_version' => 1,
             'idempotency_key' => 'review-laboran-1',
+        ])->assertOk();
+
+        $thirdLab = $this->bookingLaboratory('03');
+        $foreignLaboran = $this->reviewerUser('laboran', $thirdLab);
+        $this->actingAsUser($foreignLaboran);
+        $foreignBooking = $this->roomBooking($this->laboratoryRoom($lab), startAt: '2026-06-23 10:00:00', endAt: '2026-06-23 12:00:00');
+        $this->patchJson($this->reviewerUrl("/{$foreignBooking->id}/start-review"), [
+            'expected_workflow_version' => 1,
+            'idempotency_key' => 'review-laboran-foreign',
         ])->assertNotFound();
     }
 

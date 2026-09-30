@@ -93,7 +93,11 @@ class RoomBookingLifecycleCapabilityResolver
         }
 
         $isDecisionReviewer = $this->reviewerResolver->canActAsApprover($actor, $booking);
-        if ($isDecisionReviewer) {
+        // Laboran may approve/revise/reject their lab's bookings, but cancellation
+        // decisions stay with the decision reviewer (Sarpras / Kepala Lab).
+        $isBookingApprover = $isDecisionReviewer
+            || $this->reviewerResolver->canApproveBooking($actor, $booking);
+        if ($isBookingApprover) {
             $pendingCancellation = $booking->hasPendingCancellationRequest();
             $submitted = $booking->status === RoomBookingStatus::Submitted;
             $expiredRevision = $booking->status === RoomBookingStatus::RevisionRequested
@@ -114,7 +118,9 @@ class RoomBookingLifecycleCapabilityResolver
                 && ! $pendingCancellation;
             $capabilities['can_reject'] = ($submitted || $expiredRevision)
                 && ! $pendingCancellation;
-            $capabilities['can_decide_cancellation'] = $pendingCancellation && $future;
+            $capabilities['can_decide_cancellation'] = $isDecisionReviewer
+                && $pendingCancellation
+                && $future;
 
             if ($capabilities['can_decide_cancellation']) {
                 $capabilities['next_action'] = 'decide_cancellation';

@@ -47,7 +47,7 @@ class RoomBookingReviewService
                 );
                 $this->transitions->assertNoPendingCancellationRequest($lockedBooking);
 
-                if (! $this->reviewerResolver->canActAsApprover($actor, $lockedBooking)) {
+                if (! $this->reviewerResolver->canApproveBooking($actor, $lockedBooking)) {
                     throw new RoomBookingDomainException(
                         RoomBookingDomainException::UNAUTHORIZED_ACTION,
                         'Anda tidak berwenang memulai tinjauan pengajuan ini.',

@@ -49,7 +49,7 @@ class RoomBookingDashboardTest extends RoomBookingApiTestCase
         $this->assertSame(0, $data['stats']['actionable']);
     }
 
-    public function test_a_laboran_is_given_no_approvals_because_they_approve_nothing(): void
+    public function test_a_laboran_is_given_approvals_for_their_own_lab(): void
     {
         $lab = $this->bookingLaboratory();
         $this->roomBooking($this->laboratoryRoom($lab), $this->student(), RoomBookingStatus::Submitted);
@@ -58,7 +58,7 @@ class RoomBookingDashboardTest extends RoomBookingApiTestCase
         $data = $this->getJson(self::URL)->assertOk()->json('data');
 
         $kinds = collect($data['actionable'])->pluck('kind')->all();
-        $this->assertNotContains('approval', $kinds, 'A Laboran can read the review queue but cannot decide.');
+        $this->assertContains('approval', $kinds, 'A Laboran may decide their own lab bookings.');
     }
 
     public function test_sarpras_is_scoped_to_classrooms(): void

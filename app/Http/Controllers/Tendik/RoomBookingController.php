@@ -204,7 +204,7 @@ class RoomBookingController extends Controller
         RoomBookingRequest $booking,
     ): JsonResponse {
         abort_unless(
-            $this->reviewerResolver->canActAsApprover($request->user(), $booking),
+            $this->reviewerResolver->canApproveBooking($request->user(), $booking),
             404,
         );
 

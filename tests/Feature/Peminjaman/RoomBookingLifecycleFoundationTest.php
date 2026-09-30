@@ -434,14 +434,17 @@ class RoomBookingLifecycleFoundationTest extends RoomBookingApiTestCase
         $this->assertFalse($resolver->capabilitiesFor($otherKalab, $labBooking)['can_approve']);
         $this->assertFalse($resolver->capabilitiesFor($kalab, $classroomBooking)['can_approve']);
 
-        // Laboran: read-only (attachment in own lab scope, no decisions).
+        // Laboran: may decide own-lab bookings (no cancellation decisions).
         $laboran = $this->reviewerUser('laboran', $laboratory);
+        $otherLaboran = $this->reviewerUser('laboran', $otherLaboratory);
         $laboranCaps = $resolver->capabilitiesFor($laboran, $labBooking);
         $this->assertTrue($laboranCaps['can_view_attachment']);
-        $this->assertFalse($laboranCaps['can_review']);
-        $this->assertFalse($laboranCaps['can_approve']);
-        $this->assertFalse($laboranCaps['can_request_revision']);
-        $this->assertFalse($laboranCaps['can_reject']);
+        $this->assertTrue($laboranCaps['can_review']);
+        $this->assertTrue($laboranCaps['can_approve']);
+        $this->assertTrue($laboranCaps['can_request_revision']);
+        $this->assertTrue($laboranCaps['can_reject']);
+        $this->assertFalse($laboranCaps['can_decide_cancellation']);
+        $this->assertFalse($resolver->capabilitiesFor($otherLaboran, $labBooking)['can_approve']);
 
         // Persuratan: no booking capabilities at all.
         $this->assertSame([], array_keys(array_filter(

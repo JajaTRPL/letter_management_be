@@ -26,7 +26,7 @@ use Illuminate\Support\Collection;
  *
  *   Sarpras     approves classrooms   AND does their keys/returns
  *   Kepala Lab  approves its own lab  but does NO keys/returns at all
- *   Laboran     approves nothing      but does its lab's keys/returns
+ *   Laboran     approves its own lab  AND does its lab's keys/returns
  *
  * So a Kepala Lab's operational rows come back as AWARENESS (can_act false,
  * responsible party named), never as a queue of buttons they cannot press.
@@ -92,9 +92,8 @@ final class RoomBookingTaskFeedService
     /**
      * Bookings waiting for a decision this user can actually make.
      *
-     * `scopeReviewableBookings` admits Laboran too (they may READ the queue), so
-     * each row is then filtered through `canActAsApprover` — which is what keeps
-     * a Laboran from being handed approvals they cannot grant.
+     * Each row is filtered through `canApproveBooking` (Sarpras, Kepala Lab, and
+     * the lab's own Laboran) so nobody is handed approvals they cannot grant.
      *
      * @return Collection<int, array<string,mixed>>
      */
@@ -107,7 +106,7 @@ final class RoomBookingTaskFeedService
 
         return $query->orderBy('created_at')->limit(100)->get()
             ->filter(fn (RoomBookingRequest $booking) => $booking->room
-                && $this->reviewers->canActAsApprover($user, $booking))
+                && $this->reviewers->canApproveBooking($user, $booking))
             ->map(fn (RoomBookingRequest $booking) => [
                 'kind' => self::KIND_APPROVAL,
                 'kind_label' => self::KIND_LABELS[self::KIND_APPROVAL],
