@@ -32,7 +32,7 @@ class GoogleAuthController extends Controller
      * the normal "must already be pre-provisioned" path below (see
      * STUDENT_SELF_REGISTRATION_DOMAIN) — it never triggers auto-create.
      */
-    private const ALLOWED_EMAIL_OVERRIDES = ['superadminlms.dtedi@gmail.com'];
+    private const ALLOWED_EMAIL_OVERRIDES = ['superadmintedi@gmail.com'];
 
     /**
      * Only the UGM student domain may create a new Mahasiswa account.
