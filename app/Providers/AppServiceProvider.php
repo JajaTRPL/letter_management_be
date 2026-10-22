@@ -74,8 +74,16 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // Signed-in traffic is limited per account. Guest traffic (login screen,
+        // Google login, reset) is limited per IP, and a campus Wi-Fi puts hundreds
+        // of students behind one IP, so that ceiling is higher. Password guessing
+        // stays capped by the separate per-(email+IP) 'login' limiter below.
         RateLimiter::for('api', function (Request $request) {
-            return Limit::perMinute(100)->by($request->user()?->id ?: $request->ip());
+            $userId = $request->user()?->id;
+
+            return $userId
+                ? Limit::perMinute(100)->by('user:'.$userId)
+                : Limit::perMinute(600)->by('ip:'.$request->ip());
         });
 
         // Password login: a temporary brute-force throttle scoped to (email + IP)
