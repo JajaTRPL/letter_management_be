@@ -208,6 +208,16 @@ class UserController extends Controller
             $validated['department_id'] = null;
         }
 
+        if ($conflict = $this->academicPositionConflict(
+            $validated['role'],
+            $validated['sub_role'] ?? null,
+            $validated['department_id'] ?? null,
+            $validated['study_program_id'] ?? null,
+            UserStatus::Active,
+        )) {
+            return $conflict;
+        }
+
         // Enforce tendik-specific validation
         if ($validated['role'] === 'tendik') {
             $validated['tendik_role'] = $validated['tendik_role'] ?? 'persuratan';
@@ -470,6 +480,33 @@ class UserController extends Controller
             );
         }
 
+        // Only re-check the single-holder rule when this edit could create a new
+        // holder (position/scope changed or the account is being un-suspended),
+        // so editing e.g. the name of a pre-existing duplicate is not blocked.
+        $finalState = [];
+        foreach (['role', 'sub_role', 'department_id', 'study_program_id', 'status'] as $field) {
+            $finalState[$field] = array_key_exists($field, $validated) ? $validated[$field] : $user->getAttribute($field);
+        }
+        $currentStatus = $user->status instanceof UserStatus ? $user->status : UserStatus::tryFrom((string) $user->status);
+        $finalStatus = $finalState['status'] instanceof UserStatus
+            ? $finalState['status']
+            : UserStatus::tryFrom((string) $finalState['status']);
+        $positionChanged = $finalState['role'] !== $user->role
+            || $finalState['sub_role'] !== $user->sub_role
+            || (string) $finalState['department_id'] !== (string) $user->department_id
+            || (string) $finalState['study_program_id'] !== (string) $user->study_program_id;
+        $leavingSuspension = $currentStatus === UserStatus::Suspended && $finalStatus !== UserStatus::Suspended;
+        if (($positionChanged || $leavingSuspension) && ($conflict = $this->academicPositionConflict(
+            $finalState['role'],
+            $finalState['sub_role'],
+            $finalState['department_id'],
+            $finalState['study_program_id'],
+            $finalStatus,
+            $user->id,
+        ))) {
+            return $conflict;
+        }
+
         $user->update($validated);
         if ($passwordChanged) {
             $this->passwordCredentials->revokeAccess($user);
@@ -622,6 +659,17 @@ class UserController extends Controller
 
         if ($user->role === 'super_admin' && !auth()->user()->isPrimarySuperAdmin()) {
             abort(403, 'Unauthorized to unsuspend super admin');
+        }
+
+        if ($conflict = $this->academicPositionConflict(
+            $user->role,
+            $user->sub_role,
+            $user->department_id,
+            $user->study_program_id,
+            UserStatus::Active,
+            $user->id,
+        )) {
+            return $conflict;
         }
 
         // Restore to Pending_Profile if mahasiswa profile is incomplete
@@ -1168,6 +1216,60 @@ class UserController extends Controller
         }
 
         return array_values(array_unique($assignedTasks ?? []));
+    }
+
+    /**
+     * Academic positions that only one non-suspended account may hold per scope.
+     * Letter rendering and approval routing pick a single holder
+     * (AcademicContextService), so a second holder would be silently ignored.
+     */
+    private const SINGLE_HOLDER_POSITIONS = [
+        'kadep' => ['column' => 'department_id', 'label' => 'Kadep', 'scope' => 'Departemen'],
+        'sekdep' => ['column' => 'department_id', 'label' => 'Sekdep', 'scope' => 'Departemen'],
+        'kaprodi' => ['column' => 'study_program_id', 'label' => 'Kaprodi', 'scope' => 'Program studi'],
+        'sekprodi' => ['column' => 'study_program_id', 'label' => 'Sekprodi', 'scope' => 'Program studi'],
+    ];
+
+    /**
+     * Returns a 422 response when the given account state would become a second
+     * holder of a single-holder academic position, otherwise null.
+     */
+    private function academicPositionConflict(
+        ?string $role,
+        ?string $subRole,
+        mixed $departmentId,
+        mixed $studyProgramId,
+        UserStatus|string|null $status,
+        ?int $ignoreUserId = null,
+    ): ?\Illuminate\Http\JsonResponse {
+        $status = $status instanceof UserStatus ? $status : UserStatus::tryFrom((string) $status);
+        $position = self::SINGLE_HOLDER_POSITIONS[$subRole] ?? null;
+        if ($role !== 'akademik' || !$position || $status === UserStatus::Suspended) {
+            return null;
+        }
+
+        $scopeId = $position['column'] === 'department_id' ? $departmentId : $studyProgramId;
+        if (empty($scopeId)) {
+            return null;
+        }
+
+        $holder = User::query()
+            ->where('role', 'akademik')
+            ->where('sub_role', $subRole)
+            ->where($position['column'], $scopeId)
+            ->where('status', '!=', UserStatus::Suspended->value)
+            ->when($ignoreUserId, fn ($query) => $query->whereKeyNot($ignoreUserId))
+            ->first();
+
+        if (!$holder) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => "{$position['scope']} ini sudah memiliki {$position['label']} aktif ({$holder->name}, {$holder->email}). "
+                . "Suspend, hapus, atau ubah jabatan akun tersebut terlebih dahulu.",
+            'code' => 'ACADEMIC_POSITION_TAKEN',
+        ], 422);
     }
 
     private function normalizeNip(?string $nip): ?string
