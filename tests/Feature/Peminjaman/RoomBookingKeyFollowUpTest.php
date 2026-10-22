@@ -126,6 +126,48 @@ class RoomBookingKeyFollowUpTest extends RoomBookingApiTestCase
         $this->assertFalse($rejected->json('data.booking.occurrences.0.capabilities.can_submit_return'));
     }
 
+    public function test_usage_ending_without_key_handover_closes_as_key_not_issued(): void
+    {
+        $sarpras = $this->reviewerUser('sarpras');
+        $occurrence = $this->approvedOccurrence($this->student(), '2026-06-20 10:00:00', '2026-06-20 12:00:00');
+        $scanner = app(\App\Services\Notifications\RoomBookingReminderScanner::class);
+
+        // Usage has started and the key is still not marked: staff are told.
+        $scanner->scan(Carbon::parse('2026-06-20 10:01:00', config('app.timezone')));
+        $this->assertDatabaseHas('app_notifications', [
+            'recipient_user_id' => $sarpras->id,
+            'dedup_key' => "key-not-issued:{$occurrence->public_id}",
+        ]);
+
+        // After the usage ends it is closed — not "late", not handed over anymore.
+        $this->at('2026-06-20 12:05:00');
+        $this->actingAsUser($sarpras);
+        $all = collect($this->getJson(self::OPS.'?tab=all')->assertOk()->json('data'))
+            ->firstWhere('occurrence_ref', $occurrence->public_id);
+        $this->assertSame('key_not_issued', $all['operational_status']);
+        $this->assertFalse($all['capabilities']['can_issue_key']);
+        $this->assertNull(collect($this->getJson(self::OPS.'?tab=key_handover')->json('data'))
+            ->firstWhere('occurrence_ref', $occurrence->public_id));
+
+        $this->postJson(self::OPS."/{$occurrence->public_id}/issue-key", [
+            'expected_occurrence_version' => 1,
+            'idempotency_key' => 'followup-late-issue',
+        ])->assertStatus(409)->assertJsonPath('code', 'invalid_transition');
+    }
+
+    public function test_marking_the_key_as_handed_over_retires_the_started_reminder(): void
+    {
+        $sarpras = $this->reviewerUser('sarpras');
+        $occurrence = $this->approvedOccurrence($this->student(), '2026-06-20 10:00:00', '2026-06-20 12:00:00');
+        app(\App\Services\Notifications\RoomBookingReminderScanner::class)
+            ->scan(Carbon::parse('2026-06-20 10:01:00', config('app.timezone')));
+
+        $this->at('2026-06-20 10:10:00');
+        $this->issueKey($sarpras, $occurrence, 1);
+
+        $this->assertNotNull(\App\Models\AppNotification::where('dedup_key', "key-not-issued:{$occurrence->public_id}")->value('resolved_at'));
+    }
+
     private function submitReturn(User $student, RoomBookingOccurrence $occurrence, int $version, string $key, ?string $note): void
     {
         $this->actingAsUser($student);

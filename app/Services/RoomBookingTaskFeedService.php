@@ -291,6 +291,7 @@ final class RoomBookingTaskFeedService
             'overdue' => 'Melewati batas pengembalian',
             'return_rejected' => 'Bukti ditolak — menunggu kirim ulang',
             'not_returned' => 'Tidak mengembalikan kunci',
+            'key_not_issued' => 'Kunci tidak diserahkan',
             default => 'Belum berlaku',
         };
     }

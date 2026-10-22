@@ -127,6 +127,20 @@ class RoomBookingReminderScanner
                 $this->opsRoute($room), 'Serahkan Kunci', $start);
         }
 
+        // Phase usage started but the key is still not marked as handed over
+        // (owner): maybe it was given without clicking. Live until usage ends;
+        // after that the usage closes as "kunci tidak diserahkan".
+        if (! $keyIssued && $owner && $this->inWindow($now, $start, $end, $catchUp)
+            && $now->lessThan($end)) {
+            $emitted += $this->emit($owner, $occurrence, 'key_not_issued_reminder',
+                NotificationCategory::ActionRequired, NotificationPriority::High,
+                'Peminjaman dimulai, kunci belum ditandai diserahkan',
+                $this->line($occurrence).' sudah dimulai. Jika kunci sudah diberikan, tandai "Serahkan Kunci" sebelum pukul '
+                    .$end->copy()->setTimezone(config('app.timezone'))->format('H.i').' WIB.',
+                "key-not-issued:{$occurrence->public_id}",
+                $this->opsRoute($room), 'Serahkan Kunci', $start);
+        }
+
         // Phase usage ending soon (applicant). Never before usage has started:
         // for a booking shorter than the lead time the window opens at start.
         $endingSoonFrom = $end->copy()->subMinutes($r['ending_soon_minutes'])->max($start);
@@ -227,13 +241,6 @@ class RoomBookingReminderScanner
         return $room->type === RoomType::Classroom
             ? NotificationActionRoute::SARPRAS_OPERATIONS
             : NotificationActionRoute::LABORAN_OPERATIONS;
-    }
-
-    private function reviewRoute($room): string
-    {
-        return $room->type === RoomType::Classroom
-            ? NotificationActionRoute::SARPRAS_BOOKING_REVIEW
-            : NotificationActionRoute::KALAB_BOOKING_REVIEW;
     }
 
     private function applicantContactLine(RoomBookingOccurrence $occurrence): string

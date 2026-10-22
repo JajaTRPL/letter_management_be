@@ -146,6 +146,10 @@ class RoomBookingOccurrenceService
                 : 'returned_late';
         }
 
+        // The usage ended without the key ever being marked as handed over:
+        // closed as "kunci tidak diserahkan" (not the applicant's fault).
+        if (! $occurrence->key_issued_at && $now->greaterThanOrEqualTo($occurrence->end_at)) return 'key_not_issued';
+
         $active = $occurrence->activeReturnRequest;
         if ($active?->status === RoomBookingReturnStatus::RevisionRequested) return 'revision_required';
         if ($active?->status === RoomBookingReturnStatus::Pending) return 'awaiting_verification';
@@ -242,6 +246,7 @@ class RoomBookingOccurrenceService
             && $this->isOperationallyActionable($occurrence)
             && $occurrence->key_issued_at === null
             && $occurrence->acceptedReturnRequest === null
+            && now(config('app.timezone'))->lessThan($occurrence->end_at)
             && $this->authorization->canIssueOrReceive($actor, $occurrence);
     }
 

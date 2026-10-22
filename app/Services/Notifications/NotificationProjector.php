@@ -498,7 +498,7 @@ class NotificationProjector
             return;
         }
         // Key handed over — the owner's handover reminder is done.
-        $this->writer->resolveBySubject('occurrence', $occurrence->public_id, ['key_handover_reminder']);
+        $this->writer->resolveBySubject('occurrence', $occurrence->public_id, ['key_handover_reminder', 'key_not_issued_reminder']);
     }
 
     // ── Administrative letter matrix ───────────────────────────────────────

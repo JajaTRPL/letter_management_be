@@ -56,6 +56,12 @@ class RoomBookingKeyService
                         'Kunci hanya dapat diserahkan untuk peminjaman yang telah disetujui.',
                     );
                 }
+                if (now(config('app.timezone'))->greaterThanOrEqualTo($locked->end_at)) {
+                    throw new RoomBookingDomainException(
+                        RoomBookingDomainException::INVALID_TRANSITION,
+                        'Waktu penggunaan sudah berakhir; kunci tidak dapat diserahkan lagi.',
+                    );
+                }
                 if ($locked->key_issued_at !== null) {
                     throw new RoomBookingDomainException(
                         RoomBookingDomainException::INVALID_TRANSITION,

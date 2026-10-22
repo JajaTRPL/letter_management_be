@@ -49,7 +49,8 @@ class RoomBookingOccurrenceController extends Controller
         $now = now(config('app.timezone'));
         match ($tab) {
             'today' => $query->whereDate('occurrence_date', $now->toDateString()),
-            'key_handover' => $query->whereNull('key_issued_at'),
+            // Only usages that have not ended: past ones close as "kunci tidak diserahkan".
+            'key_handover' => $query->whereNull('key_issued_at')->where('end_at', '>', $now),
             'returns' => $query->whereHas('activeReturnRequest'),
             // Follow-up list: evidence rejected (applicant may resend) or past
             // the window (closed as "tidak mengembalikan kunci").
