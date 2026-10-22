@@ -271,7 +271,7 @@ separate cookie-auth flow.
 | `GOOGLE_CLIENT_SECRET` | _(leave empty)_ | Loaded by config but **not used** by GIS token flow |
 | `GOOGLE_REDIRECT_URI` | _(leave empty)_ | Loaded by config but **not used** — no callback route |
 | `VITE_GOOGLE_CLIENT_ID` | Same as `GOOGLE_CLIENT_ID` | Frontend uses this |
-| `TEMPLATE_BEASISWA_ID` | `1QeM5eAy2KaNiAS-q6jiD88rme2iPnomh` | Google Docs template (rotated; old ID deprecated after folder exposure) |
+| `TEMPLATE_BEASISWA_ID` | `1ANPD3ITEV7scT4j6W6A3v1gJcjcAfD-Z` | Google Docs template (rotated; old ID deprecated after folder exposure) |
 
 ### Personal Values (Must Change Per Developer)
 

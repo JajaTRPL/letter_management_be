@@ -7,19 +7,19 @@ return [
     // exposed. Old IDs are deprecated. NOTE: rotating an ID has no runtime effect
     // until the cache DOCX is refreshed (Super Admin → templates refresh), which
     // re-exports from the new Google Doc. Generation reads the cached DOCX.
-    'template_beasiswa_id' => env('TEMPLATE_BEASISWA_ID', '1QeM5eAy2KaNiAS-q6jiD88rme2iPnomh'),
+    'template_beasiswa_id' => env('TEMPLATE_BEASISWA_ID', '1ANPD3ITEV7scT4j6W6A3v1gJcjcAfD-Z'),
 
     'template_beasiswa_cache_path' => env('TEMPLATE_BEASISWA_CACHE_PATH', storage_path('app/templates/beasiswa_template.docx')),
 
-    'template_surat_keterangan_aktif_id' => env('TEMPLATE_SURAT_KETERANGAN_AKTIF_ID', '15PyIqVO1X1xkLT1HwaFqrRdC7xm2NObu'),
+    'template_surat_keterangan_aktif_id' => env('TEMPLATE_SURAT_KETERANGAN_AKTIF_ID', '1b9wfBVcynlcXOGHVFSz2v__Koi1-QGvy'),
 
     'template_surat_keterangan_aktif_cache_path' => env('TEMPLATE_SURAT_KETERANGAN_AKTIF_CACHE_PATH', storage_path('app/templates/surat_keterangan_aktif_template.docx')),
 
-    'template_proses_luar_negeri_id' => env('TEMPLATE_PROSES_LUAR_NEGERI_ID', '1oO7gq579l-PlKaNfo53Wh6iPPBLeCEhD'),
+    'template_proses_luar_negeri_id' => env('TEMPLATE_PROSES_LUAR_NEGERI_ID', '1qy27jELHgkY0K8KjNBLlb29-iX1Fs6ND'),
 
     'template_proses_luar_negeri_cache_path' => env('TEMPLATE_PROSES_LUAR_NEGERI_CACHE_PATH', storage_path('app/templates/proses_luar_negeri_template.docx')),
 
-    'template_surat_pengantar_magang_id' => env('TEMPLATE_SURAT_PENGANTAR_MAGANG_ID', '1LMT7SqOB7rMKVI0ceOIe8Tu7cjB6zCa2'),
+    'template_surat_pengantar_magang_id' => env('TEMPLATE_SURAT_PENGANTAR_MAGANG_ID', '13v_Xh0b2dwfmwwascc0dH77wJb87GzyK'),
 
     'template_surat_pengantar_magang_cache_path' => env('TEMPLATE_SURAT_PENGANTAR_MAGANG_CACHE_PATH', storage_path('app/templates/surat_pengantar_magang_template.docx')),
 
@@ -27,7 +27,7 @@ return [
     // one canonical place ahead of the S2 standalone Surat Tugas build. NOT wired
     // into MANAGED_TEMPLATES, any service, or runtime, and NOT exported/cached yet.
     // Do not consume this key until S2 implements the Surat Tugas pipeline.
-    'template_surat_tugas_id' => env('TEMPLATE_SURAT_TUGAS_ID', '1BHIzQotYzavkmvikVysuzGXWdggY_GBW'),
+    'template_surat_tugas_id' => env('TEMPLATE_SURAT_TUGAS_ID', '1wVckCGjgtH6I6tNHt_lN1A2y-NpbjuE1'),
 
     'template_surat_tugas_cache_path' => env('TEMPLATE_SURAT_TUGAS_CACHE_PATH', storage_path('app/templates/surat_tugas_template.docx')),
 
