@@ -251,12 +251,15 @@ class RoomBookingOccurrenceReturnApiTest extends RoomBookingApiTestCase
         $student = $this->student();
         [, $occurrence] = $this->approvedOccurrence($this->classroom(), $student);
         $this->issueKey($occurrence);
-        Carbon::setTestNow(Carbon::parse('2026-06-20 13:30:00', config('app.timezone')));
+        // Evidence sent inside the 1-hour window (due 13:00) …
+        Carbon::setTestNow(Carbon::parse('2026-06-20 12:50:00', config('app.timezone')));
         $this->actingAsUser($student);
-        $detail = $this->getJson($this->mahasiswaUrl("/requests/{$occurrence->booking->id}"))->assertOk();
-        $this->assertSame('overdue', $detail->json('data.occurrences.0.operational_status'));
         $submit = $this->post($this->returnUrl($occurrence), $this->returnPayload(2, 'c7r-late-submit'))->assertOk();
         $returnVersion = $submit->json('data.booking.occurrences.0.return.version');
+        // … verified after the window: still awaiting a decision, not closed.
+        Carbon::setTestNow(Carbon::parse('2026-06-20 13:30:00', config('app.timezone')));
+        $detail = $this->getJson($this->mahasiswaUrl("/requests/{$occurrence->booking->id}"))->assertOk();
+        $this->assertSame('awaiting_verification', $detail->json('data.occurrences.0.operational_status'));
         $this->actingAsUser($this->reviewerUser('sarpras'));
         $accepted = $this->postJson($this->decisionUrl($occurrence, 'accept'), [
             'expected_occurrence_version' => 3,

@@ -152,38 +152,27 @@ class RoomBookingReminderScanner
                 NotificationActionRoute::MAHASISWA_BOOKING_OCCURRENCE, 'Kirim Bukti', $returnDue);
         }
 
-        // Phase overdue after return_due_at (applicant + owner), still unaccepted.
+        // Past the 1-hour window with no accepted return: the usage is closed
+        // as "tidak mengembalikan kunci". One final notice each — the applicant,
+        // and the owner with the applicant's contact. No escalation: nothing is
+        // left to do in the system.
         if (! $accepted && $now->greaterThan($returnDue) && ($keyIssued || $pendingReturn)) {
             if ($applicant && ! $pendingReturn) {
                 $emitted += $this->emit($applicant, $occurrence, 'return_overdue_reminder',
-                    NotificationCategory::ActionRequired, NotificationPriority::Urgent,
-                    'Pengembalian kunci terlambat',
-                    $this->line($occurrence).' melewati batas pengembalian kunci.',
+                    NotificationCategory::Update, NotificationPriority::High,
+                    'Kunci tidak dikembalikan',
+                    $this->line($occurrence).' melewati batas pengembalian 1 jam dan tercatat tidak mengembalikan kunci. Petugas dapat menghubungi Anda.',
                     "overdue:{$occurrence->public_id}",
-                    NotificationActionRoute::MAHASISWA_BOOKING_OCCURRENCE, 'Kirim Bukti', $returnDue);
+                    NotificationActionRoute::MAHASISWA_BOOKING_OCCURRENCE, 'Lihat Detail', $returnDue);
             }
             if ($owner && ! $pendingReturn) {
                 $emitted += $this->emit($owner, $occurrence, 'return_overdue_reminder',
-                    NotificationCategory::ActionRequired, NotificationPriority::High,
-                    'Pengembalian kunci terlambat',
-                    $this->line($occurrence).' belum dikembalikan setelah batas waktu. Hubungi peminjam: '
+                    NotificationCategory::Update, NotificationPriority::High,
+                    'Peminjam tidak mengembalikan kunci',
+                    $this->line($occurrence).' tidak dikembalikan dalam 1 jam. Hubungi peminjam: '
                         .$this->applicantContactLine($occurrence).'.',
                     "overdue-owner:{$occurrence->public_id}",
-                    $this->opsRoute($room), 'Tindak Lanjuti', $returnDue);
-            }
-
-            // Escalation to the decision authority beyond the configured threshold.
-            $escalateAfter = (int) config('notifications.escalation.unresolved_return_minutes');
-            if ($now->greaterThan($returnDue->copy()->addMinutes($escalateAfter))) {
-                $authority = $this->recipients->bookingApprover($booking); // Sarpras / Kepala Lab
-                if ($authority) {
-                    $emitted += $this->emit($authority, $occurrence, 'return_overdue_escalation',
-                        NotificationCategory::ActionRequired, NotificationPriority::Urgent,
-                        'Eskalasi pengembalian belum selesai',
-                        $this->line($occurrence).' belum selesai melewati ambang eskalasi.',
-                        "escalation:{$occurrence->public_id}",
-                        $this->reviewRoute($room), 'Tinjau Eskalasi', $now);
-                }
+                    $this->opsRoute($room), 'Lihat Kontak', $returnDue);
             }
         }
 

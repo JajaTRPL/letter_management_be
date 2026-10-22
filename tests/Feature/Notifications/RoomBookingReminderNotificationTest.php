@@ -115,7 +115,7 @@ class RoomBookingReminderNotificationTest extends RoomBookingApiTestCase
         ]);
     }
 
-    public function test_escalation_reaches_kepala_lab_without_routine_laboran_noise(): void
+    public function test_not_returned_notice_goes_to_own_lab_laboran_and_nothing_escalates(): void
     {
         $lab = $this->bookingLaboratory('ESC');
         $kalab = $this->reviewerUser('kepala_lab', $lab);
@@ -124,27 +124,16 @@ class RoomBookingReminderNotificationTest extends RoomBookingApiTestCase
         $occurrence = $this->occurrence($this->laboratoryRoom($lab), $student, '2026-06-20 10:00:00', '2026-06-20 12:00:00');
         $occurrence->forceFill(['key_issued_at' => Carbon::parse('2026-06-20 09:30:00', config('app.timezone'))])->save();
 
-        // Well beyond the escalation threshold (24h) after return_due_at.
-        $now = Carbon::parse('2026-06-22 13:00:00', config('app.timezone'));
-        $this->scanner->scan($now);
+        // Long after the 1-hour window: the usage is closed as not returned.
+        $this->scanner->scan(Carbon::parse('2026-06-22 13:00:00', config('app.timezone')));
 
-        // Escalation goes to the decision authority (Kepala Lab) …
-        $this->assertDatabaseHas('app_notifications', [
-            'recipient_user_id' => $kalab->id,
-            'dedup_key' => "escalation:{$occurrence->public_id}",
-            'category' => NotificationCategory::ActionRequired->value,
-        ]);
-        // … and the routine overdue-owner item goes to the Laboran, not an
-        // escalation — Kepala Lab is spared routine per-item noise.
-        $this->assertSame(
-            0,
-            AppNotification::where('recipient_user_id', $laboran->id)
-                ->where('dedup_key', "escalation:{$occurrence->public_id}")->count(),
-        );
         $this->assertDatabaseHas('app_notifications', [
             'recipient_user_id' => $laboran->id,
             'dedup_key' => "overdue-owner:{$occurrence->public_id}",
         ]);
+        // No escalation to anyone (Kepala Lab included): nothing left to do.
+        $this->assertSame(0, AppNotification::where('dedup_key', "escalation:{$occurrence->public_id}")->count());
+        $this->assertSame(0, AppNotification::where('recipient_user_id', $kalab->id)->count());
     }
 
     public function test_lab_t24_owner_reminder_targets_own_lab_laboran_only(): void

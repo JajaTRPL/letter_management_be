@@ -11,15 +11,16 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 
 /**
- * Key follow-up: rejected/overdue returns show the applicant's contact and can
- * be force-closed; the next usage of the room cannot receive the key until the
- * previous one is accepted back or force-closed.
+ * Key return rules: inside the 1-hour window a rejected return can be resent
+ * until accepted; past the window with no accepted return the usage closes as
+ * "tidak mengembalikan kunci" (staff get the applicant's contact) and the next
+ * usage of the room is not blocked.
  */
 class RoomBookingKeyFollowUpTest extends RoomBookingApiTestCase
 {
     private const OPS = '/api/tendik/peminjaman-ruangan/operations';
 
-    public function test_rejected_return_shows_contact_and_can_be_force_closed_with_a_note(): void
+    public function test_rejected_return_can_be_resent_inside_the_window_and_then_accepted(): void
     {
         $sarpras = $this->reviewerUser('sarpras');
         $student = $this->studentWithPhone('081234567890');
@@ -27,19 +28,13 @@ class RoomBookingKeyFollowUpTest extends RoomBookingApiTestCase
         $this->issueKey($sarpras, $occurrence, 1);
 
         $this->at('2026-06-20 12:10:00');
-        $this->actingAsUser($student);
-        $this->post($this->mahasiswaUrl("/occurrences/{$occurrence->public_id}/return"), [
-            'expected_occurrence_version' => 2,
-            'idempotency_key' => 'followup-submit',
-            'note' => 'Kunci saya titipkan di pos satpam.',
-            'evidence' => UploadedFile::fake()->image('bukti.jpg', 80, 80),
-        ])->assertOk();
-        $this->assertDatabaseHas('room_booking_return_requests', [
-            'room_booking_occurrence_id' => $occurrence->id,
-            'requester_note' => 'Kunci saya titipkan di pos satpam.',
-        ]);
+        $this->submitReturn($student, $occurrence, 2, 'first', 'Kunci di pos satpam.');
 
         $this->actingAsUser($sarpras);
+        $verifying = collect($this->getJson(self::OPS.'?tab=returns')->assertOk()->json('data'))
+            ->firstWhere('occurrence_ref', $occurrence->public_id);
+        $this->assertSame('Kunci di pos satpam.', $verifying['return']['requester_note']);
+
         $this->postJson(self::OPS."/{$occurrence->public_id}/return/reject", [
             'expected_occurrence_version' => 3,
             'expected_return_version' => 1,
@@ -49,37 +44,28 @@ class RoomBookingKeyFollowUpTest extends RoomBookingApiTestCase
 
         $item = collect($this->getJson(self::OPS.'?tab=overdue')->assertOk()->json('data'))
             ->firstWhere('occurrence_ref', $occurrence->public_id);
-        $this->assertNotNull($item, 'A rejected return belongs in the follow-up tab.');
         $this->assertSame('return_rejected', $item['operational_status']);
-        $this->assertTrue($item['capabilities']['can_force_close']);
-        $this->assertSame($student->name, $item['booking']['applicant_name']);
         $this->assertSame('081234567890', $item['booking']['applicant_phone']);
+        $this->assertSame('Foto tidak menunjukkan kunci.', $item['return']['decision_note']);
 
-        $this->postJson(self::OPS."/{$occurrence->public_id}/return/force-close", [
-            'expected_occurrence_version' => 4,
-            'idempotency_key' => 'followup-force-empty',
-        ])->assertStatus(422);
+        // Still inside the window: the applicant resends.
+        $this->at('2026-06-20 12:40:00');
+        $this->actingAsUser($student);
+        $detail = $this->getJson($this->mahasiswaUrl("/requests/{$occurrence->booking->id}"))->assertOk();
+        $this->assertTrue($detail->json('data.occurrences.0.capabilities.can_submit_return'));
+        $this->submitReturn($student, $occurrence, 4, 'second', 'Foto ulang di meja Sarpras.');
 
-        $closed = $this->postJson(self::OPS."/{$occurrence->public_id}/return/force-close", [
-            'expected_occurrence_version' => 4,
-            'note' => 'Sudah menghubungi peminjam, kunci diterima di ruang Sarpras.',
-            'idempotency_key' => 'followup-force',
+        $this->actingAsUser($sarpras);
+        $accepted = $this->postJson(self::OPS."/{$occurrence->public_id}/return/accept", [
+            'expected_occurrence_version' => 5,
+            'expected_return_version' => 1,
+            'idempotency_key' => 'followup-accept',
         ]);
-        $this->assertSame(200, $closed->status(), $closed->getContent());
-        $this->assertSame('force_closed', $closed->json('data.booking.occurrences.0.operational_status'));
-        $this->assertDatabaseHas('room_booking_return_requests', [
-            'room_booking_occurrence_id' => $occurrence->id,
-            'status' => 'accepted',
-            'is_forced' => true,
-            'decision_note' => 'Sudah menghubungi peminjam, kunci diterima di ruang Sarpras.',
-        ]);
-        $this->assertDatabaseHas('room_booking_workflow_events', [
-            'room_booking_occurrence_id' => $occurrence->id,
-            'event_type' => 'return_force_closed',
-        ]);
+        $this->assertSame(200, $accepted->status(), $accepted->getContent());
+        $this->assertSame('returned_on_time', $accepted->json('data.booking.occurrences.0.operational_status'));
     }
 
-    public function test_next_usage_cannot_get_the_key_until_the_previous_one_is_closed(): void
+    public function test_past_the_window_the_usage_closes_as_not_returned_and_the_next_usage_is_not_blocked(): void
     {
         $sarpras = $this->reviewerUser('sarpras');
         $first = $this->studentWithPhone('081111111111');
@@ -88,47 +74,70 @@ class RoomBookingKeyFollowUpTest extends RoomBookingApiTestCase
         $next = $this->approvedOccurrence($this->student(), '2026-06-20 13:00:00', '2026-06-20 14:00:00', $room);
         $this->issueKey($sarpras, $previous, 1);
 
-        // 13:05 — previous borrower is past due and has sent nothing.
+        // 13:05 — past the 13:00 deadline, nothing was sent.
         $this->at('2026-06-20 13:05:00');
         $this->actingAsUser($sarpras);
-        $item = collect($this->getJson(self::OPS.'?tab=key_handover')->assertOk()->json('data'))
-            ->firstWhere('occurrence_ref', $next->public_id);
-        $this->assertFalse($item['capabilities']['can_issue_key']);
-        $this->assertSame($first->name, $item['key_blocked_by']['applicant_name']);
-        $this->assertSame('081111111111', $item['key_blocked_by']['applicant_phone']);
+        $item = collect($this->getJson(self::OPS.'?tab=overdue')->assertOk()->json('data'))
+            ->firstWhere('occurrence_ref', $previous->public_id);
+        $this->assertSame('not_returned', $item['operational_status']);
+        $this->assertSame($first->name, $item['booking']['applicant_name']);
+        $this->assertSame('081111111111', $item['booking']['applicant_phone']);
+        $this->assertFalse($item['capabilities']['can_verify_return']);
 
-        $blocked = $this->postJson(self::OPS."/{$next->public_id}/issue-key", [
-            'expected_occurrence_version' => 1,
-            'idempotency_key' => 'followup-next-blocked',
-        ]);
-        $blocked->assertStatus(409)->assertJsonPath('code', 'previous_key_not_returned');
-        $this->assertStringContainsString('081111111111', $blocked->json('message'));
-
-        $this->postJson(self::OPS."/{$previous->public_id}/return/force-close", [
+        // The applicant can no longer send evidence.
+        $this->actingAsUser($first);
+        $this->post($this->mahasiswaUrl("/occurrences/{$previous->public_id}/return"), [
             'expected_occurrence_version' => 2,
-            'note' => 'Peminjam sudah dihubungi dan mengembalikan kunci.',
-            'idempotency_key' => 'followup-previous-closed',
-        ])->assertOk();
+            'idempotency_key' => 'followup-too-late',
+            'evidence' => UploadedFile::fake()->image('bukti.jpg', 80, 80),
+        ])->assertStatus(409)->assertJsonPath('code', 'return_window_closed');
 
+        // The next borrower still gets the key.
+        $this->actingAsUser($sarpras);
+        $nextItem = collect($this->getJson(self::OPS.'?tab=key_handover')->assertOk()->json('data'))
+            ->firstWhere('occurrence_ref', $next->public_id);
+        $this->assertTrue($nextItem['capabilities']['can_issue_key']);
         $this->postJson(self::OPS."/{$next->public_id}/issue-key", [
             'expected_occurrence_version' => 1,
             'idempotency_key' => 'followup-next-issued',
         ])->assertOk();
     }
 
-    public function test_force_close_is_refused_while_usage_is_still_within_its_return_window(): void
+    public function test_rejecting_after_the_window_closes_the_usage_as_not_returned(): void
     {
         $sarpras = $this->reviewerUser('sarpras');
-        $occurrence = $this->approvedOccurrence($this->student(), '2026-06-20 10:00:00', '2026-06-20 12:00:00');
+        $student = $this->student();
+        $occurrence = $this->approvedOccurrence($student, '2026-06-20 10:00:00', '2026-06-20 12:00:00');
         $this->issueKey($sarpras, $occurrence, 1);
 
-        $this->at('2026-06-20 12:30:00'); // ended, but the 1-hour return window is still open
+        $this->at('2026-06-20 12:50:00');
+        $this->submitReturn($student, $occurrence, 2, 'late-check', null);
+
+        // Staff only look at it after the 13:00 deadline and reject.
+        $this->at('2026-06-20 13:20:00');
         $this->actingAsUser($sarpras);
-        $this->postJson(self::OPS."/{$occurrence->public_id}/return/force-close", [
-            'expected_occurrence_version' => 2,
-            'note' => 'Terlalu cepat.',
-            'idempotency_key' => 'followup-too-early',
-        ])->assertStatus(409)->assertJsonPath('code', 'force_close_not_allowed');
+        $rejected = $this->postJson(self::OPS."/{$occurrence->public_id}/return/reject", [
+            'expected_occurrence_version' => 3,
+            'expected_return_version' => 1,
+            'note' => 'Foto buram.',
+            'idempotency_key' => 'followup-late-reject',
+        ])->assertOk();
+        $this->assertSame('not_returned', $rejected->json('data.booking.occurrences.0.operational_status'));
+        $this->assertFalse($rejected->json('data.booking.occurrences.0.capabilities.can_submit_return'));
+    }
+
+    private function submitReturn(User $student, RoomBookingOccurrence $occurrence, int $version, string $key, ?string $note): void
+    {
+        $this->actingAsUser($student);
+        $payload = [
+            'expected_occurrence_version' => $version,
+            'idempotency_key' => "followup-submit-{$key}",
+            'evidence' => UploadedFile::fake()->image('bukti.jpg', 80, 80),
+        ];
+        if ($note !== null) {
+            $payload['note'] = $note;
+        }
+        $this->post($this->mahasiswaUrl("/occurrences/{$occurrence->public_id}/return"), $payload)->assertOk();
     }
 
     private function studentWithPhone(string $phone): User

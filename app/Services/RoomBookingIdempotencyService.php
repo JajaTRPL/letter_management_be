@@ -621,12 +621,10 @@ class RoomBookingIdempotencyService
             'status' => 'str',
             'version' => 'int',
             'submitted_at' => 'str',
-            'is_forced' => 'bool',
             'requester_note' => 'str?',
             'decision_note' => 'str?',
             'key_received_at' => 'str?',
             'verified_at' => 'str?',
-            // Null for a force-closed return (no photo).
             'evidence' => ['@nullable' => ['@object' => [
                 'original_name' => 'str',
                 'mime' => 'str',

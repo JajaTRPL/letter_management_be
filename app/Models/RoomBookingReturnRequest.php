@@ -25,7 +25,6 @@ class RoomBookingReturnRequest extends Model
         'requester_id' => 'integer',
         'supersedes_id' => 'integer',
         'status' => RoomBookingReturnStatus::class,
-        'is_forced' => 'boolean',
         'active_pending_guard' => 'boolean',
         'version' => 'integer',
         'evidence_size_bytes' => 'integer',
