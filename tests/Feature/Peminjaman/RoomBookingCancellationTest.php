@@ -408,6 +408,34 @@ class RoomBookingCancellationTest extends RoomBookingApiTestCase
         ]);
     }
 
+    public function test_laboran_decides_own_lab_cancellation_like_sarpras(): void
+    {
+        $lab = $this->bookingLaboratory();
+        $student = $this->student();
+        $booking = $this->roomBooking($this->laboratoryRoom($lab), $student, RoomBookingStatus::Approved);
+        $request = $this->createPendingRequest($student, $booking, 'cancel-laboran-request-01');
+
+        $this->actingAsUser($this->reviewerUser('laboran', $this->bookingLaboratory('02')));
+        $this->patchJson("/api/tendik/peminjaman-ruangan/cancellation-requests/{$request->id}/approve", [
+            'decision_note' => 'Tidak berwenang.',
+            'expected_workflow_version' => 2,
+            'idempotency_key' => 'cancel-laboran-cross-01',
+        ])->assertNotFound();
+
+        $laboran = $this->reviewerUser('laboran', $lab);
+        $this->actingAsUser($laboran);
+        $this->getJson('/api/tendik/peminjaman-ruangan/cancellation-requests')
+            ->assertOk()
+            ->assertJsonPath('data.0.cancellation_request.id', $request->id);
+        $this->patchJson("/api/tendik/peminjaman-ruangan/cancellation-requests/{$request->id}/approve", [
+            'decision_note' => 'Praktikum dibatalkan.',
+            'expected_workflow_version' => 2,
+            'idempotency_key' => 'cancel-laboran-approve-01',
+        ])->assertOk()
+            ->assertJsonPath('data.stored_status', 'cancelled')
+            ->assertJsonPath('data.cancellation_request.status', 'approved');
+    }
+
     public function test_kepala_lab_rejects_own_lab_request_and_cross_scope_is_hidden(): void
     {
         $lab = $this->bookingLaboratory();

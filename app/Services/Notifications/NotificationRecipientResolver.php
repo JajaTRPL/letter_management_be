@@ -32,6 +32,27 @@ class NotificationRecipientResolver
         return $this->activeKepalaLab($room);
     }
 
+    /**
+     * Everyone who may decide a booking: Sarpras for classrooms; the lab's
+     * Kepala Lab and Laboran for laboratories (Laboran acts as the lab's
+     * Sarpras). Used for review, cancellation, and SLA notices.
+     *
+     * @return list<User>
+     */
+    public function bookingReviewers(RoomBookingRequest $booking): array
+    {
+        $room = $this->roomFor($booking);
+        if (! $room) {
+            return [];
+        }
+
+        $reviewers = $room->type === RoomType::Classroom
+            ? [$this->activeSarpras()]
+            : [$this->activeKepalaLab($room), $this->activeLaboran($room)];
+
+        return array_values(collect($reviewers)->filter()->unique('id')->all());
+    }
+
     /** The classroom-scope Sarpras user (single operational owner). */
     public function activeSarpras(): ?User
     {

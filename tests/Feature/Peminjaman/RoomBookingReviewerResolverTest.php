@@ -47,7 +47,7 @@ class RoomBookingReviewerResolverTest extends TestCase
         $this->assertFalse($this->resolver->canActAsApprover($kepalaLab, $otherBooking));
     }
 
-    public function test_laboran_can_approve_own_lab_bookings_but_not_decide_cancellations(): void
+    public function test_laboran_acts_as_the_labs_sarpras_for_its_own_lab_only(): void
     {
         $ownLaboratory = $this->bookingLaboratory('OWN');
         $otherLaboratory = $this->bookingLaboratory('OTHER');
@@ -57,10 +57,12 @@ class RoomBookingReviewerResolverTest extends TestCase
 
         $this->assertTrue($this->resolver->canRead($laboran, $ownBooking));
         $this->assertTrue($this->resolver->canApproveBooking($laboran, $ownBooking));
-        // Cancellation decisions stay with Kepala Lab.
-        $this->assertFalse($this->resolver->canActAsApprover($laboran, $ownBooking));
+        // Like Sarpras for classrooms, Laboran also decides cancellations.
+        $this->assertTrue($this->resolver->canActAsApprover($laboran, $ownBooking));
+        $this->assertTrue($this->resolver->canAccessCancellationDecisionQueue($laboran));
         $this->assertFalse($this->resolver->canRead($laboran, $otherBooking));
         $this->assertFalse($this->resolver->canApproveBooking($laboran, $otherBooking));
+        $this->assertFalse($this->resolver->canActAsApprover($laboran, $otherBooking));
     }
 
     public function test_persuratan_mahasiswa_super_admin_and_inactive_tendik_have_no_reviewer_scope(): void

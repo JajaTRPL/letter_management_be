@@ -66,6 +66,21 @@ class NotificationRoomBookingMatrixTest extends RoomBookingApiTestCase
         $this->assertSame((string) $booking->id, $note->subject_public_id);
     }
 
+    public function test_laboratory_cancellation_request_notifies_kepala_lab_and_laboran(): void
+    {
+        $lab = $this->bookingLaboratory('CANCEL');
+        $kalab = $this->reviewerUser('kepala_lab', $lab);
+        $laboran = $this->reviewerUser('laboran', $lab);
+        $otherLaboran = $this->reviewerUser('laboran', $this->bookingLaboratory('CANCEL-OTHER'));
+        $student = $this->student();
+        $booking = $this->roomBooking($this->laboratoryRoom($lab), $student, RoomBookingStatus::Approved);
+
+        $this->emit($booking, Ev::EVENT_CANCELLATION_REQUESTED, $student, 'cancel');
+
+        $this->assertRecipients('booking-cancel-review:', [$kalab->id, $laboran->id]);
+        $this->assertNoNotificationFor($otherLaboran->id, 'booking-cancel-review:');
+    }
+
     public function test_laboratory_submission_notifies_the_owning_kepala_lab_and_laboran_not_other_labs(): void
     {
         $lab = $this->bookingLaboratory('A');

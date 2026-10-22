@@ -24,8 +24,10 @@ class RoomBookingReviewerResolver
 
     public function canAccessCancellationDecisionQueue(User $user): bool
     {
+        // Laboran acts as the lab's Sarpras, so it decides cancellations too.
         return $this->isActive($user)
-            && ($user->isTendikSarpras() || ($user->isKalab() && $user->laboratory_id !== null));
+            && ($user->isTendikSarpras()
+                || (($user->isKalab() || $user->isLaboran()) && $user->laboratory_id !== null));
     }
 
     public function scopeCancellationRequests(Builder $query, User $user): Builder
@@ -82,27 +84,17 @@ class RoomBookingReviewerResolver
             return $room->type === RoomType::Classroom;
         }
 
-        return $user->isKalab() && $this->isScopedLaboratoryRoom($user, $room);
+        // Laboratory: the lab's Kepala Lab or its Laboran (the lab's Sarpras).
+        return ($user->isKalab() || $user->isLaboran()) && $this->isScopedLaboratoryRoom($user, $room);
     }
 
     /**
      * Who may start review / approve / request revision / reject a booking.
-     * Same as canActAsApprover, plus the lab's own Laboran. Cancellation
-     * decisions deliberately stay on canActAsApprover.
+     * Same people as canActAsApprover (kept as its own name for callers).
      */
     public function canApproveBooking(User $user, RoomBookingRequest $booking): bool
     {
-        if ($this->canActAsApprover($user, $booking)) {
-            return true;
-        }
-
-        if (! $this->isActive($user) || ! $user->isLaboran()) {
-            return false;
-        }
-
-        $room = $this->roomFor($booking);
-
-        return $room !== null && $this->isScopedLaboratoryRoom($user, $room);
+        return $this->canActAsApprover($user, $booking);
     }
 
     public function canCancel(User $user, RoomBookingRequest $booking): bool

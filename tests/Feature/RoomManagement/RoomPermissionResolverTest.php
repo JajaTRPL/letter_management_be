@@ -167,9 +167,9 @@ class RoomPermissionResolverTest extends TestCase
             'room_id' => $this->labARoom->id,
         ]);
 
-        // Laboran manages lab room data but still cannot approve bookings;
+        // Laboran decides its own lab's bookings (the lab's Sarpras);
         // SuperAdmin monitors everything but has no workflow authority.
-        $this->assertFalse($reviewer->canActAsApprover($laboran, $booking));
+        $this->assertTrue($reviewer->canActAsApprover($laboran, $booking));
         $this->assertFalse($reviewer->canActAsApprover($superAdmin, $booking));
 
         $kalab = $this->user('tendik', 'kepala_lab', $this->labA->id);

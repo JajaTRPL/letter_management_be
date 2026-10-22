@@ -96,10 +96,7 @@ class NotificationProjector
     private function onBookingNeedsReview(Ev $event): void
     {
         $booking = $this->booking($event);
-        $approver = $this->recipients->bookingApprover($booking);
-        // Laboratory bookings may also be approved by the lab's own Laboran.
-        $laboran = $this->recipients->activeLaboran($this->roomOf($booking));
-        $reviewers = array_values(array_filter([$approver, $laboran]));
+        $reviewers = $this->recipients->bookingReviewers($booking);
         if ($reviewers === []) {
             $this->healthMissingRecipient(
                 'booking_approver',
@@ -279,25 +276,23 @@ class NotificationProjector
     private function onCancellationRequested(Ev $event): void
     {
         $booking = $this->booking($event);
-        $owner = $this->recipients->bookingApprover($booking);
         $requestId = (string) ($event->safe_metadata['cancellation_request_id'] ?? 'x');
-        if (! $owner) {
-            return;
+        foreach ($this->recipients->bookingReviewers($booking) as $owner) {
+            $this->writer->write(new NotificationIntent(
+                recipient: $owner,
+                eventType: $event->event_type,
+                category: NotificationCategory::ActionRequired,
+                priority: NotificationPriority::High,
+                title: 'Permintaan pembatalan peminjaman',
+                body: $this->bookingLine($booking).' memiliki permintaan pembatalan yang menunggu keputusan.',
+                dedupKey: "booking-cancel-review:{$booking->id}:req:{$requestId}",
+                subjectType: 'booking',
+                subjectPublicId: (string) $booking->id,
+                actionRouteKey: $this->reviewRouteFor($booking),
+                actionLabel: 'Tinjau Pembatalan',
+                occurredAt: $event->occurred_at,
+            ));
         }
-        $this->writer->write(new NotificationIntent(
-            recipient: $owner,
-            eventType: $event->event_type,
-            category: NotificationCategory::ActionRequired,
-            priority: NotificationPriority::High,
-            title: 'Permintaan pembatalan peminjaman',
-            body: $this->bookingLine($booking).' memiliki permintaan pembatalan yang menunggu keputusan.',
-            dedupKey: "booking-cancel-review:{$booking->id}:req:{$requestId}",
-            subjectType: 'booking',
-            subjectPublicId: (string) $booking->id,
-            actionRouteKey: $this->reviewRouteFor($booking),
-            actionLabel: 'Tinjau Pembatalan',
-            occurredAt: $event->occurred_at,
-        ));
     }
 
     private function onCancellationClosedWithoutCancel(Ev $event): void

@@ -90,20 +90,23 @@ class RoomBookingReviewSlaScanner
             return 0; // still comfortably inside the review window
         }
 
-        $approver = $this->recipients->bookingApprover($booking);
+        // Every reviewer who may decide it (lab: Kepala Lab and Laboran).
+        $reviewers = $this->recipients->bookingReviewers($booking);
         $iteration = max(1, (int) ($booking->submission_iteration ?? 1));
         $line = $this->bookingLine($booking);
         $emitted = 0;
 
+        foreach ($reviewers as $approver) {
+            if ($elapsed >= $policy['overdue_minutes']) {
+                // Reviewer still owns the action (a persistent overdue).
+                $emitted += $this->emitOverdue($booking, $approver, $iteration, $line, $since);
+            } else {
+                $emitted += $this->emitWarning($booking, $approver, $iteration, $line, $since);
+            }
+        }
         if ($elapsed >= $policy['escalation_minutes']) {
-            // Reviewer still owns the action (a persistent overdue), AND the
-            // breach is escalated to SuperAdmin governance.
-            $emitted += $this->emitOverdue($booking, $approver, $iteration, $line, $since);
+            // The breach is escalated to SuperAdmin governance once.
             $emitted += $this->emitEscalation($booking, $iteration, $line, $now);
-        } elseif ($elapsed >= $policy['overdue_minutes']) {
-            $emitted += $this->emitOverdue($booking, $approver, $iteration, $line, $since);
-        } else {
-            $emitted += $this->emitWarning($booking, $approver, $iteration, $line, $since);
         }
 
         return $emitted;
