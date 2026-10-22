@@ -416,6 +416,8 @@ Route::middleware('throttle:api')->group(function () {
                     ->middleware('throttle:room-booking-mutation');
                 Route::post('/{occurrence}/return/reject', [\App\Http\Controllers\Tendik\RoomBookingOccurrenceController::class, 'reject'])
                     ->middleware('throttle:room-booking-mutation');
+                Route::post('/{occurrence}/return/force-close', [\App\Http\Controllers\Tendik\RoomBookingOccurrenceController::class, 'forceClose'])
+                    ->middleware('throttle:room-booking-mutation');
             });
 
             Route::prefix('peminjaman-ruangan/cancellation-requests')->group(function () {

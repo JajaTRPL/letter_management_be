@@ -37,7 +37,7 @@ class RoomBookingConflictAvailabilityServiceTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_approved_overlap_is_conflict_and_adjacent_booking_is_allowed(): void
+    public function test_approved_overlap_and_one_hour_turnover_are_conflicts_but_later_booking_is_allowed(): void
     {
         $room = $this->classroom();
         $this->roomBooking(
@@ -52,10 +52,27 @@ class RoomBookingConflictAvailabilityServiceTest extends TestCase
             Carbon::parse('2026-06-20 11:00:00'),
             Carbon::parse('2026-06-20 13:00:00'),
         ));
-        $this->assertFalse($this->conflicts->hasConflict(
+        // Starting right when the approved booking ends (or within the next
+        // hour) is blocked: the previous key is only due back an hour later.
+        $this->assertTrue($this->conflicts->hasConflict(
             $room->id,
             Carbon::parse('2026-06-20 12:00:00'),
             Carbon::parse('2026-06-20 14:00:00'),
+        ));
+        $this->assertTrue($this->conflicts->hasConflict(
+            $room->id,
+            Carbon::parse('2026-06-20 08:00:00'),
+            Carbon::parse('2026-06-20 09:30:00'),
+        ));
+        $this->assertFalse($this->conflicts->hasConflict(
+            $room->id,
+            Carbon::parse('2026-06-20 13:00:00'),
+            Carbon::parse('2026-06-20 15:00:00'),
+        ));
+        $this->assertFalse($this->conflicts->hasConflict(
+            $room->id,
+            Carbon::parse('2026-06-20 07:00:00'),
+            Carbon::parse('2026-06-20 09:00:00'),
         ));
     }
 

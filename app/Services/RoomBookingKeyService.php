@@ -13,6 +13,7 @@ class RoomBookingKeyService
         private RoomBookingIdempotencyService $idempotency,
         private RoomBookingOccurrenceAuthorizationService $authorization,
         private RoomBookingOccurrenceEventService $events,
+        private RoomBookingOccurrenceService $occurrences,
     ) {}
 
     public function issue(
@@ -60,6 +61,18 @@ class RoomBookingKeyService
                     throw new RoomBookingDomainException(
                         RoomBookingDomainException::INVALID_TRANSITION,
                         'Kunci untuk penggunaan ini sudah diserahkan.',
+                    );
+                }
+                $previous = $this->occurrences->outstandingKeyBefore($locked);
+                if ($previous) {
+                    $contact = $this->occurrences->applicantContact($previous);
+                    throw new RoomBookingDomainException(
+                        RoomBookingDomainException::PREVIOUS_KEY_NOT_RETURNED,
+                        'Kunci ruangan ini belum dikembalikan oleh peminjam sebelumnya ('
+                            .($contact['name'] ?? 'peminjam')
+                            .($contact['phone'] ? ', '.$contact['phone'] : '')
+                            .'). Hubungi peminjam tersebut, lalu selesaikan pengembaliannya (Terima atau Paksa Selesai) sebelum menyerahkan kunci.',
+                        ['previous_occurrence_ref' => $previous->public_id],
                     );
                 }
 

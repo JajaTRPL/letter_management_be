@@ -11,6 +11,7 @@ use App\Models\RoomBookingWorkflowEvent;
 use App\Models\User;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Throwable;
@@ -18,6 +19,21 @@ use Throwable;
 class RoomBookingReturnService
 {
     public const MAX_BYTES = 5 * 1024 * 1024;
+
+    private static ?bool $followUpColumnsReady = null;
+
+    /**
+     * True once the 2026_10_22 migration (requester_note, is_forced, nullable
+     * evidence) has run. Lets this code deploy before the migration without
+     * breaking return submission; force-close stays unavailable until then.
+     */
+    public static function followUpColumnsReady(): bool
+    {
+        return self::$followUpColumnsReady ??= Schema::hasColumns(
+            'room_booking_return_requests',
+            ['requester_note', 'is_forced'],
+        );
+    }
 
     public function __construct(
         private RoomBookingIdempotencyService $idempotency,
@@ -32,10 +48,12 @@ class RoomBookingReturnService
         int $expectedOccurrenceVersion,
         string $idempotencyKey,
         callable $responseBody,
+        ?string $note = null,
     ): RoomBookingIdempotencyOutcome {
         $occurrence->loadMissing([
             'booking.room', 'activeReturnRequest', 'acceptedReturnRequest',
         ]);
+        $note = trim((string) $note);
         if ((int) $occurrence->booking->requester_id !== (int) $actor->id) {
             throw new RoomBookingDomainException(
                 RoomBookingDomainException::UNAUTHORIZED_ACTION,
@@ -64,6 +82,7 @@ class RoomBookingReturnService
                     'image_sha256' => $image['checksum'],
                     'image_size' => strlen($image['bytes']),
                     'image_mime' => $image['mime'],
+                    'note' => $note,
                 ],
                 operation: function () use (
                     $occurrence,
@@ -71,6 +90,7 @@ class RoomBookingReturnService
                     $expectedOccurrenceVersion,
                     $image,
                     $eventType,
+                    $note,
                     &$attemptPath,
                 ): array {
                     $locked = RoomBookingOccurrence::query()
@@ -96,6 +116,9 @@ class RoomBookingReturnService
                     }
 
                     $return = new RoomBookingReturnRequest;
+                    if (self::followUpColumnsReady()) {
+                        $return->forceFill(['requester_note' => $note !== '' ? $note : null]);
+                    }
                     $return->forceFill([
                         'room_booking_occurrence_id' => $locked->id,
                         'requester_id' => $actor->id,
@@ -322,6 +345,110 @@ class RoomBookingReturnService
                 }
 
                 return $this->mutationResult($locked, 'Keputusan pengembalian berhasil disimpan.');
+            },
+            responseBody: $responseBody,
+        );
+    }
+
+    /**
+     * "Paksa Selesai": close a return by hand after the evidence was rejected
+     * or the return is past due. The actor has contacted the applicant and
+     * confirms the key is physically back; the note (required) explains it and
+     * is kept in the occurrence history. Releases the room for the next usage.
+     */
+    public function forceClose(
+        RoomBookingOccurrence $occurrence,
+        User $actor,
+        int $expectedOccurrenceVersion,
+        ?string $note,
+        ?string $receivedAt,
+        string $idempotencyKey,
+        callable $responseBody,
+    ): RoomBookingIdempotencyOutcome {
+        $occurrence->loadMissing('booking.room');
+        if (! $this->authorization->canIssueOrReceive($actor, $occurrence)) abort(404);
+        if (! self::followUpColumnsReady()) {
+            throw new RoomBookingDomainException(
+                RoomBookingDomainException::FORCE_CLOSE_NOT_ALLOWED,
+                'Fitur paksa selesai belum aktif: migrasi database belum dijalankan di server.',
+            );
+        }
+        $note = trim((string) $note);
+        if ($note === '') {
+            throw new RoomBookingDomainException(
+                RoomBookingDomainException::NOTE_REQUIRED,
+                'Catatan penyelesaian wajib diisi (misalnya: peminjam sudah dihubungi dan kunci telah diterima).',
+            );
+        }
+        $now = now(config('app.timezone'));
+        $keyReceivedAt = $receivedAt ? Carbon::parse($receivedAt)->setTimezone(config('app.timezone')) : $now;
+        if ($keyReceivedAt->greaterThan($now)) {
+            throw new RoomBookingDomainException(
+                RoomBookingDomainException::INVALID_TIME_RANGE,
+                'Waktu kunci diterima tidak boleh berada di masa depan.',
+            );
+        }
+
+        return $this->idempotency->execute(
+            actor: $actor,
+            booking: $occurrence->booking,
+            action: RoomBookingWorkflowEvent::EVENT_RETURN_FORCE_CLOSED,
+            subjectKey: 'occurrence:'.$occurrence->public_id,
+            idempotencyKey: $idempotencyKey,
+            canonicalPayload: [
+                'occurrence_ref' => $occurrence->public_id,
+                'occurrence_version' => $expectedOccurrenceVersion,
+                'note' => $note,
+                'key_received_at' => $keyReceivedAt->toIso8601String(),
+            ],
+            operation: function () use ($occurrence, $actor, $expectedOccurrenceVersion, $note, $keyReceivedAt, $now): array {
+                $locked = RoomBookingOccurrence::query()
+                    ->with(['booking.room', 'activeReturnRequest', 'acceptedReturnRequest', 'latestReturnRequest'])
+                    ->lockForUpdate()->findOrFail($occurrence->id);
+                $this->assertOccurrenceVersion($locked, $expectedOccurrenceVersion);
+                $closable = $locked->booking->status === RoomBookingStatus::Approved
+                    && $locked->key_issued_at !== null
+                    && $locked->acceptedReturnRequest === null
+                    && $locked->activeReturnRequest === null
+                    && (
+                        $locked->latestReturnRequest?->status === RoomBookingReturnStatus::Rejected
+                        || $now->greaterThan($locked->return_due_at)
+                    );
+                if (! $closable) {
+                    throw new RoomBookingDomainException(
+                        RoomBookingDomainException::FORCE_CLOSE_NOT_ALLOWED,
+                        'Paksa selesai hanya untuk pengembalian yang ditolak atau melewati batas waktu, dan tidak sedang menunggu verifikasi.',
+                    );
+                }
+
+                $return = new RoomBookingReturnRequest;
+                $return->forceFill([
+                    'room_booking_occurrence_id' => $locked->id,
+                    'requester_id' => $locked->booking->requester_id,
+                    'supersedes_id' => $locked->latestReturnRequest?->id,
+                    'status' => RoomBookingReturnStatus::Accepted->value,
+                    'is_forced' => true,
+                    'active_pending_guard' => null,
+                    'submitted_at' => $now,
+                    'decided_by' => $actor->id,
+                    'decided_by_name' => $actor->name,
+                    'decided_by_role' => $actor->tendik_role,
+                    'decision_note' => $note,
+                    'key_received_at' => $keyReceivedAt,
+                    'verified_at' => $now,
+                ])->save();
+                $locked->forceFill(['version' => $locked->version + 1])->save();
+                $this->events->record(
+                    $locked,
+                    RoomBookingWorkflowEvent::EVENT_RETURN_FORCE_CLOSED,
+                    $actor,
+                    'Pengembalian kunci diselesaikan paksa oleh petugas: '.$note,
+                    ['key_received_at' => $keyReceivedAt->toIso8601String()],
+                    (int) $locked->booking->requester_id,
+                    'mahasiswa',
+                );
+
+                return $this->mutationResult($locked, 'Pengembalian kunci berhasil diselesaikan paksa.');
             },
             responseBody: $responseBody,
         );

@@ -34,7 +34,7 @@ use Illuminate\Support\Collection;
 final class RoomBookingTaskFeedService
 {
     /** Operational states that are genuinely someone's move right now. */
-    private const ACTIONABLE_OPERATIONAL = ['scheduled', 'awaiting_verification', 'overdue'];
+    private const ACTIONABLE_OPERATIONAL = ['scheduled', 'awaiting_verification', 'overdue', 'return_rejected'];
 
     public const KIND_APPROVAL = 'approval';
 
@@ -151,10 +151,11 @@ final class RoomBookingTaskFeedService
 
             $canIssueKey = $this->occurrences->canIssueKey($user, $occurrence);
             $canVerify = $this->occurrences->canVerifyReturn($user, $occurrence);
-            $kind = $canVerify || $status === 'awaiting_verification'
+            $canForceClose = $this->occurrences->canForceClose($user, $occurrence, $now);
+            $kind = $canVerify || $canForceClose || in_array($status, ['awaiting_verification', 'overdue', 'return_rejected'], true)
                 ? self::KIND_RETURN_VERIFICATION
                 : self::KIND_KEY_HANDOVER;
-            $canAct = $canIssueKey || $canVerify;
+            $canAct = $canIssueKey || $canVerify || $canForceClose;
 
             $row = [
                 'kind' => $kind,
@@ -166,7 +167,7 @@ final class RoomBookingTaskFeedService
                 'room_label' => $this->roomLabel($occurrence->booking),
                 'schedule_label' => $this->scheduleLabel($occurrence->start_at, $occurrence->end_at),
                 'status_label' => $this->operationalLabel($status),
-                'status_tone' => $status === 'overdue' ? 'danger' : ($status === 'awaiting_verification' ? 'warning' : 'neutral'),
+                'status_tone' => in_array($status, ['overdue', 'return_rejected'], true) ? 'danger' : ($status === 'awaiting_verification' ? 'warning' : 'neutral'),
                 'waiting_label' => $this->waitingLabel($occurrence->start_at, $now),
                 'is_overdue' => $status === 'overdue',
                 'can_act' => $canAct,
@@ -248,6 +249,7 @@ final class RoomBookingTaskFeedService
             RoomBookingWorkflowEvent::EVENT_RETURN_ACCEPTED,
             RoomBookingWorkflowEvent::EVENT_RETURN_REJECTED,
             RoomBookingWorkflowEvent::EVENT_RETURN_REVISION_REQUESTED,
+            RoomBookingWorkflowEvent::EVENT_RETURN_FORCE_CLOSED,
         ];
     }
 
@@ -260,6 +262,7 @@ final class RoomBookingTaskFeedService
             RoomBookingWorkflowEvent::EVENT_KEY_ISSUED => 'Kunci diserahkan',
             RoomBookingWorkflowEvent::EVENT_RETURN_ACCEPTED => 'Pengembalian diterima',
             RoomBookingWorkflowEvent::EVENT_RETURN_REJECTED => 'Pengembalian ditolak',
+            RoomBookingWorkflowEvent::EVENT_RETURN_FORCE_CLOSED => 'Diselesaikan paksa',
             RoomBookingWorkflowEvent::EVENT_RETURN_REVISION_REQUESTED => 'Bukti diminta diperbaiki',
             default => 'Tindakan',
         };
@@ -289,6 +292,8 @@ final class RoomBookingTaskFeedService
             'returned_on_time' => 'Selesai tepat waktu',
             'returned_late' => 'Selesai terlambat',
             'overdue' => 'Melewati batas pengembalian',
+            'return_rejected' => 'Bukti ditolak — hubungi peminjam',
+            'force_closed' => 'Diselesaikan paksa',
             default => 'Belum berlaku',
         };
     }

@@ -7,6 +7,7 @@ use App\Enums\NotificationPriority;
 use App\Enums\RoomBookingStatus;
 use App\Enums\RoomType;
 use App\Models\RoomBookingOccurrence;
+use App\Models\RoomBookingRequest;
 use App\Models\User;
 use Illuminate\Support\Carbon;
 
@@ -52,6 +53,32 @@ class RoomBookingReminderScanner
         }
 
         return ['emitted' => $emitted, 'scanned' => $scanned];
+    }
+
+    /**
+     * Project reminders for one booking right away (e.g. the moment it is
+     * approved), so a booking approved inside a reminder window — a same-day
+     * booking approved minutes before its start — does not wait for the next
+     * scheduled scan. Dedup keys are shared with scan(), so nothing doubles.
+     */
+    public function scanBooking(RoomBookingRequest $booking, ?Carbon $now = null): int
+    {
+        $now = ($now ?? Carbon::now(config('app.timezone')))->copy();
+        $reminders = config('notifications.reminders');
+        $catchUp = (int) $reminders['catch_up_window_minutes'];
+        $emitted = 0;
+
+        $occurrences = $booking->occurrences()
+            ->with(['booking.room.owningLaboratory', 'booking.requester', 'activeReturnRequest', 'acceptedReturnRequest'])
+            ->where('end_at', '>=', $now)
+            ->orderBy('start_at')
+            ->get();
+
+        foreach ($occurrences as $occurrence) {
+            $emitted += $this->project($occurrence, $now, $reminders, $catchUp);
+        }
+
+        return $emitted;
     }
 
     /** @param array<string,int> $r */
@@ -100,12 +127,15 @@ class RoomBookingReminderScanner
                 $this->opsRoute($room), 'Serahkan Kunci', $start);
         }
 
-        // Phase usage ending soon (applicant).
-        if ($applicant && $this->inWindow($now, $end->copy()->subMinutes($r['ending_soon_minutes']), $end, $catchUp)) {
+        // Phase usage ending soon (applicant). Never before usage has started:
+        // for a booking shorter than the lead time the window opens at start.
+        $endingSoonFrom = $end->copy()->subMinutes($r['ending_soon_minutes'])->max($start);
+        if ($applicant && $this->inWindow($now, $endingSoonFrom, $end, $catchUp)) {
             $emitted += $this->emit($applicant, $occurrence, 'ending_soon_reminder',
                 NotificationCategory::Reminder, NotificationPriority::Normal,
                 'Penggunaan ruangan akan berakhir',
-                $this->line($occurrence).' akan berakhir dalam 30 menit.',
+                $this->line($occurrence).' akan berakhir pukul '
+                    .$end->copy()->setTimezone(config('app.timezone'))->format('H.i').' WIB.',
                 "ending-soon:{$occurrence->public_id}",
                 NotificationActionRoute::MAHASISWA_BOOKING_OCCURRENCE, 'Lihat Jadwal', $end);
         }
@@ -136,7 +166,8 @@ class RoomBookingReminderScanner
                 $emitted += $this->emit($owner, $occurrence, 'return_overdue_reminder',
                     NotificationCategory::ActionRequired, NotificationPriority::High,
                     'Pengembalian kunci terlambat',
-                    $this->line($occurrence).' belum dikembalikan setelah batas waktu.',
+                    $this->line($occurrence).' belum dikembalikan setelah batas waktu. Hubungi peminjam: '
+                        .$this->applicantContactLine($occurrence).'.',
                     "overdue-owner:{$occurrence->public_id}",
                     $this->opsRoute($room), 'Tindak Lanjuti', $returnDue);
             }
@@ -214,6 +245,15 @@ class RoomBookingReminderScanner
         return $room->type === RoomType::Classroom
             ? NotificationActionRoute::SARPRAS_BOOKING_REVIEW
             : NotificationActionRoute::KALAB_BOOKING_REVIEW;
+    }
+
+    private function applicantContactLine(RoomBookingOccurrence $occurrence): string
+    {
+        $occurrence->loadMissing('booking.requester.mahasiswaProfile');
+        $requester = $occurrence->booking->requester;
+        $phone = $requester?->mahasiswaProfile?->no_hp;
+
+        return trim(($requester?->name ?? 'peminjam').($phone ? ", {$phone}" : ''));
     }
 
     private function line(RoomBookingOccurrence $occurrence): string

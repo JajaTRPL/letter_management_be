@@ -45,6 +45,12 @@ class RoomBookingOccurrence extends Model
             ->where('status', 'accepted')->latestOfMany('verified_at');
     }
 
+    /** The most recent return attempt, whatever its outcome (e.g. rejected). */
+    public function latestReturnRequest()
+    {
+        return $this->hasOne(RoomBookingReturnRequest::class)->latestOfMany('id');
+    }
+
     /**
      * Operational eligibility: an occurrence is only actionable while its parent
      * booking is stored-status `approved`. Occurrences exist for every booking —

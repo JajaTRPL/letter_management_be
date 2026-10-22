@@ -32,6 +32,7 @@ class NotificationProjector
     public function __construct(
         private NotificationWriter $writer,
         private NotificationRecipientResolver $recipients,
+        private ?RoomBookingReminderScanner $reminders = null,
     ) {}
 
     /**
@@ -83,6 +84,7 @@ class NotificationProjector
                 Ev::EVENT_RETURN_ACCEPTED => $this->onReturnAccepted($event),
                 Ev::EVENT_RETURN_REJECTED => $this->onReturnRejected($event),
                 Ev::EVENT_RETURN_WITHDRAWN => $this->onReturnWithdrawn($event),
+                Ev::EVENT_RETURN_FORCE_CLOSED => $this->onReturnForceClosed($event),
                 Ev::EVENT_KEY_ISSUED => $this->onKeyIssued($event),
                 // review_started, occurrence_created, usage_*, return_due/overdue
                 // (reminder phases), key_received_time_adjusted, legacy import →
@@ -182,6 +184,10 @@ class NotificationProjector
             Ev::EVENT_BOOKING_SUBMITTED, Ev::EVENT_BOOKING_RESUBMITTED,
             ...RoomBookingReviewSlaScanner::EVENT_TYPES,
         ]);
+        // A same-day booking can be approved inside its reminder windows (e.g.
+        // key handover is due within the hour); emit those now instead of
+        // waiting for the next scheduled scan.
+        ($this->reminders ?? app(RoomBookingReminderScanner::class))->scanBooking($booking);
         $applicant = $this->recipients->bookingApplicant($booking);
         if (! $applicant) {
             return;
@@ -468,6 +474,37 @@ class NotificationProjector
             title: 'Bukti pengembalian ditolak',
             body: $this->occurrenceLine($occurrence).' — bukti pengembalian ditolak.',
             dedupKey: "return-rejected:{$occurrence->public_id}:{$ref}",
+            subjectType: 'occurrence',
+            subjectPublicId: $occurrence->public_id,
+            actionRouteKey: NotificationActionRoute::MAHASISWA_BOOKING_OCCURRENCE,
+            actionLabel: 'Lihat Detail',
+            occurredAt: $event->occurred_at,
+        ));
+    }
+
+    private function onReturnForceClosed(Ev $event): void
+    {
+        $occurrence = $this->occurrence($event);
+        if (! $occurrence) {
+            return;
+        }
+        // Closed by hand: retire every open return action and reminder.
+        $this->writer->resolveBySubject('occurrence', $occurrence->public_id, [
+            Ev::EVENT_RETURN_SUBMITTED, Ev::EVENT_RETURN_REVISION_REQUESTED,
+            'return_due_reminder', 'return_overdue_reminder', 'return_overdue_escalation',
+        ]);
+        $applicant = $this->recipients->bookingApplicant($occurrence->booking);
+        if (! $applicant) {
+            return;
+        }
+        $this->writer->write(new NotificationIntent(
+            recipient: $applicant,
+            eventType: $event->event_type,
+            category: NotificationCategory::Update,
+            priority: NotificationPriority::Normal,
+            title: 'Pengembalian kunci diselesaikan petugas',
+            body: 'Pengembalian kunci untuk '.$this->occurrenceLine($occurrence).' telah diselesaikan oleh petugas. Lihat catatan di riwayat peminjaman.',
+            dedupKey: "return-force-closed:{$occurrence->public_id}",
             subjectType: 'occurrence',
             subjectPublicId: $occurrence->public_id,
             actionRouteKey: NotificationActionRoute::MAHASISWA_BOOKING_OCCURRENCE,

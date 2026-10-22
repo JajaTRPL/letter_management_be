@@ -107,7 +107,7 @@ class RoomBookingMahasiswaApiTest extends RoomBookingApiTestCase
             ->assertJsonStructure(['data' => ['conflicts']]);
     }
 
-    public function test_create_allows_adjacent_approved_booking(): void
+    public function test_create_requires_one_hour_after_an_approved_booking(): void
     {
         $room = $this->classroom();
         $this->roomBooking(
@@ -116,11 +116,22 @@ class RoomBookingMahasiswaApiTest extends RoomBookingApiTestCase
         );
         $this->actingAsUser($this->student());
 
+        // Right after the approved 10:00–12:00 booking: inside the key turnover hour.
         $this->post(
             $this->mahasiswaUrl('/requests'),
             $this->validBookingPayloadWithPdf($room, [
                 'start_at' => '2026-06-20T12:00:00+07:00',
                 'end_at' => '2026-06-20T13:00:00+07:00',
+                'idempotency_key' => 'turnover-too-early',
+            ]),
+        )->assertConflict()->assertJsonPath('code', 'booking_conflict');
+
+        $this->post(
+            $this->mahasiswaUrl('/requests'),
+            $this->validBookingPayloadWithPdf($room, [
+                'start_at' => '2026-06-20T13:00:00+07:00',
+                'end_at' => '2026-06-20T14:00:00+07:00',
+                'idempotency_key' => 'turnover-one-hour-later',
             ]),
         )->assertCreated();
     }

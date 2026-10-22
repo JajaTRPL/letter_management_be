@@ -33,6 +33,7 @@ class RoomBookingOccurrenceController extends Controller
                 $request->integer('expected_occurrence_version'),
                 $request->validated('idempotency_key'),
                 fn (array $result) => $this->roomBookingMutationResponseBody($result),
+                $request->validated('note'),
             );
 
             return $this->roomBookingOutcomeResponse($outcome);

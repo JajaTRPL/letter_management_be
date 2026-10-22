@@ -260,7 +260,7 @@ class RoomBookingController extends Controller
 
         throw new RoomBookingDomainException(
             RoomBookingDomainException::BOOKING_CONFLICT,
-            'Ruangan telah memiliki peminjaman disetujui pada waktu yang bertabrakan.',
+            'Ruangan telah memiliki peminjaman disetujui pada waktu yang bertabrakan atau kurang dari 1 jam sebelum/sesudahnya (jeda pengembalian kunci).',
             [
                 'conflicts' => $this->conflictService->conflictingSummary(
                     (int) $booking->room_id,

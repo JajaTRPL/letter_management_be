@@ -140,6 +140,7 @@ class RoomBookingOccurrenceService
         if ($booking->status !== RoomBookingStatus::Approved) return 'not_actionable';
 
         $accepted = $occurrence->acceptedReturnRequest;
+        if ($accepted?->is_forced) return 'force_closed';
         if ($accepted?->key_received_at) {
             return $accepted->key_received_at->lessThanOrEqualTo($occurrence->return_due_at)
                 ? 'returned_on_time'
@@ -149,6 +150,9 @@ class RoomBookingOccurrenceService
         $active = $occurrence->activeReturnRequest;
         if ($active?->status === RoomBookingReturnStatus::RevisionRequested) return 'revision_required';
         if ($active?->status === RoomBookingReturnStatus::Pending) return 'awaiting_verification';
+        // Evidence was judged invalid: the key is still out, Sarpras/Laboran
+        // contacts the applicant and force-closes once it is physically back.
+        if ($occurrence->latestReturnRequest?->status === RoomBookingReturnStatus::Rejected) return 'return_rejected';
         if ($now->greaterThan($occurrence->return_due_at)) return 'overdue';
         if ($occurrence->key_issued_at) {
             if ($now->lessThan($occurrence->start_at)) return 'key_issued';
@@ -165,6 +169,7 @@ class RoomBookingOccurrenceService
             'booking.room.owningLaboratory:id,code,name',
             'activeReturnRequest',
             'acceptedReturnRequest',
+            'latestReturnRequest',
             'returnRequests',
         ]);
         $accepted = $occurrence->acceptedReturnRequest;
@@ -233,7 +238,65 @@ class RoomBookingOccurrenceService
             && $this->isOperationallyActionable($occurrence)
             && $occurrence->key_issued_at === null
             && $occurrence->acceptedReturnRequest === null
+            && $this->authorization->canIssueOrReceive($actor, $occurrence)
+            && $this->outstandingKeyBefore($occurrence) === null;
+    }
+
+    /**
+     * An earlier usage of the same room whose key was handed out and never
+     * accepted back (returned or force-closed). While one exists the room's key
+     * is physically elsewhere, so the next usage cannot receive it.
+     */
+    public function outstandingKeyBefore(RoomBookingOccurrence $occurrence): ?RoomBookingOccurrence
+    {
+        $occurrence->loadMissing('booking');
+
+        return RoomBookingOccurrence::query()
+            ->with(['booking.room:id,code,name,type', 'booking.requester:id,name', 'booking.requester.mahasiswaProfile:id,user_id,no_hp'])
+            ->whereKeyNot($occurrence->id)
+            ->whereNotNull('key_issued_at')
+            ->where('start_at', '<', $occurrence->start_at)
+            ->whereHas('booking', fn ($booking) => $booking
+                ->where('room_id', $occurrence->booking->room_id)
+                ->where('status', RoomBookingStatus::Approved->value))
+            ->whereDoesntHave('returnRequests', fn ($return) => $return
+                ->where('status', RoomBookingReturnStatus::Accepted->value))
+            ->orderByDesc('end_at')
+            ->first();
+    }
+
+    /**
+     * "Paksa Selesai": the key is out, no evidence is waiting for a decision,
+     * and the return either failed verification or is past its due time. The
+     * actor has contacted the applicant and confirms the key is back.
+     */
+    public function canForceClose(?User $actor, RoomBookingOccurrence $occurrence, ?Carbon $now = null): bool
+    {
+        $now ??= now(config('app.timezone'));
+
+        return $actor !== null
+            && RoomBookingReturnService::followUpColumnsReady()
+            && $this->isOperationallyActionable($occurrence)
+            && $occurrence->key_issued_at !== null
+            && $occurrence->acceptedReturnRequest === null
+            && $occurrence->activeReturnRequest === null
+            && (
+                $occurrence->latestReturnRequest?->status === RoomBookingReturnStatus::Rejected
+                || $now->greaterThan($occurrence->return_due_at)
+            )
             && $this->authorization->canIssueOrReceive($actor, $occurrence);
+    }
+
+    /** @return array{name: ?string, phone: ?string} Applicant contact for staff follow-up. */
+    public function applicantContact(RoomBookingOccurrence $occurrence): array
+    {
+        $occurrence->loadMissing('booking.requester.mahasiswaProfile');
+        $requester = $occurrence->booking?->requester;
+
+        return [
+            'name' => $requester?->name,
+            'phone' => $requester?->mahasiswaProfile?->no_hp ?: null,
+        ];
     }
 
     /** Verification is only for a return that is actually awaiting a decision. */
@@ -278,16 +341,19 @@ class RoomBookingOccurrenceService
             'status' => $request->status->value,
             'version' => (int) $request->version,
             'submitted_at' => $request->submitted_at->toIso8601String(),
+            'is_forced' => (bool) $request->is_forced,
+            'requester_note' => $request->requester_note,
             'decision_note' => $request->decision_note,
             'key_received_at' => $request->key_received_at?->toIso8601String(),
             'verified_at' => $request->verified_at?->toIso8601String(),
-            'evidence' => [
+            // A force-closed return carries no photo.
+            'evidence' => $request->evidence_path ? [
                 'original_name' => $request->evidence_original_name,
                 'mime' => $request->evidence_mime,
                 'size_bytes' => (int) $request->evidence_size_bytes,
                 'preview_url' => "/api/peminjaman-ruangan/returns/{$request->public_id}/evidence/preview",
                 'download_url' => "/api/peminjaman-ruangan/returns/{$request->public_id}/evidence/download",
-            ],
+            ] : null,
         ];
         if ($staff) {
             $payload['verified_by'] = $request->decided_by ? [

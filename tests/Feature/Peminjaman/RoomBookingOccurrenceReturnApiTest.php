@@ -26,7 +26,7 @@ class RoomBookingOccurrenceReturnApiTest extends RoomBookingApiTestCase
             'idempotency_key' => 'c7r-single-occurrence',
         ]))->assertCreated();
         $this->assertCount(1, $single->json('data.occurrences'));
-        $this->assertSame('2026-06-20T12:30:00+07:00', $single->json('data.occurrences.0.return_due_at'));
+        $this->assertSame('2026-06-20T13:00:00+07:00', $single->json('data.occurrences.0.return_due_at'));
 
         $multi = $this->post($this->mahasiswaUrl('/requests'), $this->validBookingPayloadWithPdf($room, [
             'idempotency_key' => 'c7r-multi-occurrence',
@@ -251,7 +251,7 @@ class RoomBookingOccurrenceReturnApiTest extends RoomBookingApiTestCase
         $student = $this->student();
         [, $occurrence] = $this->approvedOccurrence($this->classroom(), $student);
         $this->issueKey($occurrence);
-        Carbon::setTestNow(Carbon::parse('2026-06-20 13:00:00', config('app.timezone')));
+        Carbon::setTestNow(Carbon::parse('2026-06-20 13:30:00', config('app.timezone')));
         $this->actingAsUser($student);
         $detail = $this->getJson($this->mahasiswaUrl("/requests/{$occurrence->booking->id}"))->assertOk();
         $this->assertSame('overdue', $detail->json('data.occurrences.0.operational_status'));
@@ -261,7 +261,7 @@ class RoomBookingOccurrenceReturnApiTest extends RoomBookingApiTestCase
         $accepted = $this->postJson($this->decisionUrl($occurrence, 'accept'), [
             'expected_occurrence_version' => 3,
             'expected_return_version' => $returnVersion,
-            'key_received_at' => '2026-06-20T12:45:00+07:00',
+            'key_received_at' => '2026-06-20T13:15:00+07:00',
             'received_time_change_reason' => 'Berdasarkan log penerimaan fisik.',
             'idempotency_key' => 'c7r-late-accept',
         ])->assertOk();

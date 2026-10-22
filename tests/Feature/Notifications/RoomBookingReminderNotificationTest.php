@@ -102,7 +102,7 @@ class RoomBookingReminderNotificationTest extends RoomBookingApiTestCase
         $occurrence->forceFill(['key_issued_at' => Carbon::parse('2026-06-20 09:30:00', config('app.timezone'))])->save();
 
         // Past the return-due grace, still no accepted return.
-        $now = Carbon::parse('2026-06-20 13:00:00', config('app.timezone'));
+        $now = Carbon::parse('2026-06-20 13:30:00', config('app.timezone'));
         $this->scanner->scan($now);
 
         $this->assertDatabaseHas('app_notifications', [
@@ -171,6 +171,50 @@ class RoomBookingReminderNotificationTest extends RoomBookingApiTestCase
         Cache::forget('notifications:reminders:last_run_at');
         $this->artisan('notifications:room-booking-reminders')->assertSuccessful();
         $this->assertNotNull(Cache::get('notifications:reminders:last_run_at'));
+    }
+
+    public function test_same_day_approval_sends_key_handover_reminder_immediately(): void
+    {
+        // Test clock is 2026-06-18 09:00; the booking starts in 30 minutes.
+        $sarpras = $this->reviewerUser('sarpras');
+        $booking = $this->roomBooking($this->classroom(), $this->student(), RoomBookingStatus::Submitted,
+            '2026-06-18 09:30:00', '2026-06-18 11:00:00');
+        $occurrence = app(RoomBookingOccurrenceService::class)->ensureLegacyOccurrence($booking);
+        $this->actingAsUser($sarpras);
+
+        $this->patchJson($this->reviewerUrl("/{$booking->id}/approve"))->assertOk();
+
+        // No scheduled scan has run: the reminder comes from the approval itself.
+        $this->assertDatabaseHas('app_notifications', [
+            'recipient_user_id' => $sarpras->id,
+            'dedup_key' => "key-handover:{$occurrence->public_id}",
+        ]);
+    }
+
+    public function test_short_booking_ending_soon_waits_for_start_and_names_the_end_time(): void
+    {
+        $student = $this->student();
+        $occurrence = $this->occurrence($this->classroom(), $student, '2026-06-20 10:00:00', '2026-06-20 10:20:00');
+
+        // 10 minutes before a 20-minute booking starts: still inside "end − 30
+        // minutes", but usage has not begun, so nothing is sent yet.
+        $this->scanner->scan(Carbon::parse('2026-06-20 09:50:00', config('app.timezone')));
+        $this->assertSame(0, AppNotification::where('dedup_key', "ending-soon:{$occurrence->public_id}")->count());
+
+        $this->scanner->scan(Carbon::parse('2026-06-20 10:00:00', config('app.timezone')));
+        $notification = AppNotification::where('dedup_key', "ending-soon:{$occurrence->public_id}")->first();
+        $this->assertNotNull($notification);
+        $this->assertStringContainsString('pukul 10.20 WIB', $notification->body);
+    }
+
+    public function test_reminder_scanner_is_scheduled_every_minute(): void
+    {
+        $event = collect(app(\Illuminate\Console\Scheduling\Schedule::class)->events())
+            ->first(fn ($e) => str_contains((string) $e->command, 'notifications:room-booking-reminders')
+                && ! str_contains((string) $e->command, '--purge'));
+
+        $this->assertNotNull($event);
+        $this->assertSame('* * * * *', $event->expression);
     }
 
     private function occurrence(

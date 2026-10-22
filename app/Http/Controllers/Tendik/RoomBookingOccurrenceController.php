@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Tendik;
 use App\Http\Controllers\Concerns\HandlesRoomBookingApi;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Peminjaman\DecideRoomBookingReturnRequest;
+use App\Http\Requests\Peminjaman\ForceCloseRoomBookingReturnRequest;
 use App\Http\Requests\Peminjaman\IssueRoomBookingKeyRequest;
 use App\Models\RoomBookingOccurrence;
 use App\Services\RoomBookingDomainException;
@@ -36,7 +37,8 @@ class RoomBookingOccurrenceController extends Controller
         $query = RoomBookingOccurrence::query()->with([
             'booking.room.owningLaboratory:id,code,name',
             'booking.requester:id,name',
-            'activeReturnRequest', 'acceptedReturnRequest', 'returnRequests',
+            'booking.requester.mahasiswaProfile:id,user_id,no_hp',
+            'activeReturnRequest', 'acceptedReturnRequest', 'latestReturnRequest', 'returnRequests',
         ])->orderBy('start_at');
         // Operational eligibility is a property of EVERY tab, not just the key
         // handover queue: occurrences of submitted/revision_requested/rejected/
@@ -50,22 +52,46 @@ class RoomBookingOccurrenceController extends Controller
             'today' => $query->whereDate('occurrence_date', $now->toDateString()),
             'key_handover' => $query->whereNull('key_issued_at'),
             'returns' => $query->whereHas('activeReturnRequest'),
-            'overdue' => $query->where('return_due_at', '<', $now)
+            // Needs follow-up: past due, or evidence rejected — either way the
+            // key is still out until accepted or force-closed.
+            'overdue' => $query->whereNotNull('key_issued_at')
+                ->where(fn ($q) => $q->where('return_due_at', '<', $now)
+                    ->orWhereHas('latestReturnRequest', fn ($r) => $r->where('status', 'rejected')))
                 ->whereDoesntHave('acceptedReturnRequest'),
             default => null,
         };
         $items = $query->limit(200)->get()->map(function (RoomBookingOccurrence $occurrence) use ($actor): array {
             $payload = $this->occurrences->payload($occurrence, staff: true);
+            $contact = $this->occurrences->applicantContact($occurrence);
             $payload['booking'] = [
                 'id' => (int) $occurrence->booking->id,
                 'activity_name' => $occurrence->booking->activity_name,
-                'applicant_name' => $occurrence->booking->requester?->name,
+                'applicant_name' => $contact['name'],
+                'applicant_phone' => $contact['phone'],
                 'room' => $this->roomPayload($occurrence->booking->room),
             ];
             $payload['capabilities']['can_issue_key'] = $this->occurrences
                 ->canIssueKey($actor, $occurrence);
             $payload['capabilities']['can_verify_return'] = $this->occurrences
                 ->canVerifyReturn($actor, $occurrence);
+            $payload['capabilities']['can_force_close'] = $this->occurrences
+                ->canForceClose($actor, $occurrence);
+            // The room's key is still with an earlier borrower: name who holds
+            // it so staff can call them before this handover.
+            $payload['key_blocked_by'] = null;
+            if ($occurrence->key_issued_at === null && $occurrence->acceptedReturnRequest === null) {
+                $previous = $this->occurrences->outstandingKeyBefore($occurrence);
+                if ($previous) {
+                    $previousContact = $this->occurrences->applicantContact($previous);
+                    $payload['key_blocked_by'] = [
+                        'occurrence_ref' => $previous->public_id,
+                        'applicant_name' => $previousContact['name'],
+                        'applicant_phone' => $previousContact['phone'],
+                        'activity_name' => $previous->booking->activity_name,
+                        'end_at' => $previous->end_at->toIso8601String(),
+                    ];
+                }
+            }
             // Who owns this step when the viewer does not. A Kepala Lab may read
             // their lab's occurrences but can never issue a key or verify a
             // return, so the UI must name the responsible party instead of
@@ -105,6 +131,19 @@ class RoomBookingOccurrenceController extends Controller
     public function reject(DecideRoomBookingReturnRequest $request, RoomBookingOccurrence $occurrence): JsonResponse
     {
         return $this->decision($request, $occurrence, 'reject');
+    }
+
+    public function forceClose(ForceCloseRoomBookingReturnRequest $request, RoomBookingOccurrence $occurrence): JsonResponse
+    {
+        return $this->mutationResponse($occurrence, fn () => $this->returns->forceClose(
+            $occurrence,
+            $request->user(),
+            $request->integer('expected_occurrence_version'),
+            $request->validated('note'),
+            $request->validated('key_received_at'),
+            $request->validated('idempotency_key'),
+            fn (array $result) => $this->roomBookingMutationResponseBody($result, includeRequester: true),
+        ));
     }
 
     private function decision(DecideRoomBookingReturnRequest $request, RoomBookingOccurrence $occurrence, string $decision): JsonResponse

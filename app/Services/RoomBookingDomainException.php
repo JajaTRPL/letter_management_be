@@ -65,6 +65,8 @@ class RoomBookingDomainException extends RuntimeException
     public const RETURN_ALREADY_ACCEPTED = 'return_already_accepted';
     public const STALE_OCCURRENCE_VERSION = 'stale_occurrence_version';
     public const STALE_RETURN_VERSION = 'stale_return_version';
+    public const PREVIOUS_KEY_NOT_RETURNED = 'previous_key_not_returned';
+    public const FORCE_CLOSE_NOT_ALLOWED = 'force_close_not_allowed';
 
     /**
      * @param  array<string, mixed>  $context

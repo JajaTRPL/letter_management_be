@@ -56,6 +56,8 @@ class RoomBookingWorkflowEvent extends Model
     public const EVENT_RETURN_OVERDUE = 'return_overdue';
     public const EVENT_KEY_RECEIVED_TIME_ADJUSTED = 'key_received_time_adjusted';
 
+    public const EVENT_RETURN_FORCE_CLOSED = 'return_force_closed';
+
     public const EVENT_TYPES = [
         self::EVENT_BOOKING_SUBMITTED,
         self::EVENT_REVISION_REQUESTED,
@@ -83,6 +85,7 @@ class RoomBookingWorkflowEvent extends Model
         self::EVENT_RETURN_WITHDRAWN,
         self::EVENT_RETURN_OVERDUE,
         self::EVENT_KEY_RECEIVED_TIME_ADJUSTED,
+        self::EVENT_RETURN_FORCE_CLOSED,
     ];
 
     protected $fillable = [

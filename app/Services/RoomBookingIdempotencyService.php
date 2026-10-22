@@ -621,16 +621,19 @@ class RoomBookingIdempotencyService
             'status' => 'str',
             'version' => 'int',
             'submitted_at' => 'str',
+            'is_forced' => 'bool',
+            'requester_note' => 'str?',
             'decision_note' => 'str?',
             'key_received_at' => 'str?',
             'verified_at' => 'str?',
-            'evidence' => ['@object' => [
+            // Null for a force-closed return (no photo).
+            'evidence' => ['@nullable' => ['@object' => [
                 'original_name' => 'str',
                 'mime' => 'str',
                 'size_bytes' => 'int',
                 'preview_url' => 'str',
                 'download_url' => 'str',
-            ]],
+            ]]],
         ];
         if (! $applicantProjection) {
             $returnFields['verified_by'] = ['@nullable' => ['@object' => [

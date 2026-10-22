@@ -28,13 +28,14 @@ if (config('letter_retention.scheduler.on_one_server') && config('cache.default'
     $event->onOneServer();
 }
 
-// C7N1 room-booking reminders: idempotent, safe to run every ten minutes. The
-// scanner only emits actions inside their live window, so a run after downtime
+// C7N1 room-booking reminders: idempotent, so it runs every minute — short or
+// same-day bookings have reminder windows of only a few minutes. The scanner
+// only emits actions inside their live window, so a run after downtime
 // catches up without flooding. Overlap-guarded; single-server where the cache
 // driver supports it. Daily purge of resolved/expired history is folded in at
 // a quiet hour via the --purge flag on the 00:05 run.
 $reminderEvent = Schedule::command('notifications:room-booking-reminders')
-    ->everyTenMinutes()
+    ->everyMinute()
     ->withoutOverlapping();
 
 $purgeEvent = Schedule::command('notifications:room-booking-reminders --purge')

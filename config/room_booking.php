@@ -7,6 +7,10 @@ return [
     'reason_max_length' => 2000,
     'decision_note_max_length' => 2000,
     // Provisional DTEDI department policy; confirm before production rollout.
-    'return_grace_minutes' => (int) env('ROOM_BOOKING_RETURN_GRACE_MINUTES', 30),
+    // Time after usage ends to hand the key back before it counts as late.
+    'return_grace_minutes' => (int) env('ROOM_BOOKING_RETURN_GRACE_MINUTES', 60),
+    // Minimum gap between two bookings of the same room, so the next borrower
+    // only starts once the previous key is due back.
+    'turnover_buffer_minutes' => (int) env('ROOM_BOOKING_TURNOVER_BUFFER_MINUTES', 60),
     'maximum_consecutive_days' => (int) env('ROOM_BOOKING_MAXIMUM_CONSECUTIVE_DAYS', 14),
 ];

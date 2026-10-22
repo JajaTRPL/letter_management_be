@@ -20,6 +20,7 @@ class SubmitRoomBookingReturnRequest extends FormRequest
                 'mimes:jpg,jpeg,png,webp',
                 'mimetypes:image/jpeg,image/png,image/webp',
             ],
+            'note' => ['nullable', 'string', 'max:2000'],
         ]);
     }
 }

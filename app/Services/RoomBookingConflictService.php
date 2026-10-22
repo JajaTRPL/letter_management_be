@@ -6,6 +6,7 @@ use App\Enums\RoomBookingStatus;
 use App\Models\RoomBookingRequest;
 use DateTimeInterface;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 
 class RoomBookingConflictService
@@ -24,6 +25,8 @@ class RoomBookingConflictService
         DateTimeInterface $endAt,
         ?int $ignoreBookingId = null,
     ): Builder {
+        [$startAt, $endAt] = $this->withTurnoverBuffer($startAt, $endAt);
+
         return RoomBookingRequest::query()
             ->where('room_id', $roomId)
             ->where('status', RoomBookingStatus::Approved->value)
@@ -41,6 +44,23 @@ class RoomBookingConflictService
                 $ignoreBookingId !== null,
                 fn (Builder $query) => $query->whereKeyNot($ignoreBookingId),
             );
+    }
+
+    /**
+     * Widen a slot by the room turnover buffer on both sides, so another
+     * booking of the same room must start at least that long after this one
+     * ends (and vice versa) — the previous key is due back by then.
+     *
+     * @return array{0: Carbon, 1: Carbon}
+     */
+    private function withTurnoverBuffer(DateTimeInterface $startAt, DateTimeInterface $endAt): array
+    {
+        $buffer = max(0, (int) config('room_booking.turnover_buffer_minutes', 60));
+
+        return [
+            Carbon::instance($startAt)->subMinutes($buffer),
+            Carbon::instance($endAt)->addMinutes($buffer),
+        ];
     }
 
     /** @param list<array{start_at:DateTimeInterface,end_at:DateTimeInterface}> $ranges */
@@ -183,6 +203,8 @@ class RoomBookingConflictService
         DateTimeInterface $endAt,
         ?int $ignoreBookingId = null,
     ): Builder {
+        [$startAt, $endAt] = $this->withTurnoverBuffer($startAt, $endAt);
+
         return RoomBookingRequest::query()
             ->where('room_id', $roomId)
             ->where('status', RoomBookingStatus::Submitted->value)
