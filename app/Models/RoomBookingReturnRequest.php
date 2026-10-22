@@ -3,11 +3,14 @@
 namespace App\Models;
 
 use App\Enums\RoomBookingReturnStatus;
+use App\Models\Concerns\ReadsWallClockTimestamps;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Str;
 
 class RoomBookingReturnRequest extends Model
 {
+    use ReadsWallClockTimestamps;
+
     protected $guarded = [
         'id', 'status', 'version', 'active_pending_guard', 'decided_by',
         'key_received_at', 'verified_at',

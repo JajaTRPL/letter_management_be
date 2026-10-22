@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\NotificationCategory;
 use App\Enums\NotificationPriority;
+use App\Models\Concerns\ReadsWallClockTimestamps;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Str;
@@ -17,6 +18,8 @@ use Illuminate\Support\Str;
  */
 class AppNotification extends Model
 {
+    use ReadsWallClockTimestamps;
+
     protected $fillable = [
         'public_id',
         'recipient_user_id',

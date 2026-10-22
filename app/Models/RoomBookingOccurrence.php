@@ -3,12 +3,15 @@
 namespace App\Models;
 
 use App\Enums\RoomBookingStatus;
+use App\Models\Concerns\ReadsWallClockTimestamps;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Str;
 
 class RoomBookingOccurrence extends Model
 {
+    use ReadsWallClockTimestamps;
+
     protected $guarded = ['id', 'version', 'key_issued_at', 'key_issued_by'];
 
     protected $casts = [
