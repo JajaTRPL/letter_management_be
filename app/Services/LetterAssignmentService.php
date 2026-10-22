@@ -6,6 +6,7 @@ use App\Enums\UserStatus;
 use App\Models\User;
 use App\Services\Notifications\NotificationProjector;
 use App\Support\LetterTypeRegistry;
+use App\Support\LetterWorkflowStatus;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Query\Builder as QueryBuilder;
@@ -135,8 +136,12 @@ class LetterAssignmentService
             return $query->whereRaw('1 = 0');
         }
 
+        // Shared queue: a letter waiting for Persuratan verification is visible
+        // to every Tendik whose assigned_tasks cover its type (one of them acting
+        // is enough). Processed letters stay with the Tendik who handled them.
         return $query->where(function (Builder $query) use ($user, $unassignedStatuses) {
-            $query->where('assigned_to', $user->id)
+            $query->where('status', LetterWorkflowStatus::SUBMITTED)
+                ->orWhere('assigned_to', $user->id)
                 ->orWhere(function (Builder $query) use ($unassignedStatuses) {
                     $query->whereNull('assigned_to');
 
@@ -157,8 +162,10 @@ class LetterAssignmentService
             return $query->whereRaw('1 = 0');
         }
 
+        // Shared queue for letters awaiting Persuratan (see applyFeedVisibility).
         return $query->where(function (QueryBuilder $query) use ($user, $unassignedStatuses) {
-            $query->where('assigned_to', $user->id)
+            $query->where('status', LetterWorkflowStatus::SUBMITTED)
+                ->orWhere('assigned_to', $user->id)
                 ->orWhere(function (QueryBuilder $query) use ($unassignedStatuses) {
                     $query->whereNull('assigned_to');
 

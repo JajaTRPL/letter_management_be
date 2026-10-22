@@ -71,12 +71,13 @@ class TendikTeamScopeTest extends TestCase
             'status' => SuratPengantarMagangApplication::STATUS_SUBMITTED,
         ]);
 
-        // Mine for tendikB: should not include A's row.
+        // Mine for tendikB: a submitted letter of a shared task is in B's
+        // queue too (shared queue; one Tendik acting is enough).
         $bMine = $this->actingAs($tendikB, 'sanctum')
             ->getJson('/api/tendik/dashboard/tasks')
             ->assertOk()
             ->json('tasks');
-        $this->assertFalse(collect($bMine)->contains('id', $assignedToA->id));
+        $this->assertTrue(collect($bMine)->contains('id', $assignedToA->id));
 
         // Team for tendikB: should include A's row (and the actor name).
         $bTeam = $this->actingAs($tendikB, 'sanctum')

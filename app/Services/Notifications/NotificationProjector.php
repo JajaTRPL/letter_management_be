@@ -538,8 +538,9 @@ class NotificationProjector
                 return;
             }
 
+            foreach ($this->recipients->letterPersuratanForType($letterType, (int) $assignee->id) as $officer) {
             $this->writer->write(new NotificationIntent(
-                recipient: $assignee,
+                recipient: $officer,
                 eventType: self::LETTER_PERSURATAN_REVIEW,
                 category: NotificationCategory::ActionRequired,
                 priority: NotificationPriority::High,
@@ -551,6 +552,7 @@ class NotificationProjector
                 actionRouteKey: NotificationActionRoute::PERSURATAN_LETTER_QUEUE,
                 actionLabel: 'Tinjau Pengajuan',
             ));
+            }
         });
     }
 

@@ -155,7 +155,10 @@ class LetterTaskCursorFeedTest extends TestCase
         $this->assertTaskMissing($tasks, ScholarshipApplication::LETTER_TYPE, $assignedApprovedTendik->id);
         $this->assertTaskMissing($tasks, ScholarshipApplication::LETTER_TYPE, $unassignedApprovedTendik->id);
         $this->assertTaskMissing($tasks, ScholarshipApplication::LETTER_TYPE, $assignedRejected->id);
-        $this->assertTaskMissing($tasks, ScholarshipApplication::LETTER_TYPE, $assignedToOther->id);
+        // Shared queue: a submitted letter of a type this Tendik handles is
+        // visible even if another Tendik is its initial owner.
+        $this->assertTaskPresent($tasks, ScholarshipApplication::LETTER_TYPE, $assignedToOther->id);
+        // Letter types outside this Tendik's assigned_tasks stay hidden.
         $this->assertTaskMissing($tasks, SuratPengantarMagangApplication::LETTER_TYPE, $magang->id);
     }
 
@@ -395,7 +398,8 @@ class LetterTaskCursorFeedTest extends TestCase
         $cursorBoundary = $this->atSortTime($this->scholarshipApplication(null, [
             'assigned_to' => $otherTendik->id,
         ]), '2026-05-12 12:00:00');
-        $unauthorizedNextRow = $this->atSortTime($this->scholarshipApplication(null, [
+        // Unauthorized = a letter type outside this Tendik's assigned_tasks.
+        $unauthorizedNextRow = $this->atSortTime($this->magangApplication(null, [
             'assigned_to' => $otherTendik->id,
         ]), '2026-05-12 11:00:00');
         $authorizedRow = $this->atSortTime($this->scholarshipApplication(null, [
@@ -416,7 +420,7 @@ class LetterTaskCursorFeedTest extends TestCase
 
         $this->assertTaskPresent($tasks, ScholarshipApplication::LETTER_TYPE, $authorizedRow->id);
         $this->assertTaskMissing($tasks, ScholarshipApplication::LETTER_TYPE, $cursorBoundary->id);
-        $this->assertTaskMissing($tasks, ScholarshipApplication::LETTER_TYPE, $unauthorizedNextRow->id);
+        $this->assertTaskMissing($tasks, SuratPengantarMagangApplication::LETTER_TYPE, $unauthorizedNextRow->id);
     }
 
     public function test_final_cursor_page_returns_null_next_cursor(): void

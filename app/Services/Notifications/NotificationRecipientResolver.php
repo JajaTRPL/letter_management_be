@@ -116,6 +116,22 @@ class NotificationRecipientResolver
     }
 
     /**
+     * Every active Persuratan Tendik whose assigned_tasks cover this letter
+     * type (the shared queue). Falls back to the assigned officer if none.
+     *
+     * @return Collection<int, User>
+     */
+    public function letterPersuratanForType(string $letterType, ?int $assignedTo = null): Collection
+    {
+        $eligible = app(\App\Services\LetterAssignmentService::class)
+            ->eligiblePersuratanTendikQuery($letterType)
+            ->orderBy('id')
+            ->get();
+
+        return $eligible->isNotEmpty() ? $eligible : $this->letterPersuratan($assignedTo);
+    }
+
+    /**
      * Persuratan officers scoped to a letter. The current schema assigns a
      * concrete officer (`assigned_to`); when present that single officer is the
      * recipient, otherwise the active Persuratan pool (still never the whole

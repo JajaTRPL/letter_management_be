@@ -234,7 +234,8 @@ class LetterReviewSlaScanner
     private function stageReviewers(Model $application, string $status): Collection
     {
         return match ($status) {
-            LS::SUBMITTED => $this->recipients->letterPersuratan(
+            LS::SUBMITTED => $this->recipients->letterPersuratanForType(
+                $application::LETTER_TYPE,
                 $application->getAttribute('assigned_to') !== null
                     ? (int) $application->getAttribute('assigned_to')
                     : null,

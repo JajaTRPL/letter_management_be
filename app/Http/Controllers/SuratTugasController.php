@@ -321,7 +321,7 @@ class SuratTugasController extends Controller
                 $lockedApplication->update([
                     'status' => SuratTugasApplication::STATUS_APPROVED_TENDIK,
                     'nomor_surat_tugas' => $nomorTugas,
-                    'assigned_to' => $lockedApplication->assigned_to ?: $actorId,
+                    'assigned_to' => $actorId, // shared queue: whoever processes it owns it
                     'tendik_approved_at' => $approvedAt,
                     'tendik_approved_by' => $actorId,
                     'revision_note' => null,
@@ -845,7 +845,7 @@ class SuratTugasController extends Controller
             'rejection_reason' => null,
             'revised_at' => now(),
             'revised_by' => Auth::id(),
-            'assigned_to' => $application->assigned_to ?: Auth::id(),
+            'assigned_to' => Auth::user()?->role === 'tendik' ? Auth::id() : ($application->assigned_to ?: Auth::id()),
         ]);
 
         return response()->json([
@@ -876,7 +876,7 @@ class SuratTugasController extends Controller
             'revision_note' => null,
             'rejected_at' => now(),
             'rejected_by' => Auth::id(),
-            'assigned_to' => $application->assigned_to ?: Auth::id(),
+            'assigned_to' => Auth::user()?->role === 'tendik' ? Auth::id() : ($application->assigned_to ?: Auth::id()),
         ]);
 
         return response()->json([

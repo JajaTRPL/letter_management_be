@@ -240,7 +240,7 @@ class TendikDashboardController extends Controller
                     'status' => ScholarshipApplication::STATUS_APPROVED_TENDIK,
                     'tendik_approved_at' => $approvedAt,
                     'tendik_approved_by' => $actorId,
-                    'assigned_to' => $lockedApplication->assigned_to ?: $actorId,
+                    'assigned_to' => $actorId, // shared queue: whoever processes it owns it
                     'nomor_surat' => $nomorSurat,
                 ]);
 
@@ -269,7 +269,7 @@ class TendikDashboardController extends Controller
             'status' => ScholarshipApplication::STATUS_REJECTED,
             'rejected_at' => now(),
             'rejected_by' => Auth::id(),
-            'assigned_to' => $application->assigned_to ?: Auth::id(),
+            'assigned_to' => Auth::id(), // shared queue: whoever processes it owns it
         ];
 
         if ($request->filled('reason')) {
@@ -293,7 +293,7 @@ class TendikDashboardController extends Controller
             'status' => ScholarshipApplication::STATUS_REVISION,
             'revised_at' => now(),
             'revised_by' => Auth::id(),
-            'assigned_to' => $application->assigned_to ?: Auth::id(),
+            'assigned_to' => Auth::id(), // shared queue: whoever processes it owns it
         ];
 
         if ($request->filled('note')) {
