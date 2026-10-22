@@ -7,7 +7,9 @@ return [
     // exposed. Old IDs are deprecated. NOTE: rotating an ID has no runtime effect
     // until the cache DOCX is refreshed (Super Admin → templates refresh), which
     // re-exports from the new Google Doc. Generation reads the cached DOCX.
-    'template_beasiswa_id' => env('TEMPLATE_BEASISWA_ID', '1ANPD3ITEV7scT4j6W6A3v1gJcjcAfD-Z'),
+    // Not read from env: a stale TEMPLATE_BEASISWA_ID on the server pinned the
+    // old Google Doc. Change this ID in code to rotate the beasiswa template.
+    'template_beasiswa_id' => '1ANPD3ITEV7scT4j6W6A3v1gJcjcAfD-Z',
 
     'template_beasiswa_cache_path' => env('TEMPLATE_BEASISWA_CACHE_PATH', storage_path('app/templates/beasiswa_template.docx')),
 
