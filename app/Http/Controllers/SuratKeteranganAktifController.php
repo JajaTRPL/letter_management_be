@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Concerns\AddsSupportingDocumentMetadata;
 use App\Http\Controllers\Concerns\AuthorizesAcademicApplications;
+use App\Http\Controllers\Concerns\ResolvesKadepSignatureVariant;
 use App\Models\LetterDocumentArtifact;
 use App\Models\SuratKeteranganAktifApplication;
 use App\Services\AcademicRoutingService;
@@ -27,6 +28,7 @@ use RuntimeException;
 class SuratKeteranganAktifController extends Controller
 {
     use AuthorizesAcademicApplications;
+    use ResolvesKadepSignatureVariant;
     use AddsSupportingDocumentMetadata;
 
     public function __construct(
@@ -461,15 +463,20 @@ class SuratKeteranganAktifController extends Controller
             $approvedAt = now();
             $actorId = Auth::id();
 
+            $signatureOverrides = $this->kadepSignatureVariantOverrides($application);
+            if ($signatureOverrides instanceof JsonResponse) {
+                return $signatureOverrides;
+            }
+
             try {
                 $previewGenerationService->generateForPhase(
                     $application,
                     LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW,
-                    [
+                    array_merge([
                         'status' => SuratKeteranganAktifApplication::STATUS_READY_FOR_STUDENT_REVIEW,
                         'kadep_approved_at' => $approvedAt,
                         'kadep_approved_by' => $actorId,
-                    ],
+                    ], $signatureOverrides),
                     $actorId,
                 );
             } catch (SuratKeteranganAktifPreviewGenerationException $exception) {

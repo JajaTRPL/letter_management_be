@@ -114,6 +114,19 @@ Route::middleware('throttle:api')->group(function () {
                 } else {
                     abort(403);
                 }
+            } elseif (str_starts_with($relativePath, \App\Services\AcademicSignatoryService::STAMPED_SIGNATURE_DIRECTORY . '/')) {
+                // Stamped signatures (TTD + cap) follow the same owner-only rule as
+                // signatures. Ownership is the {user_id} directory segment:
+                // profiles/signatures-stamped/{user_id}/{file}.
+                $ownerSegment = $segments[2] ?? null;
+                abort_unless(
+                    count($segments) === 4
+                        && in_array($user->role, ['akademik'], true)
+                        && $ownerSegment !== null
+                        && ctype_digit($ownerSegment)
+                        && (int) $ownerSegment === (int) $user->id,
+                    403
+                );
             } else {
                 abort(403);
             }

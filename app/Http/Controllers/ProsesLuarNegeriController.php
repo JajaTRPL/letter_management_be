@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Concerns\AddsSupportingDocumentMetadata;
 use App\Http\Controllers\Concerns\AuthorizesAcademicApplications;
+use App\Http\Controllers\Concerns\ResolvesKadepSignatureVariant;
 use App\Models\LetterDocumentArtifact;
 use App\Models\ProsesLuarNegeriApplication;
 use App\Services\AcademicRoutingService;
@@ -28,6 +29,7 @@ use RuntimeException;
 class ProsesLuarNegeriController extends Controller
 {
     use AuthorizesAcademicApplications;
+    use ResolvesKadepSignatureVariant;
     use AddsSupportingDocumentMetadata;
 
     public function __construct(
@@ -455,17 +457,22 @@ class ProsesLuarNegeriController extends Controller
                 ?? $approvedAt;
             $officialKadep = $signatoryService->officialKadepForApplication($application);
 
+            $signatureOverrides = $this->kadepSignatureVariantOverrides($application, $officialKadep);
+            if ($signatureOverrides instanceof JsonResponse) {
+                return $signatureOverrides;
+            }
+
             try {
                 $previewGenerationService->generateForPhase(
                     $application,
                     LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW,
-                    [
+                    array_merge([
                         'status' => ProsesLuarNegeriApplication::STATUS_READY_FOR_STUDENT_REVIEW,
                         'kadep_approved_at' => $approvedAt,
                         'kadep_approved_by' => $actorId,
                         'official_kadep' => $officialKadep,
                         'tanggal_surat' => $letterDate,
-                    ],
+                    ], $signatureOverrides),
                     $actorId,
                 );
             } catch (ProsesLuarNegeriPreviewGenerationException $exception) {

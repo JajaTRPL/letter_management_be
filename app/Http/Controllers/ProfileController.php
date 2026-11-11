@@ -11,6 +11,7 @@ use App\Models\MahasiswaProfile;
 use App\Models\KeluargaMahasiswa;
 use App\Models\User;
 use App\Enums\PasswordSetMethod;
+use App\Services\AcademicSignatoryService;
 use App\Services\MahasiswaProfileDataService;
 use App\Services\PasswordCredentialService;
 use App\Services\PasFotoNormalizer;
@@ -89,8 +90,28 @@ class ProfileController extends Controller
             'profile' => [
                 'pas_foto_path' => $user->photo_path,
                 'tanda_tangan_path' => $user->signature_path,
+                'tanda_tangan_cap_path' => $this->stampedSignaturePathFor($user),
+                'can_upload_tanda_tangan_cap' => $this->canUploadStampedSignature($user),
             ]
         ]);
+    }
+
+    /**
+     * Only the Ketua Departemen signs final documents, so only that account
+     * keeps a stamped signature (TTD + cap departemen).
+     */
+    private function canUploadStampedSignature(User $user): bool
+    {
+        return $user->role === 'akademik' && $user->sub_role === 'kadep';
+    }
+
+    private function stampedSignaturePathFor(User $user): ?string
+    {
+        if (!$this->canUploadStampedSignature($user)) {
+            return null;
+        }
+
+        return app(AcademicSignatoryService::class)->stampedSignaturePath($user);
     }
 
     private function studyProgramResponse(array $normalized): ?array
@@ -539,9 +560,19 @@ class ProfileController extends Controller
             'password' => 'nullable|string|min:8|confirmed',
             'pas_foto' => 'nullable|image|mimes:jpeg,jpg,png,webp|max:2048',
             'tanda_tangan' => 'nullable|image|mimes:jpeg,jpg,png,webp|max:2048',
+            'tanda_tangan_cap' => 'nullable|image|mimes:jpeg,jpg,png,webp|max:2048',
         ], [
             'nip.prohibited' => 'NIP hanya dapat diubah oleh Super Admin.',
         ]);
+
+        if ($request->hasFile('tanda_tangan_cap') && !$this->canUploadStampedSignature($user)) {
+            return response()->json([
+                'message' => 'Tanda tangan dengan cap hanya dapat diunggah oleh Ketua Departemen.',
+                'errors' => [
+                    'tanda_tangan_cap' => ['Tanda tangan dengan cap hanya dapat diunggah oleh Ketua Departemen.'],
+                ],
+            ], 422);
+        }
 
         if ($request->filled('name')) $user->name = trim((string) $request->input('name'));
         $passwordChanged = $request->filled('password');
@@ -586,6 +617,19 @@ class ProfileController extends Controller
                 $user->signature_path = Storage::url($path);
             }
 
+            // Stamped signature: stored without a users column, in a per-user
+            // directory that holds only the current file (see AcademicSignatoryService).
+            $staleStampedFiles = [];
+            if ($request->hasFile('tanda_tangan_cap')) {
+                $stampedDirectory = app(AcademicSignatoryService::class)->stampedSignatureDirectory($user);
+                $staleStampedFiles = Storage::disk('public')->files($stampedDirectory);
+                $path = $request->file('tanda_tangan_cap')->store($stampedDirectory, 'public');
+                if (!$path) {
+                    throw new \RuntimeException('Failed to store profile stamped signature.');
+                }
+                $newFiles[] = $path;
+            }
+
             DB::transaction(function () use ($user, $passwordChanged) {
                 $user->save();
                 if ($passwordChanged) {
@@ -597,6 +641,10 @@ class ProfileController extends Controller
                 $this->deleteReplacedProfileFile($replacement, $user);
             }
 
+            foreach ($staleStampedFiles as $staleStampedFile) {
+                $this->deleteStampedSignatureFile($staleStampedFile, $user->id);
+            }
+
             foreach ($newFiles as $newFile) {
                 Log::info('Profile file upload committed.', [
                     'user_id' => $user->id,
@@ -605,7 +653,11 @@ class ProfileController extends Controller
             }
         } catch (\Throwable $e) {
             foreach ($newFiles as $newFile) {
-                $this->deletePublicFile($newFile, $user->id);
+                if (str_starts_with($newFile, AcademicSignatoryService::STAMPED_SIGNATURE_DIRECTORY . '/')) {
+                    $this->deleteStampedSignatureFile($newFile, $user->id);
+                } else {
+                    $this->deletePublicFile($newFile, $user->id);
+                }
             }
 
             Log::error('Profile update failed after file upload.', [
@@ -625,8 +677,41 @@ class ProfileController extends Controller
             'profile' => [
                 'pas_foto_path' => $user->photo_path,
                 'tanda_tangan_path' => $user->signature_path,
+                'tanda_tangan_cap_path' => $this->stampedSignaturePathFor($user),
+                'can_upload_tanda_tangan_cap' => $this->canUploadStampedSignature($user),
             ]
         ]);
+    }
+
+    /**
+     * Deletes a file inside the user's own stamped-signature directory only.
+     */
+    private function deleteStampedSignatureFile(string $diskPath, int $userId): void
+    {
+        $diskPath = str_replace('\\', '/', $diskPath);
+        $ownDirectory = AcademicSignatoryService::STAMPED_SIGNATURE_DIRECTORY . '/' . $userId . '/';
+        if (!str_starts_with($diskPath, $ownDirectory) || str_contains($diskPath, '..')) {
+            Log::warning('Skipped deleting stamped signature outside the owner directory.', [
+                'user_id' => $userId,
+                'disk_path' => $diskPath,
+            ]);
+            return;
+        }
+
+        try {
+            if (Storage::disk('public')->exists($diskPath) && !Storage::disk('public')->delete($diskPath)) {
+                Log::warning('Failed to delete stamped signature file.', [
+                    'user_id' => $userId,
+                    'disk_path' => $diskPath,
+                ]);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Exception while deleting stamped signature file.', [
+                'user_id' => $userId,
+                'disk_path' => $diskPath,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
 }

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Akademik;
 
 use App\Http\Controllers\Concerns\AddsSupportingDocumentMetadata;
 use App\Http\Controllers\Concerns\AuthorizesAcademicApplications;
+use App\Http\Controllers\Concerns\ResolvesKadepSignatureVariant;
 use App\Http\Controllers\Controller;
 use App\Models\LetterDocumentArtifact;
 use App\Models\ProsesLuarNegeriApplication;
@@ -23,6 +24,7 @@ use App\Services\LetterTaskFeedService;
 use App\Services\MahasiswaProfileDataService;
 use App\Support\Workflow\LetterReviewStageClock;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
@@ -30,6 +32,7 @@ use RuntimeException;
 class AkademikDashboardController extends Controller
 {
     use AuthorizesAcademicApplications;
+    use ResolvesKadepSignatureVariant;
     use AddsSupportingDocumentMetadata;
 
     private const DASHBOARD_TASK_LIMIT = 100;
@@ -456,17 +459,22 @@ class AkademikDashboardController extends Controller
             ?? $application->created_at
             ?? $approvedAt;
 
+        $signatureOverrides = $this->kadepSignatureVariantOverrides($application, $officialKadep);
+        if ($signatureOverrides instanceof JsonResponse) {
+            return $signatureOverrides;
+        }
+
         try {
             $previewGenerationService->generateForPhase(
                 $application,
                 LetterDocumentArtifact::PHASE_MAHASISWA_REVIEW,
-                [
+                array_merge([
                     'status' => ScholarshipApplication::STATUS_READY_FOR_STUDENT_REVIEW,
                     'kadep_approved_at' => $approvedAt,
                     'kadep_approved_by' => $user->id,
                     'official_kadep' => $officialKadep,
                     'tanggal_surat' => $letterDate,
-                ],
+                ], $signatureOverrides),
                 $user->id,
             );
         } catch (BeasiswaPreviewGenerationException $exception) {

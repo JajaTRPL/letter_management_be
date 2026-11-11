@@ -73,6 +73,94 @@ class AcademicSignatoryService
         return $path !== '' ? $path : null;
     }
 
+    /**
+     * Stamped signatures (TTD + cap) live on the public disk under a per-user
+     * directory instead of a users column: the directory holds at most one
+     * randomly named file, so the user id alone is not enough to guess the URL.
+     */
+    public const STAMPED_SIGNATURE_DIRECTORY = 'profiles/signatures-stamped';
+
+    public const SIGNATURE_VARIANT_DEFAULT = 'default';
+
+    public const SIGNATURE_VARIANT_STAMPED = 'stamped';
+
+    public const SIGNATURE_VARIANTS = [
+        self::SIGNATURE_VARIANT_DEFAULT,
+        self::SIGNATURE_VARIANT_STAMPED,
+    ];
+
+    public function stampedSignatureDirectory(User $user): string
+    {
+        return self::STAMPED_SIGNATURE_DIRECTORY . '/' . (int) $user->getKey();
+    }
+
+    /**
+     * Public-disk relative path of the user's stamped signature, or null.
+     */
+    public function stampedSignatureDiskPath(?User $user): ?string
+    {
+        if (!$user || !$user->getKey()) {
+            return null;
+        }
+
+        $disk = Storage::disk('public');
+        $files = array_values(array_filter(
+            $disk->files($this->stampedSignatureDirectory($user)),
+            static fn (string $file): bool => preg_match('/\.(png|jpe?g|webp)$/i', $file) === 1,
+        ));
+
+        if ($files === []) {
+            return null;
+        }
+
+        // Normally a single file; if a replace left a stray one, use the newest.
+        usort($files, static fn (string $a, string $b): int => $disk->lastModified($b) <=> $disk->lastModified($a));
+
+        return $files[0];
+    }
+
+    /**
+     * Stamped signature in the same `/storage/...` URL form as users.signature_path.
+     */
+    public function stampedSignaturePath(?User $user): ?string
+    {
+        $diskPath = $this->stampedSignatureDiskPath($user);
+
+        return $diskPath !== null ? Storage::url($diskPath) : null;
+    }
+
+    public function normalizeSignatureVariant(mixed $variant): string
+    {
+        return $variant === self::SIGNATURE_VARIANT_STAMPED
+            ? self::SIGNATURE_VARIANT_STAMPED
+            : self::SIGNATURE_VARIANT_DEFAULT;
+    }
+
+    /**
+     * Returns the Kadep model to hand to document rendering for the chosen
+     * signature variant. For the stamped variant this is an unsaved in-memory
+     * copy whose signature_path points at the stamped image, so every renderer
+     * and the source-hash service pick it up through the existing
+     * `official_kadep` override without any schema change. Returns null when
+     * the stamped variant is requested but no stamped signature was uploaded.
+     */
+    public function kadepForSignatureVariant(?User $kadep, string $variant): ?User
+    {
+        if (!$kadep || $variant !== self::SIGNATURE_VARIANT_STAMPED) {
+            return $kadep;
+        }
+
+        $stampedPath = $this->stampedSignaturePath($kadep);
+        if ($stampedPath === null) {
+            return null;
+        }
+
+        $renderKadep = clone $kadep;
+        $renderKadep->setAttribute('signature_path', $stampedPath);
+
+        return $renderKadep;
+    }
+
     public function formatAcademicOfficeTitle(string $roleKey, ?string $unitName): string
     {
         $rolePosition = $this->academicOfficeRolePosition($roleKey);
