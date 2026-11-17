@@ -100,12 +100,16 @@ class ScholarshipPhaseDocumentGenerationTest extends TestCase
             $this->assertStringNotContainsString('Ketua Departemen Departemen', $xml);
             $this->assertStringNotContainsString('Sekretaris Departemen Departemen', $xml);
             $this->assertStringNotContainsString('Ketua Program Studi Program Studi', $xml);
+            // Paraf is a floating picture (24px tall = 228600 EMU) so it does not grow the NIP line.
+            $floatingParaf = 'cy="228600"/><wp:effectExtent';
             if ($expected['includes_paraf']) {
-                $this->assertStringContainsString('height:24px', $xml);
-                $this->assertSame(2, substr_count($xml, 'height:24px'), "{$phase} should render both explicit paraf positions.");
+                $this->assertSame(2, substr_count($xml, $floatingParaf), "{$phase} should render both explicit paraf positions.");
+                $this->assertSame(2, substr_count($xml, '<wp:anchor'), "{$phase} paraf should float.");
+                $this->assertStringNotContainsString('height:24px', $xml);
                 $this->assertStringNotContainsString('height:45px', $xml);
             } else {
-                $this->assertSame(0, substr_count($xml, 'height:24px'), "{$phase} should not render Prodi paraf.");
+                $this->assertSame(0, substr_count($xml, $floatingParaf), "{$phase} should not render Prodi paraf.");
+                $this->assertSame(0, substr_count($xml, '<wp:anchor'), "{$phase} should not render Prodi paraf.");
             }
             $this->assertSame(
                 $expected['includes_kadep_signature'] ? 3 : 1,

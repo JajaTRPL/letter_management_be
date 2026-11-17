@@ -7,6 +7,7 @@ use App\Models\SuratTugasApplication;
 use App\Models\User;
 use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
+use App\Support\FloatingImageTemplateProcessor;
 use PhpOffice\PhpWord\TemplateProcessor;
 use RuntimeException;
 use ZipArchive;
@@ -89,7 +90,7 @@ class SuratTugasDocumentGenerationService
             );
             $this->assertRequiredTextValues($payload, $phaseFlags);
 
-            $templateProcessor = new TemplateProcessor($tempTemplatePath);
+            $templateProcessor = new FloatingImageTemplateProcessor($tempTemplatePath);
             $this->mapTextPlaceholders($templateProcessor, $payload, $phaseFlags);
             $this->mapImagePlaceholders($templateProcessor, $renderApplication, $phaseFlags, $overrides);
 
@@ -208,7 +209,7 @@ class SuratTugasDocumentGenerationService
      * @param array<string, mixed> $overrides
      */
     private function mapImagePlaceholders(
-        TemplateProcessor $templateProcessor,
+        FloatingImageTemplateProcessor $templateProcessor,
         SuratTugasApplication $application,
         array $phaseFlags,
         array $overrides,
@@ -242,7 +243,7 @@ class SuratTugasDocumentGenerationService
 
         foreach (self::PARAF_PLACEHOLDERS as $placeholder) {
             if ($phaseFlags['include_' . $placeholder]) {
-                $templateProcessor->setImageValue($placeholder, array_merge([
+                $templateProcessor->setFloatingImageValue($placeholder, array_merge([
                     'path' => $parafPath,
                 ], self::PARAF_IMAGE_DIMENSIONS));
             } else {

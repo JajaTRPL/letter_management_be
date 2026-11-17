@@ -8,6 +8,7 @@ use App\Models\User;
 use InvalidArgumentException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Storage;
+use App\Support\FloatingImageTemplateProcessor;
 use PhpOffice\PhpWord\TemplateProcessor;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
@@ -119,7 +120,7 @@ class ScholarshipAutomationService
                 throw new RuntimeException('Dokumen Beasiswa tidak dapat dibuat: belum ada Ketua Departemen aktif untuk program studi mahasiswa.');
             }
 
-            $templateProcessor = new TemplateProcessor($tempTemplatePath);
+            $templateProcessor = new FloatingImageTemplateProcessor($tempTemplatePath);
             $this->mapPhaseTextValues(
                 $templateProcessor,
                 $renderApplication,
@@ -482,7 +483,7 @@ class ScholarshipAutomationService
      * @param array<string, mixed> $dimensions
      */
     private function setLocalImageOrFallbackForPlaceholders(
-        TemplateProcessor $templateProcessor,
+        FloatingImageTemplateProcessor $templateProcessor,
         array $placeholders,
         ?string $path,
         array $dimensions,
@@ -579,8 +580,12 @@ class ScholarshipAutomationService
         }
     }
 
+    /**
+     * Inserts the local image (the global paraf) as a floating picture so it
+     * does not grow the NIP line it sits on.
+     */
     private function setLocalImageOrFallback(
-        TemplateProcessor $templateProcessor,
+        FloatingImageTemplateProcessor $templateProcessor,
         string $placeholder,
         ?string $path,
         array $dimensions,
@@ -592,7 +597,7 @@ class ScholarshipAutomationService
         }
 
         try {
-            $templateProcessor->setImageValue($placeholder, array_merge([
+            $templateProcessor->setFloatingImageValue($placeholder, array_merge([
                 'path' => $path,
             ], $dimensions));
         } catch (\Throwable $exception) {

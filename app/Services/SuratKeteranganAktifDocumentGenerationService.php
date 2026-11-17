@@ -7,6 +7,7 @@ use App\Models\SuratKeteranganAktifApplication;
 use App\Models\User;
 use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
+use App\Support\FloatingImageTemplateProcessor;
 use PhpOffice\PhpWord\TemplateProcessor;
 use RuntimeException;
 use ZipArchive;
@@ -80,7 +81,7 @@ class SuratKeteranganAktifDocumentGenerationService
                 $overrides,
             );
 
-            $templateProcessor = new TemplateProcessor($tempTemplatePath);
+            $templateProcessor = new FloatingImageTemplateProcessor($tempTemplatePath);
             $this->mapTextPlaceholders($templateProcessor, $payload);
             $this->mapImagePlaceholders($templateProcessor, $renderApplication, $phaseFlags, $overrides);
 
@@ -197,7 +198,7 @@ class SuratKeteranganAktifDocumentGenerationService
      * @param array<string, mixed> $overrides
      */
     private function mapImagePlaceholders(
-        TemplateProcessor $templateProcessor,
+        FloatingImageTemplateProcessor $templateProcessor,
         SuratKeteranganAktifApplication $application,
         array $phaseFlags,
         array $overrides,
@@ -222,7 +223,7 @@ class SuratKeteranganAktifDocumentGenerationService
                 throw new RuntimeException('Dokumen SKA tidak dapat dibuat: paraf belum tersedia.');
             }
 
-            $templateProcessor->setImageValue(self::PARAF_PLACEHOLDER, array_merge([
+            $templateProcessor->setFloatingImageValue(self::PARAF_PLACEHOLDER, array_merge([
                 'path' => $parafPath,
             ], self::PARAF_IMAGE_DIMENSIONS));
         } else {

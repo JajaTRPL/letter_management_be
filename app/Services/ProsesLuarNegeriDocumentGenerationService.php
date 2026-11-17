@@ -7,6 +7,7 @@ use App\Models\ProsesLuarNegeriApplication;
 use App\Models\User;
 use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
+use App\Support\FloatingImageTemplateProcessor;
 use PhpOffice\PhpWord\TemplateProcessor;
 use RuntimeException;
 use ZipArchive;
@@ -88,7 +89,7 @@ class ProsesLuarNegeriDocumentGenerationService
                 $overrides,
             );
 
-            $templateProcessor = new TemplateProcessor($tempTemplatePath);
+            $templateProcessor = new FloatingImageTemplateProcessor($tempTemplatePath);
             $this->mapTextPlaceholders($templateProcessor, $payload);
             $this->mapImagePlaceholders($templateProcessor, $renderApplication, $phaseFlags, $overrides);
 
@@ -204,7 +205,7 @@ class ProsesLuarNegeriDocumentGenerationService
      * @param array<string, mixed> $overrides
      */
     private function mapImagePlaceholders(
-        TemplateProcessor $templateProcessor,
+        FloatingImageTemplateProcessor $templateProcessor,
         ProsesLuarNegeriApplication $application,
         array $phaseFlags,
         array $overrides,
@@ -229,7 +230,7 @@ class ProsesLuarNegeriDocumentGenerationService
                 throw new RuntimeException('Dokumen PLN tidak dapat dibuat: paraf belum tersedia.');
             }
 
-            $templateProcessor->setImageValue(self::PARAF_PLACEHOLDER, array_merge([
+            $templateProcessor->setFloatingImageValue(self::PARAF_PLACEHOLDER, array_merge([
                 'path' => $parafPath,
             ], self::PARAF_IMAGE_DIMENSIONS));
         } else {
