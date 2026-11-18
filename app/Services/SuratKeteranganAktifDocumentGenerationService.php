@@ -17,7 +17,7 @@ class SuratKeteranganAktifDocumentGenerationService
     private const KADEP_TTD_PLACEHOLDER = 'ttd_kadep_aktif';
 
     private const KADEP_TTD_IMAGE_DIMENSIONS = [
-        'width' => 150,
+        'width' => 190,
         'height' => 80,
         'ratio' => true,
     ];
@@ -205,7 +205,7 @@ class SuratKeteranganAktifDocumentGenerationService
     ): void {
         if ($phaseFlags['include_kadep_signature']) {
             $officialKadep = $this->officialKadepForRender($application, $overrides);
-            $signaturePath = $this->publicImageAbsolutePath($this->signatoryService->signaturePath($officialKadep));
+            $signaturePath = $this->signatoryService->kadepSignatureFilePath($officialKadep);
             if (!$signaturePath) {
                 throw new RuntimeException('Dokumen SKA tidak dapat dibuat: tanda tangan Kadep belum tersedia.');
             }
@@ -218,7 +218,7 @@ class SuratKeteranganAktifDocumentGenerationService
         }
 
         if ($phaseFlags['include_prodi_paraf']) {
-            $parafPath = $this->signatoryService->globalParafFilePath();
+            $parafPath = $this->signatoryService->prodiParafFilePath($application);
             if (!$parafPath || !is_file($parafPath)) {
                 throw new RuntimeException('Dokumen SKA tidak dapat dibuat: paraf belum tersedia.');
             }

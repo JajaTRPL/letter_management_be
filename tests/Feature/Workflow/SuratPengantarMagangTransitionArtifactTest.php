@@ -313,6 +313,8 @@ class SuratPengantarMagangTransitionArtifactTest extends TestCase
     public function test_kadep_artifact_failure_or_wrong_department_does_not_persist(): void
     {
         $kadep = $this->akademik('kadep');
+        // The printed Prodi paraf is the Kaprodi's, so the program needs one.
+        $this->akademik('kaprodi');
         [$student] = $this->completeMahasiswa();
         $application = $this->magangApplication($student, [
             'status' => SuratPengantarMagangApplication::STATUS_APPROVED_KAPRODI,

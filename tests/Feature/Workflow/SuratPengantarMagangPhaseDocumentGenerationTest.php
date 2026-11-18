@@ -204,11 +204,11 @@ class SuratPengantarMagangPhaseDocumentGenerationTest extends TestCase
         $this->assertStringNotContainsString('MAG/TUGAS', $this->plainText($xml));
     }
 
-    public function test_departemen_phase_requires_global_paraf(): void
+    public function test_departemen_phase_requires_kaprodi_paraf(): void
     {
         $this->requireMagangTemplateCache();
         [$application, $kadep] = $this->phaseApplication();
-        config(['surat.global_paraf_path' => storage_path('app/testing/missing-magang-paraf.png')]);
+        \App\Models\User::query()->where('sub_role', 'kaprodi')->update(['signature_path' => null]);
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('paraf belum tersedia');
@@ -307,6 +307,9 @@ class SuratPengantarMagangPhaseDocumentGenerationTest extends TestCase
             'nim' => '22/493038/SV/20654',
             'nama_lengkap' => 'Mahasiswa Magang Phase',
         ], $program);
+
+        // The printed Prodi paraf is the Kaprodi's own uploaded paraf.
+        $this->akademik('kaprodi', ['study_program_id' => $program->id]);
 
         $kadep = $this->akademik('kadep', array_merge([
             'department_id' => $department->id,

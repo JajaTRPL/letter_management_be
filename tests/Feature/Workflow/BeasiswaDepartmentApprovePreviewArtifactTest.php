@@ -55,7 +55,7 @@ class BeasiswaDepartmentApprovePreviewArtifactTest extends TestCase
         $this->assertSame(ScholarshipApplication::STATUS_READY_FOR_STUDENT_REVIEW, $fresh->status);
         $this->assertSame('2026-05-21 13:10:20', $fresh->kadep_approved_at?->toDateTimeString());
         $this->assertSame($sekdep->id, $fresh->kadep_approved_by);
-        $this->assertSame([], Storage::disk('public')->allFiles());
+        $this->assertSame([], $this->publicLetterFiles());
 
         $artifact = $this->readyMahasiswaArtifact($application);
         $this->assertSame(LetterDocumentArtifact::STATUS_READY, $artifact->status);
@@ -129,7 +129,7 @@ class BeasiswaDepartmentApprovePreviewArtifactTest extends TestCase
         $this->assertSame(0, $automation->generateDocumentCalls);
         $this->assertSame(1, $converter->calls);
         $this->assertSame(LetterDocumentArtifact::STATUS_FAILED, LetterDocumentArtifact::query()->firstOrFail()->status);
-        $this->assertSame([], Storage::disk('public')->allFiles());
+        $this->assertSame([], $this->publicLetterFiles());
         Notification::assertNothingSent();
     }
 
@@ -150,7 +150,7 @@ class BeasiswaDepartmentApprovePreviewArtifactTest extends TestCase
         $this->assertSame(0, $automation->generateDocumentCalls);
         $this->assertSame(1, $converter->calls);
         $this->assertSame(LetterDocumentArtifact::STATUS_READY, $this->readyMahasiswaArtifact($application)->status);
-        $this->assertSame([], Storage::disk('public')->allFiles());
+        $this->assertSame([], $this->publicLetterFiles());
     }
 
     public function test_different_department_akademik_gets_forbidden_and_no_artifact_generation(): void
@@ -249,7 +249,7 @@ class BeasiswaDepartmentApprovePreviewArtifactTest extends TestCase
             ->where('source_hash', $ready->source_hash)
             ->where('status', LetterDocumentArtifact::STATUS_READY)
             ->count());
-        $this->assertSame([], Storage::disk('public')->allFiles());
+        $this->assertSame([], $this->publicLetterFiles());
     }
 
     public function test_department_approve_recheck_does_not_overwrite_status_changed_after_artifact_generation(): void
@@ -294,6 +294,8 @@ class BeasiswaDepartmentApprovePreviewArtifactTest extends TestCase
         $program = $this->studyProgram($department);
         [$student] = $this->completeMahasiswa([], [], $program);
         $sekdep = $this->akademik('sekdep', ['department_id' => $department->id]);
+        // The printed Prodi paraf is the Kaprodi's, so the program needs one.
+        $this->akademik('kaprodi', ['study_program_id' => $program->id]);
         $officialKadep = $createOfficialKadep
             ? $this->akademik('kadep', [
                 'department_id' => $department->id,

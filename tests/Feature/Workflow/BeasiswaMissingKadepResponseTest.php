@@ -56,6 +56,8 @@ class BeasiswaMissingKadepResponseTest extends TestCase
         ]);
 
         $sekprodi = $this->akademik('sekprodi', ['study_program_id' => $program->id]);
+        // The printed Prodi paraf is the Kaprodi's, so the program needs one.
+        $this->akademik('kaprodi', ['study_program_id' => $program->id]);
 
         // No Kadep configured anywhere — Kaprodi-stage approval should still succeed.
         $this->mockBeasiswaPreviewGenerationForProdiApprove();

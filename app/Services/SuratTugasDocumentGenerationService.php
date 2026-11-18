@@ -25,7 +25,7 @@ class SuratTugasDocumentGenerationService
     ];
 
     private const KADEP_TTD_IMAGE_DIMENSIONS = [
-        'width' => 150,
+        'width' => 190,
         'height' => 80,
         'ratio' => true,
     ];
@@ -217,7 +217,7 @@ class SuratTugasDocumentGenerationService
         $signaturePath = null;
         if ($phaseFlags['include_kadep_ttd_tugas']) {
             $officialKadep = $this->officialKadepForRender($application, $overrides);
-            $signaturePath = $this->publicImageAbsolutePath($this->signatoryService->signaturePath($officialKadep));
+            $signaturePath = $this->signatoryService->kadepSignatureFilePath($officialKadep);
             if (!$signaturePath) {
                 throw new RuntimeException('Dokumen Surat Tugas tidak dapat dibuat: tanda tangan Kadep belum tersedia.');
             }
@@ -235,7 +235,7 @@ class SuratTugasDocumentGenerationService
 
         $parafPath = null;
         if ($phaseFlags['include_paraf_tugas']) {
-            $parafPath = $this->signatoryService->globalParafFilePath();
+            $parafPath = $this->signatoryService->prodiParafFilePath($application);
             if (!$parafPath || !is_file($parafPath)) {
                 throw new RuntimeException('Dokumen Surat Tugas tidak dapat dibuat: paraf belum tersedia.');
             }

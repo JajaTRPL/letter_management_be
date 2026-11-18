@@ -165,6 +165,9 @@ class ScholarshipPhaseDocumentGenerationTest extends TestCase
             'status_hidup' => 'hidup',
         ]);
 
+        // The printed Prodi paraf is the Kaprodi's own uploaded paraf.
+        $this->akademik('kaprodi', ['study_program_id' => $program->id]);
+
         $this->akademik('kadep', [
             'department_id' => $department->id,
             'name' => 'Ketua Departemen Test',

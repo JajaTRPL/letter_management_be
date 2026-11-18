@@ -153,6 +153,9 @@ class SuratTugasPhaseDocumentGenerationTest extends TestCase
             'nama_lengkap' => 'Mahasiswa Tugas Phase',
         ], $program);
 
+        // The printed Prodi paraf is the Kaprodi's own uploaded paraf.
+        $this->akademik('kaprodi', ['study_program_id' => $program->id]);
+
         $kadep = $this->akademik('kadep', array_merge([
             'department_id' => $department->id,
             'name' => 'Kadep Tugas Phase',

@@ -200,7 +200,7 @@ class ProsesLuarNegeriPhaseDocumentGenerationTest extends TestCase
     {
         $this->requirePlnTemplateCache();
         [$application, $kadep] = $this->phaseApplication();
-        config(['surat.global_paraf_path' => storage_path('app/testing/missing-pln-paraf.png')]);
+        \App\Models\User::query()->where('sub_role', 'kaprodi')->update(['signature_path' => null]);
         $service = $this->service();
 
         $prodiPath = $service->generateDocumentForPhase($application->fresh(), LetterDocumentArtifact::PHASE_PRODI_REVIEW, [
@@ -247,6 +247,9 @@ class ProsesLuarNegeriPhaseDocumentGenerationTest extends TestCase
             'nim' => '22/493038/SV/20654',
             'nama_lengkap' => 'Mahasiswa PLN Phase',
         ], $program);
+
+        // The printed Prodi paraf is the Kaprodi's own uploaded paraf.
+        $this->akademik('kaprodi', ['study_program_id' => $program->id]);
 
         $kadep = $this->akademik('kadep', array_merge([
             'department_id' => $department->id,

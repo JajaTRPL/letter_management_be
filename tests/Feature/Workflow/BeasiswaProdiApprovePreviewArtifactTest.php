@@ -77,7 +77,7 @@ class BeasiswaProdiApprovePreviewArtifactTest extends TestCase
         $this->assertSame('2026-05-21 12:20:30', $automation->lastOverrides['kaprodi_approved_at']->toDateTimeString());
         $this->assertSame($sekprodi->id, $automation->lastOverrides['kaprodi_approved_by']);
         $this->assertSame('2026-05-20 09:00:00', $automation->lastOverrides['tanggal_surat']->toDateTimeString());
-        $this->assertSame([], Storage::disk('public')->allFiles());
+        $this->assertSame([], $this->publicLetterFiles());
     }
 
     public function test_preview_generation_failure_blocks_prodi_approve_mutations(): void
@@ -97,7 +97,7 @@ class BeasiswaProdiApprovePreviewArtifactTest extends TestCase
         $this->assertSame(1, $automation->generatePhaseCalls);
         $this->assertSame(1, $converter->calls);
         $this->assertSame(LetterDocumentArtifact::STATUS_FAILED, LetterDocumentArtifact::query()->firstOrFail()->status);
-        $this->assertSame([], Storage::disk('public')->allFiles());
+        $this->assertSame([], $this->publicLetterFiles());
         Notification::assertNothingSent();
     }
 
@@ -217,6 +217,8 @@ class BeasiswaProdiApprovePreviewArtifactTest extends TestCase
         $program = $this->studyProgram($department);
         [$student] = $this->completeMahasiswa([], [], $program);
         $sekprodi = $this->akademik('sekprodi', ['study_program_id' => $program->id]);
+        // The printed Prodi paraf is the Kaprodi's, so the program needs one.
+        $this->akademik('kaprodi', ['study_program_id' => $program->id]);
 
         $application = $this->scholarshipApplication($student, array_merge([
             'status' => ScholarshipApplication::STATUS_APPROVED_TENDIK,

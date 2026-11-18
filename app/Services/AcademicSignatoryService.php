@@ -232,6 +232,62 @@ class AcademicSignatoryService
         return $this->globalParafFilePath() !== null;
     }
 
+    /**
+     * Public-disk path of the paraf uploaded (Profil -> Paraf) by the current
+     * Kaprodi of the student's study program, or null when there is no active
+     * Kaprodi or they have not uploaded one. The Prodi paraf on a letter is
+     * always the Kaprodi's — even when the Sekprodi did the approval.
+     */
+    public function kaprodiParafPublicPath(Model $application): ?string
+    {
+        $kaprodi = $this->officialKaprodiForApplication($application);
+        $publicPath = $this->normalizePublicStoragePath((string) $this->signaturePath($kaprodi));
+        if (!$publicPath || !Storage::disk('public')->exists($publicPath)) {
+            return null;
+        }
+
+        return $publicPath;
+    }
+
+    /**
+     * Absolute, DOCX-embeddable file for the Prodi paraf on this application:
+     * the Kaprodi's own uploaded paraf (WebP converted to PNG). Null when the
+     * Kaprodi has not uploaded one: there is deliberately no fallback image,
+     * the Kaprodi must upload their paraf first.
+     */
+    public function prodiParafFilePath(Model $application): ?string
+    {
+        $publicPath = $this->kaprodiParafPublicPath($application);
+        if (!$publicPath) {
+            return null;
+        }
+
+        $docxPath = app(\App\Support\SignatureImageNormalizer::class)
+            ->docxCompatiblePath(Storage::disk('public')->path($publicPath));
+
+        // Same footprint as the reference paraf, whatever the upload's size.
+        return app(\App\Support\SignatureFootprintNormalizer::class)->paraf($docxPath);
+    }
+
+    /**
+     * Absolute, DOCX-embeddable file for the Kadep signature that is printed
+     * (regular or stamped, whichever `signature_path` the render user has),
+     * normalized so every upload prints with the same footprint. Null when
+     * the file is missing.
+     */
+    public function kadepSignatureFilePath(?User $kadep): ?string
+    {
+        $publicPath = $this->normalizePublicStoragePath((string) $this->signaturePath($kadep));
+        if (!$publicPath || !Storage::disk('public')->exists($publicPath)) {
+            return null;
+        }
+
+        $docxPath = app(\App\Support\SignatureImageNormalizer::class)
+            ->docxCompatiblePath(Storage::disk('public')->path($publicPath));
+
+        return app(\App\Support\SignatureFootprintNormalizer::class)->kadepSignature($docxPath);
+    }
+
     public function publicImageDataUri(?string $path): ?string
     {
         $publicPath = $this->normalizePublicStoragePath((string) $path);

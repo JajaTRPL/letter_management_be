@@ -240,8 +240,12 @@ class SuratTugasWorkflowTest extends TestCase
         $this->assertStringContainsString('no-store', $cacheControl);
         $this->assertSame('nosniff', $response->headers->get('X-Content-Type-Options'));
 
-        // No public artifact ever produced.
-        $this->assertSame([], Storage::disk('public')->allFiles());
+        // No public artifact ever produced (the Kaprodi's uploaded paraf is a
+        // profile asset, not a letter artifact).
+        $this->assertSame([], array_values(array_filter(
+            Storage::disk('public')->allFiles(),
+            fn (string $path) => !str_starts_with($path, 'profiles/signatures/'),
+        )));
     }
 
     private function bindPreviewStack(): void

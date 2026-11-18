@@ -275,6 +275,8 @@ class CriticalRoleSmokeTest extends TestCase
         ]);
 
         $this->mockBeasiswaPreviewGenerationForProdiApprove();
+        // The printed Prodi paraf is the Kaprodi's: the smoke Kaprodi uploads one.
+        $accounts['kaprodiTrpl']->update(['signature_path' => $this->defaultKaprodiParafPath()]);
 
         $this->actingAs($accounts['sekprodiTrpl'], 'sanctum')
             ->patchJson("/api/akademik/surat-permohonan-beasiswa/{$application->id}/approve")

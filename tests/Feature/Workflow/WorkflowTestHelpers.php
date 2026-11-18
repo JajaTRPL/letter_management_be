@@ -106,6 +106,12 @@ trait WorkflowTestHelpers
             $defaults['study_program_id'] = null;
         }
 
+        // Approvals require the Kaprodi's uploaded paraf (no fallback image), so a
+        // test Kaprodi has one unless the test sets `signature_path` itself.
+        if ($subRole === 'kaprodi' && !array_key_exists('signature_path', $attributes)) {
+            $defaults['signature_path'] = $this->defaultKaprodiParafPath();
+        }
+
         return $this->activeUser(array_merge($defaults, $attributes));
     }
 
@@ -479,6 +485,44 @@ trait WorkflowTestHelpers
         $this->app->instance(\App\Services\SuratPengantarMagangPreviewGenerationService::class, $mock);
 
         return $mock;
+    }
+
+    /**
+     * Public path of a small paraf PNG for test Kaprodis. The file is written
+     * only to a faked public disk (faked here when the test has not done so)
+     * so tests never touch real storage.
+     */
+    private function defaultKaprodiParafPath(): string
+    {
+        $relativePath = 'profiles/signatures/test-kaprodi-paraf.png';
+        if (!str_contains(str_replace('\\', '/', Storage::disk('public')->path('')), 'framework/testing/disks')) {
+            Storage::fake('public');
+        }
+        $disk = Storage::disk('public');
+
+        if (!$disk->exists($relativePath)) {
+            $image = imagecreatetruecolor(60, 30);
+            imagefill($image, 0, 0, imagecolorallocate($image, 20, 30, 120));
+            ob_start();
+            imagepng($image);
+            $disk->put($relativePath, (string) ob_get_clean());
+        }
+
+        return '/storage/' . $relativePath;
+    }
+
+    /**
+     * Public-disk files other than profile assets (the Kaprodi's uploaded
+     * paraf lives there): letter artifacts must never be public.
+     *
+     * @return list<string>
+     */
+    private function publicLetterFiles(): array
+    {
+        return array_values(array_filter(
+            Storage::disk('public')->allFiles(),
+            fn (string $path) => !str_starts_with($path, 'profiles/signatures/'),
+        ));
     }
 
     private function defaultStudyProgram(): StudyProgram

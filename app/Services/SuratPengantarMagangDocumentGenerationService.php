@@ -24,7 +24,7 @@ class SuratPengantarMagangDocumentGenerationService
     ];
 
     private const KADEP_TTD_IMAGE_DIMENSIONS = [
-        'width' => 150,
+        'width' => 190,
         'height' => 80,
         'ratio' => true,
     ];
@@ -223,7 +223,7 @@ class SuratPengantarMagangDocumentGenerationService
         $includesKadepTtd = $phaseFlags['include_kadep_ttd_pengantar'];
         if ($includesKadepTtd) {
             $officialKadep = $this->officialKadepForRender($application, $overrides);
-            $signaturePath = $this->publicImageAbsolutePath($this->signatoryService->signaturePath($officialKadep));
+            $signaturePath = $this->signatoryService->kadepSignatureFilePath($officialKadep);
             if (!$signaturePath) {
                 throw new RuntimeException('Dokumen Magang tidak dapat dibuat: tanda tangan Kadep belum tersedia.');
             }
@@ -241,7 +241,7 @@ class SuratPengantarMagangDocumentGenerationService
 
         $includesParaf = $phaseFlags['include_paraf_pengantar'];
         if ($includesParaf) {
-            $parafPath = $this->signatoryService->globalParafFilePath();
+            $parafPath = $this->signatoryService->prodiParafFilePath($application);
             if (!$parafPath || !is_file($parafPath)) {
                 throw new RuntimeException('Dokumen Magang tidak dapat dibuat: paraf belum tersedia.');
             }

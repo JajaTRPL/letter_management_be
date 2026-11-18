@@ -81,6 +81,8 @@ class SuratKeteranganAktifActorPersistenceTest extends TestCase
     public function test_sekprodi_approve_persists_kaprodi_actor(): void
     {
         $tendik = $this->tendikPersuratan([SuratKeteranganAktifApplication::LETTER_TYPE]);
+        // The printed Prodi paraf is the Kaprodi's, so the program needs one.
+        $this->akademik('kaprodi');
         $sekprodi = $this->akademik('sekprodi');
         [$student] = $this->completeMahasiswa();
         $application = $this->aktifApplication($student, [

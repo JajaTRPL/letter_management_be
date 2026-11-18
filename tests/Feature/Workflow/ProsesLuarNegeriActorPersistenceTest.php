@@ -73,6 +73,8 @@ class ProsesLuarNegeriActorPersistenceTest extends TestCase
     {
         $this->mockPlnPreviewGenerationAlwaysReady();
         $tendik = $this->tendikPersuratan([ProsesLuarNegeriApplication::LETTER_TYPE]);
+        // The printed Prodi paraf is the Kaprodi's, so the program needs one.
+        $this->akademik('kaprodi');
         $sekprodi = $this->akademik('sekprodi');
         [$student] = $this->completeMahasiswa();
         $application = $this->prosesLuarNegeriApplication($student, [

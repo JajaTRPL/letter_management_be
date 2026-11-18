@@ -23,7 +23,7 @@ class ScholarshipAutomationService
     ];
 
     private const KADEP_TTD_IMAGE_DIMENSIONS = [
-        'width' => 150,
+        'width' => 190,
         'height' => 80,
         'ratio' => true,
     ];
@@ -132,7 +132,7 @@ class ScholarshipAutomationService
                 $pendingOverrides,
             );
             $tempPasFotoPath = $this->preparePasFotoDerivative($profile->pas_foto_path ?? null, $tempDirectory);
-            $this->mapPhaseImages($templateProcessor, $profile, $officialKadep, $phaseFlags, $tempPasFotoPath);
+            $this->mapPhaseImages($templateProcessor, $renderApplication, $profile, $officialKadep, $phaseFlags, $tempPasFotoPath);
 
             $directory = 'letter-document-artifacts/' . ScholarshipApplication::LETTER_TYPE . '/' . $application->getKey() . '/' . $phase;
             if (!Storage::disk('local')->exists($directory)) {
@@ -416,6 +416,7 @@ class ScholarshipAutomationService
      */
     private function mapPhaseImages(
         TemplateProcessor $templateProcessor,
+        ScholarshipApplication $application,
         $profile,
         ?User $officialKadep,
         array $phaseFlags,
@@ -438,13 +439,22 @@ class ScholarshipAutomationService
         ], '(Tidak Ada)');
 
         if ($phaseFlags['include_kadep_signature']) {
-            $this->setImageOrFallbackForPlaceholders(
-                $templateProcessor,
-                self::KADEP_TTD_PLACEHOLDERS,
-                $officialKadep?->signature_path,
-                self::KADEP_TTD_IMAGE_DIMENSIONS,
-                '(Tanda tangan belum tersedia)',
-            );
+            $kadepSignaturePath = $this->signatoryService->kadepSignatureFilePath($officialKadep);
+            foreach (self::KADEP_TTD_PLACEHOLDERS as $placeholder) {
+                if (!$kadepSignaturePath) {
+                    $templateProcessor->setValue($placeholder, '(Tanda tangan belum tersedia)');
+                    continue;
+                }
+
+                try {
+                    $templateProcessor->setImageValue($placeholder, array_merge([
+                        'path' => $kadepSignaturePath,
+                    ], self::KADEP_TTD_IMAGE_DIMENSIONS));
+                } catch (\Throwable $exception) {
+                    Log::warning("Unable to insert scholarship image placeholder {$placeholder}: " . $exception->getMessage());
+                    $templateProcessor->setValue($placeholder, '(Tanda tangan belum tersedia)');
+                }
+            }
         } else {
             $this->blankPlaceholders($templateProcessor, self::KADEP_TTD_PLACEHOLDERS);
         }
@@ -453,28 +463,12 @@ class ScholarshipAutomationService
             $this->setLocalImageOrFallbackForPlaceholders(
                 $templateProcessor,
                 self::PRODI_PARAF_PLACEHOLDERS,
-                $this->signatoryService->globalParafFilePath(),
+                $this->signatoryService->prodiParafFilePath($application),
                 self::PRODI_PARAF_IMAGE_DIMENSIONS,
                 '(Paraf belum tersedia)',
             );
         } else {
             $this->blankPlaceholders($templateProcessor, self::PRODI_PARAF_PLACEHOLDERS);
-        }
-    }
-
-    /**
-     * @param list<string> $placeholders
-     * @param array<string, mixed> $dimensions
-     */
-    private function setImageOrFallbackForPlaceholders(
-        TemplateProcessor $templateProcessor,
-        array $placeholders,
-        ?string $path,
-        array $dimensions,
-        string $fallback,
-    ): void {
-        foreach ($placeholders as $placeholder) {
-            $this->setImageOrFallback($templateProcessor, $placeholder, $path, $dimensions, $fallback);
         }
     }
 

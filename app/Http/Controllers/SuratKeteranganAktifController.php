@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Concerns\AddsSupportingDocumentMetadata;
 use App\Http\Controllers\Concerns\AuthorizesAcademicApplications;
+use App\Http\Controllers\Concerns\RequiresKaprodiParaf;
 use App\Http\Controllers\Concerns\ResolvesKadepSignatureVariant;
 use App\Models\LetterDocumentArtifact;
 use App\Models\SuratKeteranganAktifApplication;
@@ -28,6 +29,7 @@ use RuntimeException;
 class SuratKeteranganAktifController extends Controller
 {
     use AuthorizesAcademicApplications;
+    use RequiresKaprodiParaf;
     use ResolvesKadepSignatureVariant;
     use AddsSupportingDocumentMetadata;
 
@@ -398,6 +400,11 @@ class SuratKeteranganAktifController extends Controller
             $approvedAt = now();
             $actorId = Auth::id();
 
+            $parafResponse = $this->missingKaprodiParafResponse($application);
+            if ($parafResponse) {
+                return $parafResponse;
+            }
+
             try {
                 $previewGenerationService->generateForPhase(
                     $application,
@@ -466,6 +473,11 @@ class SuratKeteranganAktifController extends Controller
             $signatureOverrides = $this->kadepSignatureVariantOverrides($application);
             if ($signatureOverrides instanceof JsonResponse) {
                 return $signatureOverrides;
+            }
+
+            $parafResponse = $this->missingKaprodiParafResponse($application);
+            if ($parafResponse) {
+                return $parafResponse;
             }
 
             try {

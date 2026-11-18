@@ -92,7 +92,7 @@ class LetterDocumentSourceHashServiceTest extends TestCase
         ]);
 
         $this->assertSame(SuratTugasApplication::LETTER_TYPE, $payload['letter_type']);
-        $this->assertSame('surat-tugas-docx-gotenberg-v1-contract', $payload['rendered']['profile']);
+        $this->assertSame('surat-tugas-docx-gotenberg-v1-contract-signature-footprint-v1', $payload['rendered']['profile']);
         $this->assertSame('ST/001/2026', $payload['application']['nomor_surat_tugas']);
         $this->assertSame('PT Surat Tugas', $payload['application']['nama_perusahaan']);
         $this->assertSame('Kerja Praktik', $payload['application']['kegiatan']);
@@ -246,7 +246,7 @@ class LetterDocumentSourceHashServiceTest extends TestCase
         $this->assertSame('Ketua Departemen', $payload['rendered']['jabatan_kadep']);
         $this->assertSame('Teknik Elektro dan Informatika', $payload['rendered']['departemen']);
         $this->assertSame('Ketua Departemen Teknik Elektro dan Informatika', $payload['rendered']['jabatan_unit_kadep']);
-        $this->assertSame('beasiswa-signature-layout-v5-nomor-surat-rekomendasi-alias-pasfoto-normalized-600x800-q90', $payload['rendered']['profile']);
+        $this->assertSame('beasiswa-signature-layout-v5-nomor-surat-rekomendasi-alias-pasfoto-normalized-600x800-q90-signature-footprint-v1', $payload['rendered']['profile']);
         $this->assertSame('001/SPB/2026', $payload['application']['nomor_surat']);
         $this->assertStringNotContainsString('Ketua Departemen Departemen', $payload['rendered']['jabatan_unit_kadep']);
     }
@@ -326,7 +326,7 @@ class LetterDocumentSourceHashServiceTest extends TestCase
         $this->assertNotSame($hashOfficial, $hashPending);
     }
 
-    public function test_global_paraf_file_marker_changes_hash_when_rendered_file_changes(): void
+    public function test_kaprodi_paraf_file_marker_changes_hash_when_rendered_file_changes(): void
     {
         $application = $this->scholarshipApplication(null, ['nomor_surat' => '001/SPB/2026']);
         $hasher = $this->hasher();
@@ -335,11 +335,10 @@ class LetterDocumentSourceHashServiceTest extends TestCase
         $tempParaf = tempnam(sys_get_temp_dir(), 'paraf_hash_') . '.png';
 
         try {
-            file_put_contents($tempParaf, $this->pngBytes());
-            config(['surat.global_paraf_path' => $tempParaf]);
+            $this->putKaprodiParaf($application, $this->pngBytes());
             $hashA = $hasher->hashForBeasiswa($application->fresh(), $phase, $flags);
 
-            file_put_contents($tempParaf, $this->pngBytes() . 'changed');
+            $this->putKaprodiParaf($application, $this->pngBytes() . 'changed');
             $hashB = $hasher->hashForBeasiswa($application->fresh(), $phase, $flags);
 
             $this->assertNotSame($hashA, $hashB);
@@ -431,7 +430,7 @@ class LetterDocumentSourceHashServiceTest extends TestCase
             ['tanggal_surat' => '2026-05-21'],
         );
 
-        $this->assertSame('ska-docx-gotenberg-v1-final-contract', $payload['rendered']['profile']);
+        $this->assertSame('ska-docx-gotenberg-v1-final-contract-signature-footprint-v1', $payload['rendered']['profile']);
         $this->assertSame('AKT/001/2026', $payload['application']['nomor_surat']);
         $this->assertSame('Semester Genap Tahun Akademik 2025/2026', $payload['rendered']['periode_akademik']);
         $this->assertSame('Sekolah Vokasi', $payload['rendered']['fakultas']);
@@ -549,8 +548,7 @@ class LetterDocumentSourceHashServiceTest extends TestCase
         $originalPath = config('surat.global_paraf_path');
 
         try {
-            file_put_contents($tempParaf, $this->pngBytes());
-            config(['surat.global_paraf_path' => $tempParaf]);
+            $this->putKaprodiParaf($application, $this->pngBytes());
             $hasher = $this->hasher();
             $includedFlags = ['include_nomor_surat' => true, 'include_prodi_paraf' => true, 'include_kadep_signature' => false];
             $excludedFlags = ['include_nomor_surat' => true, 'include_prodi_paraf' => false, 'include_kadep_signature' => false];
@@ -558,7 +556,7 @@ class LetterDocumentSourceHashServiceTest extends TestCase
             $includedBefore = $hasher->hashForSka($application->fresh(), LetterDocumentArtifact::PHASE_DEPARTEMEN_REVIEW, $includedFlags);
             $excludedBefore = $hasher->hashForSka($application->fresh(), LetterDocumentArtifact::PHASE_PRODI_REVIEW, $excludedFlags);
 
-            file_put_contents($tempParaf, $this->pngBytes() . 'changed-paraf');
+            $this->putKaprodiParaf($application, $this->pngBytes() . 'changed-paraf');
 
             $includedAfter = $hasher->hashForSka($application->fresh(), LetterDocumentArtifact::PHASE_DEPARTEMEN_REVIEW, $includedFlags);
             $excludedAfter = $hasher->hashForSka($application->fresh(), LetterDocumentArtifact::PHASE_PRODI_REVIEW, $excludedFlags);
@@ -672,7 +670,7 @@ class LetterDocumentSourceHashServiceTest extends TestCase
             ],
         );
 
-        $this->assertSame('pln-docx-gotenberg-v1-final-contract', $payload['rendered']['profile']);
+        $this->assertSame('pln-docx-gotenberg-v1-final-contract-signature-footprint-v1', $payload['rendered']['profile']);
         $this->assertSame('PLN/001/2026', $payload['application']['nomor_surat']);
         $this->assertSame('X1234567', $payload['application']['no_paspor']);
         $this->assertSame('21 Mei 2026', $payload['rendered']['tanggal_surat']);
@@ -838,15 +836,14 @@ class LetterDocumentSourceHashServiceTest extends TestCase
         $originalPath = config('surat.global_paraf_path');
 
         try {
-            file_put_contents($tempParaf, $this->pngBytes());
-            config(['surat.global_paraf_path' => $tempParaf]);
+            $this->putKaprodiParaf($application, $this->pngBytes());
             $includedFlags = ['include_nomor_surat' => true, 'include_prodi_paraf' => true, 'include_kadep_signature' => false];
             $excludedFlags = ['include_nomor_surat' => true, 'include_prodi_paraf' => false, 'include_kadep_signature' => false];
 
             $includedBefore = $this->hasher()->hashForPln($application->fresh(), LetterDocumentArtifact::PHASE_DEPARTEMEN_REVIEW, $includedFlags);
             $excludedBefore = $this->hasher()->hashForPln($application->fresh(), LetterDocumentArtifact::PHASE_PRODI_REVIEW, $excludedFlags);
 
-            file_put_contents($tempParaf, $this->pngBytes() . 'changed-paraf');
+            $this->putKaprodiParaf($application, $this->pngBytes() . 'changed-paraf');
 
             $includedAfter = $this->hasher()->hashForPln($application->fresh(), LetterDocumentArtifact::PHASE_DEPARTEMEN_REVIEW, $includedFlags);
             $excludedAfter = $this->hasher()->hashForPln($application->fresh(), LetterDocumentArtifact::PHASE_PRODI_REVIEW, $excludedFlags);
@@ -959,7 +956,7 @@ class LetterDocumentSourceHashServiceTest extends TestCase
         ]);
 
         $this->assertSame(SuratPengantarMagangApplication::LETTER_TYPE, $payload['letter_type']);
-        $this->assertSame('magang-docx-gotenberg-v1-final-contract', $payload['rendered']['profile']);
+        $this->assertSame('magang-docx-gotenberg-v1-final-contract-signature-footprint-v1', $payload['rendered']['profile']);
         $this->assertSame('MAG/PENGANTAR/001/2026', $payload['application']['nomor_surat_pengantar']);
         // S1 (Magang standalone): nomor_surat_tugas is no longer part of the Magang
         // canonical payload (Surat Tugas is a separate letter).
@@ -1216,8 +1213,7 @@ class LetterDocumentSourceHashServiceTest extends TestCase
         $originalPath = config('surat.global_paraf_path');
 
         try {
-            file_put_contents($tempParaf, $this->pngBytes());
-            config(['surat.global_paraf_path' => $tempParaf]);
+            $this->putKaprodiParaf($application, $this->pngBytes());
             $includedPhase = LetterDocumentArtifact::PHASE_DEPARTEMEN_REVIEW;
             $includedFlags = $this->magangResolver()->phaseFlagsFor($application, $includedPhase);
             $excludedPhase = LetterDocumentArtifact::PHASE_PRODI_REVIEW;
@@ -1225,7 +1221,7 @@ class LetterDocumentSourceHashServiceTest extends TestCase
 
             $includedBefore = $this->hasher()->hashForMagang($application->fresh(), $includedPhase, $includedFlags);
             $excludedBefore = $this->hasher()->hashForMagang($application->fresh(), $excludedPhase, $excludedFlags);
-            file_put_contents($tempParaf, $this->pngBytes() . 'changed-paraf');
+            $this->putKaprodiParaf($application, $this->pngBytes() . 'changed-paraf');
             $includedAfter = $this->hasher()->hashForMagang($application->fresh(), $includedPhase, $includedFlags);
             $excludedAfter = $this->hasher()->hashForMagang($application->fresh(), $excludedPhase, $excludedFlags);
 
@@ -1289,6 +1285,23 @@ class LetterDocumentSourceHashServiceTest extends TestCase
                 @unlink($tempTemplate);
             }
         }
+    }
+
+    /**
+     * The Prodi paraf marker tracks the paraf uploaded by the Kaprodi of the
+     * application's study program: (re)write that file.
+     */
+    private function putKaprodiParaf(\Illuminate\Database\Eloquent\Model $application, string $bytes): void
+    {
+        $programId = app(\App\Services\AcademicRoutingService::class)->studentStudyProgramId($application);
+        $path = 'profiles/signatures/hash-kaprodi-paraf.png';
+        $kaprodi = \App\Models\User::query()
+            ->where('sub_role', 'kaprodi')
+            ->where('study_program_id', $programId)
+            ->first() ?? $this->akademik('kaprodi', ['study_program_id' => $programId, 'signature_path' => '/storage/' . $path]);
+        $kaprodi->update(['signature_path' => '/storage/' . $path]);
+
+        Storage::disk('public')->put($path, $bytes);
     }
 
     private function pngBytes(): string

@@ -24,11 +24,11 @@ use Illuminate\Support\Facades\Storage;
  */
 class LetterDocumentSourceHashService
 {
-    private const RENDER_PROFILE = 'beasiswa-signature-layout-v5-nomor-surat-rekomendasi-alias-pasfoto-normalized-600x800-q90';
-    private const SKA_RENDER_PROFILE = 'ska-docx-gotenberg-v1-final-contract';
-    private const PLN_RENDER_PROFILE = 'pln-docx-gotenberg-v1-final-contract';
-    private const MAGANG_RENDER_PROFILE = 'magang-docx-gotenberg-v1-final-contract';
-    private const SURAT_TUGAS_RENDER_PROFILE = 'surat-tugas-docx-gotenberg-v1-contract';
+    private const RENDER_PROFILE = 'beasiswa-signature-layout-v5-nomor-surat-rekomendasi-alias-pasfoto-normalized-600x800-q90-signature-footprint-v1';
+    private const SKA_RENDER_PROFILE = 'ska-docx-gotenberg-v1-final-contract-signature-footprint-v1';
+    private const PLN_RENDER_PROFILE = 'pln-docx-gotenberg-v1-final-contract-signature-footprint-v1';
+    private const MAGANG_RENDER_PROFILE = 'magang-docx-gotenberg-v1-final-contract-signature-footprint-v1';
+    private const SURAT_TUGAS_RENDER_PROFILE = 'surat-tugas-docx-gotenberg-v1-contract-signature-footprint-v1';
 
     public function __construct(
         private ?AcademicSignatoryService $signatoryService = null,
@@ -215,7 +215,7 @@ class LetterDocumentSourceHashService
                     ? $this->publicImageMarker($this->signatoryService->signaturePath($officialKadep), 'missing:kadep_signature')
                     : null,
                 'paraf' => $includesParaf
-                    ? $this->magangGlobalParafMarker()
+                    ? $this->prodiParafMarker($application, 'missing:paraf')
                     : null,
             ],
             'template_marker' => $this->templateMarker('template_surat_tugas_cache_path'),
@@ -366,7 +366,7 @@ class LetterDocumentSourceHashService
             ? $this->publicImageMarker($this->signatoryService->signaturePath($officialKadep), '(Tanda tangan belum tersedia)')
             : null;
         $paraf = $phaseFlags['include_prodi_paraf']
-            ? $this->globalParafMarker()
+            ? $this->prodiParafMarker($application, '(Paraf belum tersedia)')
             : null;
         $pasFoto = $this->publicImageMarker($profile?->getAttribute('pas_foto_path'), '(Tidak Ada)');
         $studentSignature = $this->publicImageMarker($profile?->getAttribute('tanda_tangan_path'), '(Tidak Ada)');
@@ -518,7 +518,7 @@ class LetterDocumentSourceHashService
                     ? $this->publicImageMarker($this->signatoryService->signaturePath($officialKadep), '(Tanda tangan belum tersedia)')
                     : null,
                 'paraf' => $phaseFlags['include_prodi_paraf']
-                    ? $this->globalParafMarker()
+                    ? $this->prodiParafMarker($application, '(Paraf belum tersedia)')
                     : null,
             ],
             'template_marker' => $this->templateMarker('template_surat_keterangan_aktif_cache_path'),
@@ -602,7 +602,7 @@ class LetterDocumentSourceHashService
                     ? $this->publicImageMarker($this->signatoryService->signaturePath($officialKadep), '(Tanda tangan belum tersedia)')
                     : null,
                 'paraf' => $phaseFlags['include_prodi_paraf']
-                    ? $this->globalParafMarker()
+                    ? $this->prodiParafMarker($application, '(Paraf belum tersedia)')
                     : null,
             ],
             'template_marker' => $this->templateMarker('template_proses_luar_negeri_cache_path'),
@@ -702,7 +702,7 @@ class LetterDocumentSourceHashService
                     ? $this->publicImageMarker($this->signatoryService->signaturePath($officialKadep), 'missing:kadep_signature')
                     : null,
                 'paraf' => $includesParaf
-                    ? $this->magangGlobalParafMarker()
+                    ? $this->prodiParafMarker($application, 'missing:paraf')
                     : null,
             ],
             'template_marker' => $this->templateMarker('template_surat_pengantar_magang_cache_path'),
@@ -1072,42 +1072,28 @@ class LetterDocumentSourceHashService
     }
 
     /**
-     * @return array{rendered: string, path?: string, size?: int|null, mtime?: int|null}
-     */
-    private function globalParafMarker(): array
-    {
-        $path = $this->signatoryService->globalParafFilePath();
-        if (!$path || !is_file($path)) {
-            return ['rendered' => '(Paraf belum tersedia)'];
-        }
-
-        return [
-            'rendered' => 'image',
-            'path' => str_replace('\\', '/', $path),
-            'size' => (int) filesize($path),
-            'mtime' => (int) filemtime($path),
-        ];
-    }
-
-    /**
-     * The final Magang pipeline must fail required missing images during
-     * generation. The foundation hash records absence without document text.
+     * Marker for the Prodi paraf: the Kaprodi's own uploaded paraf when there
+     * is one (so a re-upload or a change of Kaprodi invalidates cached
+     * previews). `$missing` is recorded when the Kaprodi has not uploaded one;
+     * there is no fallback image and the generators fail on a missing paraf.
      *
-     * @return array{rendered: string, path?: string, size?: int|null, mtime?: int|null}
+     * @return array<string, mixed>
      */
-    private function magangGlobalParafMarker(): array
+    private function prodiParafMarker(Model $application, string $missing): array
     {
-        $path = $this->signatoryService->globalParafFilePath();
-        if (!$path || !is_file($path)) {
-            return ['rendered' => 'missing:paraf'];
+        $kaprodiParaf = $this->signatoryService->kaprodiParafPublicPath($application);
+        if ($kaprodiParaf) {
+            return [
+                'rendered' => 'image',
+                'source' => 'kaprodi',
+                'disk' => 'public',
+                'path' => $kaprodiParaf,
+                'size' => $this->safeStorageSize('public', $kaprodiParaf),
+                'mtime' => $this->safeStorageLastModified('public', $kaprodiParaf),
+            ];
         }
 
-        return [
-            'rendered' => 'image',
-            'path' => str_replace('\\', '/', $path),
-            'size' => (int) filesize($path),
-            'mtime' => (int) filemtime($path),
-        ];
+        return ['rendered' => $missing];
     }
 
     private function normalizePublicStoragePath(?string $path): ?string

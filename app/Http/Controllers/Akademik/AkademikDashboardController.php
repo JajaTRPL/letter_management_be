@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Akademik;
 
 use App\Http\Controllers\Concerns\AddsSupportingDocumentMetadata;
 use App\Http\Controllers\Concerns\AuthorizesAcademicApplications;
+use App\Http\Controllers\Concerns\RequiresKaprodiParaf;
 use App\Http\Controllers\Concerns\ResolvesKadepSignatureVariant;
 use App\Http\Controllers\Controller;
 use App\Models\LetterDocumentArtifact;
@@ -32,6 +33,7 @@ use RuntimeException;
 class AkademikDashboardController extends Controller
 {
     use AuthorizesAcademicApplications;
+    use RequiresKaprodiParaf;
     use ResolvesKadepSignatureVariant;
     use AddsSupportingDocumentMetadata;
 
@@ -384,6 +386,11 @@ class AkademikDashboardController extends Controller
                 ?? $application->created_at
                 ?? $approvedAt;
 
+            $parafResponse = $this->missingKaprodiParafResponse($application);
+            if ($parafResponse) {
+                return $parafResponse;
+            }
+
             try {
                 $previewGenerationService->generateForPhase(
                     $application,
@@ -462,6 +469,11 @@ class AkademikDashboardController extends Controller
         $signatureOverrides = $this->kadepSignatureVariantOverrides($application, $officialKadep);
         if ($signatureOverrides instanceof JsonResponse) {
             return $signatureOverrides;
+        }
+
+        $parafResponse = $this->missingKaprodiParafResponse($application);
+        if ($parafResponse) {
+            return $parafResponse;
         }
 
         try {
