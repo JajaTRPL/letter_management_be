@@ -388,7 +388,8 @@ class SuratPengantarMagangDocumentGenerationService
             return null;
         }
 
-        return Storage::disk('public')->path($publicPath);
+        return app(\App\Support\SignatureImageNormalizer::class)
+            ->docxCompatiblePath(Storage::disk('public')->path($publicPath));
     }
 
     private function normalizePublicStoragePath(?string $path): ?string

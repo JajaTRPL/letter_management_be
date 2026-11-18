@@ -572,7 +572,8 @@ class ScholarshipAutomationService
 
         try {
             $templateProcessor->setImageValue($placeholder, array_merge([
-                'path' => Storage::disk('public')->path($publicPath),
+                'path' => app(\App\Support\SignatureImageNormalizer::class)
+                    ->docxCompatiblePath(Storage::disk('public')->path($publicPath)),
             ], $dimensions));
         } catch (\Throwable $exception) {
             Log::warning("Unable to insert scholarship image placeholder {$placeholder}: " . $exception->getMessage());

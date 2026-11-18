@@ -15,6 +15,7 @@ use App\Services\AcademicSignatoryService;
 use App\Services\MahasiswaProfileDataService;
 use App\Services\PasswordCredentialService;
 use App\Services\PasFotoNormalizer;
+use App\Support\SignatureImageNormalizer;
 
 class ProfileController extends Controller
 {
@@ -454,7 +455,7 @@ class ProfileController extends Controller
                 }
 
                 if ($request->hasFile('tanda_tangan')) {
-                    $path = $request->file('tanda_tangan')->store('profiles/signatures', 'public');
+                    $path = $this->storeSignatureUpload($request->file('tanda_tangan'), 'profiles/signatures', 'tanda_tangan');
                     if (!$path) {
                         throw new \RuntimeException('Failed to store profile signature.');
                     }
@@ -604,7 +605,7 @@ class ProfileController extends Controller
             }
 
             if ($request->hasFile('tanda_tangan')) {
-                $path = $request->file('tanda_tangan')->store('profiles/signatures', 'public');
+                $path = $this->storeSignatureUpload($request->file('tanda_tangan'), 'profiles/signatures', 'tanda_tangan');
                 if (!$path) {
                     throw new \RuntimeException('Failed to store profile signature.');
                 }
@@ -623,7 +624,7 @@ class ProfileController extends Controller
             if ($request->hasFile('tanda_tangan_cap')) {
                 $stampedDirectory = app(AcademicSignatoryService::class)->stampedSignatureDirectory($user);
                 $staleStampedFiles = Storage::disk('public')->files($stampedDirectory);
-                $path = $request->file('tanda_tangan_cap')->store($stampedDirectory, 'public');
+                $path = $this->storeSignatureUpload($request->file('tanda_tangan_cap'), $stampedDirectory, 'tanda_tangan_cap');
                 if (!$path) {
                     throw new \RuntimeException('Failed to store profile stamped signature.');
                 }
@@ -681,6 +682,21 @@ class ProfileController extends Controller
                 'can_upload_tanda_tangan_cap' => $this->canUploadStampedSignature($user),
             ]
         ]);
+    }
+
+    /**
+     * Stores a signature upload; WebP is converted to PNG because PhpWord
+     * cannot embed WebP into the generated letters.
+     */
+    private function storeSignatureUpload(\Illuminate\Http\UploadedFile $file, string $directory, string $field): string
+    {
+        try {
+            return app(SignatureImageNormalizer::class)->storeUploaded($file, $directory);
+        } catch (\RuntimeException $e) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                $field => [$e->getMessage()],
+            ]);
+        }
     }
 
     /**
