@@ -157,10 +157,18 @@ class UserController extends Controller
         // value stay consistent with the case-insensitive login lookup.
         $this->normalizeEmailInput($request);
 
+        // A @mail.ugm.ac.id login with no matching account auto-creates a
+        // Mahasiswa (GoogleAuthController). If Super Admin later assigns that
+        // same email to a non-Mahasiswa role, convert the auto-created account
+        // to the assigned role instead of rejecting the email as taken — the
+        // rejection is what pushed admins into creating a second account under
+        // another address, leaving the person with duplicate accounts.
+        $claimableAccount = $this->claimableAutoMahasiswa($request);
+
         $rules = [
             'name' => 'required|string|max:255',
-            'email' => 'required|email|unique:users,email',
-            'nip' => ['nullable', 'string', 'max:50', Rule::unique('users', 'nip')],
+            'email' => ['required', 'email', Rule::unique('users', 'email')->ignore($claimableAccount?->id)],
+            'nip' => ['nullable', 'string', 'max:50', Rule::unique('users', 'nip')->ignore($claimableAccount?->id)],
             'password' => $request->input('role') === 'mahasiswa'
                 ? 'prohibited'
                 : 'required|string|min:8',
@@ -255,7 +263,7 @@ class UserController extends Controller
                 Auth::id(),
             );
 
-        $user = User::create(array_merge([
+        $attributes = array_merge([
             'name' => $validated['name'],
             'email' => $validated['email'],
             'nip' => $validated['nip'],
@@ -268,7 +276,39 @@ class UserController extends Controller
             'role_level' => $validated['role'] === 'super_admin' ? ($validated['role_level'] ?? 'secondary') : null,
             'assigned_tasks' => $validated['assigned_tasks'] ?? null,
             'status' => UserStatus::Active
-        ], $passwordAttributes));
+        ], $passwordAttributes);
+
+        if ($claimableAccount) {
+            // Keep the row (and its google_id link, so Google login keeps
+            // landing here) but switch it to the assigned role. Its existing
+            // sessions were issued as Mahasiswa, so revoke them.
+            $previousRole = $claimableAccount->role;
+            $claimableAccount->update($attributes);
+            $claimableAccount->tokens()->delete();
+
+            ActivityLogService::log(
+                'Tambah User',
+                $claimableAccount->email,
+                "Akun mahasiswa otomatis (login Google) dialihkan dari role {$previousRole} ke role: {$claimableAccount->role}"
+                    . ($claimableAccount->role_level ? " ({$claimableAccount->role_level})" : '')
+            );
+
+            return response()->json([
+                'message' => 'Email ini sebelumnya terdaftar otomatis sebagai mahasiswa lewat login Google. Akun tersebut sudah dialihkan ke role yang dipilih, sehingga tidak ada akun ganda.',
+                'converted_from_auto_mahasiswa' => true,
+                'data' => [
+                    'id' => $claimableAccount->id,
+                    'name' => $claimableAccount->name,
+                    'email' => $claimableAccount->email,
+                    'nip' => $claimableAccount->nip,
+                    'role' => $claimableAccount->role,
+                    'role_level' => $claimableAccount->role_level,
+                    'status' => $claimableAccount->status,
+                ]
+            ], 200);
+        }
+
+        $user = User::create($attributes);
 
         // Create Profile if Mahasiswa
         if ($user->role === 'mahasiswa') {
@@ -1283,6 +1323,36 @@ class UserController extends Controller
      * Lowercase/trim the email input so provisioning stays consistent with the
      * case-insensitive login lookup and the uniqueness check runs on the same form.
      */
+    /**
+     * The existing account Super Admin may take over when assigning a
+     * non-Mahasiswa role: only one that the Google-login fallback created on
+     * its own (role mahasiswa + profile data_source google_sync). Mahasiswa
+     * accounts made by an admin or by import are real students and are never
+     * converted implicitly — those must be edited explicitly.
+     */
+    private function claimableAutoMahasiswa(Request $request): ?User
+    {
+        $email = $request->input('email');
+        $role = $request->input('role');
+        if (!is_string($email) || $email === '' || !is_string($role) || $role === 'mahasiswa') {
+            return null;
+        }
+
+        $existing = User::with('mahasiswaProfile')
+            ->whereRaw('LOWER(email) = ?', [$email])
+            ->first();
+
+        if (
+            !$existing
+            || $existing->role !== 'mahasiswa'
+            || $existing->mahasiswaProfile?->data_source !== 'google_sync'
+        ) {
+            return null;
+        }
+
+        return $existing;
+    }
+
     private function normalizeEmailInput(Request $request): void
     {
         $email = $request->input('email');
