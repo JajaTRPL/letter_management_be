@@ -225,6 +225,63 @@ class MahasiswaUploadValidationTest extends TestCase
             ->assertOk();
     }
 
+    public function test_beasiswa_step3_oversized_pdf_returns_indonesian_message(): void
+    {
+        Storage::fake('public');
+
+        [$student] = $this->completeMahasiswa();
+        $this->beasiswaDraftFor($student);
+
+        $this->actingAs($student, 'sanctum')
+            ->post('/api/mahasiswa/scholarship/step-3', array_merge($this->step3BasePayload(), [
+                'transkrip_nilai' => UploadedFile::fake()->create('transkrip.pdf', 3000, 'application/pdf'),
+            ]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('transkrip_nilai')
+            ->assertJsonPath('errors.transkrip_nilai.0', 'Transkrip Nilai terlalu besar. Ukuran maksimal 2 MB.')
+            ->assertJsonPath('message', 'Transkrip Nilai terlalu besar. Ukuran maksimal 2 MB.');
+    }
+
+    public function test_beasiswa_step2_accepts_sibling_status_saved_by_profil(): void
+    {
+        [$student] = $this->completeMahasiswa();
+        $this->beasiswaDraftFor($student);
+
+        $this->actingAs($student, 'sanctum')
+            ->postJson('/api/mahasiswa/scholarship/step-2', [
+                'pob' => 'Yogyakarta',
+                'dob' => '2004-03-16',
+                'gender' => 'Laki-laki',
+                'origin_address' => 'Jl. Asal No. 1',
+                'jogja_address' => 'Jl. Jogja No. 2',
+                'father_name' => 'Ayah Test',
+                'father_job' => 'Wiraswasta',
+                'father_income' => '3000000',
+                'father_status' => 'Hidup',
+                'mother_name' => 'Ibu Test',
+                'mother_job' => 'Ibu Rumah Tangga',
+                'mother_income' => '0',
+                'mother_status' => 'Hidup',
+                'siblings' => [
+                    // Profil stores "Sudah Kawin" and allows an empty pekerjaan.
+                    ['name' => 'Kakak Test', 'job_or_school' => null, 'marital_status' => 'Sudah Kawin', 'relation' => 'Kakak'],
+                ],
+            ])
+            ->assertOk();
+    }
+
+    public function test_beasiswa_step2_missing_profile_data_points_to_profil(): void
+    {
+        [$student] = $this->completeMahasiswa();
+        $this->beasiswaDraftFor($student);
+
+        $response = $this->actingAs($student, 'sanctum')
+            ->postJson('/api/mahasiswa/scholarship/step-2', [])
+            ->assertStatus(422);
+
+        $this->assertStringContainsString('Profil Mahasiswa', (string) $response->json('message'));
+    }
+
     public function test_magang_draft_accepts_pdf_for_proposal_kegiatan_magang(): void
     {
         Storage::fake('public');

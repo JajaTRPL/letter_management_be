@@ -132,13 +132,19 @@ class ScholarshipController extends Controller
             'guardian_death_date' => 'required_if:guardian_status,Meninggal|nullable|date',
             'siblings' => 'nullable|array',
             'siblings.*.name' => 'required|string',
-            'siblings.*.job_or_school' => 'required|string',
-            'siblings.*.marital_status' => 'required|in:Belum Kawin,Kawin',
-            'siblings.*.relation' => 'required|in:Kakak,Adik',
-        ]);
+            // Step 2 is read-only (synced from Profil). Profil saves sibling
+            // status as "Belum Kawin" / "Sudah Kawin" and allows an empty
+            // pekerjaan, so accept exactly what Profil can store.
+            'siblings.*.job_or_school' => 'nullable|string',
+            'siblings.*.marital_status' => 'nullable|in:Belum Kawin,Sudah Kawin,Kawin',
+            'siblings.*.relation' => 'nullable|in:Kakak,Adik',
+        ], $this->step2ValidationMessages(), $this->step2ValidationAttributes());
 
         if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
+            return response()->json([
+                'message' => $validator->errors()->first(),
+                'errors' => $validator->errors(),
+            ], 422);
         }
 
         // 1. Update Profile
@@ -195,10 +201,10 @@ class ScholarshipController extends Controller
                 $profile->keluarga()->create([
                     'jenis_relasi' => 'saudara',
                     'nama_lengkap' => $sib['name'],
-                    'pekerjaan' => $sib['job_or_school'],
+                    'pekerjaan' => $sib['job_or_school'] ?? null,
                     'status_hidup' => 'hidup',
-                    'status_kawin' => $sib['marital_status'],
-                    'keterangan' => $sib['relation'],
+                    'status_kawin' => $sib['marital_status'] ?? null,
+                    'keterangan' => $sib['relation'] ?? null,
                 ]);
             }
         }
@@ -255,10 +261,13 @@ class ScholarshipController extends Controller
             'transkrip_nilai' => 'nullable|file|mimes:pdf|max:2048',
             'slip_gaji_ayah' => 'nullable|file|mimes:pdf|max:2048',
             'slip_gaji_ibu' => 'nullable|file|mimes:pdf|max:2048',
-        ]);
+        ], $this->step3ValidationMessages(), $this->step3ValidationAttributes());
 
         if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
+            return response()->json([
+                'message' => $validator->errors()->first(),
+                'errors' => $validator->errors(),
+            ], 422);
         }
 
         // Supporting-document writes go to the PRIVATE local disk via the shared
@@ -366,7 +375,10 @@ class ScholarshipController extends Controller
             (int) $application->getKey(),
         );
         if ($attachmentValidator->fails()) {
-            return response()->json(['errors' => $attachmentValidator->errors()], 422);
+            return response()->json([
+                'message' => $attachmentValidator->errors()->first(),
+                'errors' => $attachmentValidator->errors(),
+            ], 422);
         }
 
         $submittedAt = now();
@@ -697,11 +709,123 @@ class ScholarshipController extends Controller
         $validator->after(function (\Illuminate\Validation\Validator $validator) use ($attachmentRequirementService, $letterType, $applicationId): void {
             foreach ($attachmentRequirementService->missingRequiredDocumentKeys($letterType, $applicationId) as $documentKey) {
                 $attribute = $attachmentRequirementService->legacyValidationAttribute($letterType, $documentKey);
+                $label = self::SUPPORTING_DOCUMENT_LABELS[$documentKey] ?? str_replace('_', ' ', $documentKey);
                 $validator->errors()->add(
                     $attribute,
-                    'The ' . str_replace('_', ' ', $attribute) . ' field is required.',
+                    "{$label} wajib diunggah. Kembali ke langkah Data Pengajuan untuk mengunggahnya.",
                 );
             }
         });
+    }
+
+    private const SUPPORTING_DOCUMENT_LABELS = [
+        'transkrip_nilai' => 'Transkrip Nilai',
+        'slip_gaji_ayah' => 'Slip Gaji / Penghasilan Ayah/Wali',
+        'slip_gaji_ibu' => 'Slip Gaji / Penghasilan Ibu',
+    ];
+
+    /**
+     * Step 2 data is read-only in the form and comes from Profil, so every
+     * message tells the student to fix it there.
+     *
+     * @return array<string, string>
+     */
+    private function step2ValidationMessages(): array
+    {
+        $fixInProfile = ' Lengkapi melalui halaman Profil Mahasiswa, lalu buka kembali formulir ini.';
+
+        return [
+            'required' => ':attribute belum diisi.' . $fixInProfile,
+            'required_if' => ':attribute belum diisi.' . $fixInProfile,
+            'date' => ':attribute tidak valid.' . $fixInProfile,
+            'numeric' => ':attribute harus berupa angka.' . $fixInProfile,
+            'in' => ':attribute tidak valid.' . $fixInProfile,
+            'string' => ':attribute tidak valid.' . $fixInProfile,
+            'array' => ':attribute tidak valid.' . $fixInProfile,
+        ];
+    }
+
+    /** @return array<string, string> */
+    private function step2ValidationAttributes(): array
+    {
+        return [
+            'pob' => 'Tempat lahir',
+            'dob' => 'Tanggal lahir',
+            'gender' => 'Jenis kelamin',
+            'origin_address' => 'Alamat asal',
+            'jogja_address' => 'Alamat di Yogyakarta',
+            'father_name' => 'Nama ayah',
+            'father_job' => 'Pekerjaan ayah',
+            'father_income' => 'Penghasilan ayah',
+            'father_status' => 'Status ayah',
+            'father_death_date' => 'Tanggal meninggal ayah',
+            'mother_name' => 'Nama ibu',
+            'mother_job' => 'Pekerjaan ibu',
+            'mother_income' => 'Penghasilan ibu',
+            'mother_status' => 'Status ibu',
+            'mother_death_date' => 'Tanggal meninggal ibu',
+            'guardian_name' => 'Nama wali',
+            'guardian_job' => 'Pekerjaan wali',
+            'guardian_income' => 'Penghasilan wali',
+            'guardian_status' => 'Status wali',
+            'guardian_death_date' => 'Tanggal meninggal wali',
+            'siblings' => 'Data saudara kandung',
+            'siblings.*.name' => 'Nama saudara kandung',
+            'siblings.*.job_or_school' => 'Pekerjaan/sekolah saudara kandung',
+            'siblings.*.marital_status' => 'Status perkawinan saudara kandung',
+            'siblings.*.relation' => 'Keterangan (kakak/adik) saudara kandung',
+        ];
+    }
+
+    /** @return array<string, string> */
+    private function step3ValidationMessages(): array
+    {
+        return [
+            'required' => ':attribute wajib diisi.',
+            'required_if' => ':attribute wajib diisi.',
+            'required_with' => ':attribute wajib diisi.',
+            'integer' => ':attribute harus berupa bilangan bulat.',
+            'numeric' => ':attribute harus berupa angka.',
+            'min' => ':attribute tidak boleh kurang dari :min.',
+            'date' => ':attribute harus berupa tanggal yang valid.',
+            'in' => ':attribute tidak valid.',
+            'string' => ':attribute tidak valid.',
+            'array' => ':attribute tidak valid.',
+            'scholarship_histories.max' => 'Riwayat beasiswa maksimal :max data.',
+            'file' => ':attribute harus berupa file.',
+            'uploaded' => ':attribute gagal diunggah. Pastikan ukuran file tidak melebihi 2 MB lalu coba lagi.',
+            'mimes' => ':attribute harus berupa file PDF.',
+            'transkrip_nilai.max' => ':attribute terlalu besar. Ukuran maksimal 2 MB.',
+            'slip_gaji_ayah.max' => ':attribute terlalu besar. Ukuran maksimal 2 MB.',
+            'slip_gaji_ibu.max' => ':attribute terlalu besar. Ukuran maksimal 2 MB.',
+        ];
+    }
+
+    /** @return array<string, string> */
+    private function step3ValidationAttributes(): array
+    {
+        return [
+            'scholarship_name' => 'Nama beasiswa',
+            'current_semester' => 'Semester saat ini',
+            'family_dependents' => 'Jumlah tanggungan keluarga',
+            'gpa_last_semesters' => 'IP 2 semester terakhir',
+            'ipk' => 'IPK',
+            'sks_last_semesters' => 'Jumlah SKS 2 semester terakhir',
+            'total_sks_passed' => 'SKS kumulatif',
+            'total_sks_required' => 'Jumlah beban SKS untuk lulus',
+            'on_leave' => 'Status cuti kuliah',
+            'leave_semester' => 'Semester cuti',
+            'thesis_status' => 'Status skripsi',
+            'exam_plan_date' => 'Rencana ujian pendadaran',
+            'has_scholarship_history' => 'Riwayat menerima beasiswa',
+            'scholarship_histories' => 'Riwayat beasiswa',
+            'scholarship_histories.*.nama_beasiswa' => 'Nama beasiswa pada riwayat',
+            'scholarship_histories.*.periode' => 'Periode beasiswa pada riwayat',
+            'scholarship_histories.*.jumlah' => 'Dana per bulan pada riwayat',
+            'scholarship_histories.*.status' => 'Status beasiswa pada riwayat',
+            'transkrip_nilai' => self::SUPPORTING_DOCUMENT_LABELS['transkrip_nilai'],
+            'slip_gaji_ayah' => self::SUPPORTING_DOCUMENT_LABELS['slip_gaji_ayah'],
+            'slip_gaji_ibu' => self::SUPPORTING_DOCUMENT_LABELS['slip_gaji_ibu'],
+        ];
     }
 }
