@@ -30,11 +30,11 @@ class TendikTeamScopeTest extends TestCase
     // Visibility — scope=mine vs scope=team
     // -------------------------------------------------------------------
 
-    public function test_scope_team_is_restricted_to_assigned_letter_types(): void
+    public function test_scope_team_shows_all_letter_types_while_mine_stays_assigned_only(): void
     {
-        // Tendik has ONLY beasiswa in assigned_tasks. Under the strict
-        // assignment model, even team scope must NOT surface other letter
-        // types — read access follows assigned_tasks.
+        // Tendik has ONLY beasiswa in assigned_tasks. "mine" stays restricted
+        // to assigned types; "team" (Semua Pengajuan) shows every letter that
+        // is with the Tendik team, regardless of assigned_tasks (read-only).
         $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
 
         $this->scholarshipApplication();
@@ -51,14 +51,20 @@ class TendikTeamScopeTest extends TestCase
         $mineLetterTypes = collect($mine['tasks'])->pluck('letter_type')->unique()->values()->all();
         $this->assertSame([ScholarshipApplication::LETTER_TYPE], $mineLetterTypes);
 
-        // team: still scoped to the user's assigned letter types — Beasiswa only.
+        // team: every letter type with the Tendik team.
         $team = $this->actingAs($tendik, 'sanctum')
             ->getJson('/api/tendik/dashboard/tasks?scope=team')
             ->assertOk()
             ->json();
         $this->assertSame('team', $team['scope']);
-        $teamLetterTypes = collect($team['tasks'])->pluck('letter_type')->unique()->values()->all();
-        $this->assertSame([ScholarshipApplication::LETTER_TYPE], $teamLetterTypes);
+        $teamLetterTypes = collect($team['tasks'])->pluck('letter_type')->unique()->sort()->values()->all();
+        $expected = collect([
+            ScholarshipApplication::LETTER_TYPE,
+            SuratPengantarMagangApplication::LETTER_TYPE,
+            SuratKeteranganAktifApplication::LETTER_TYPE,
+            ProsesLuarNegeriApplication::LETTER_TYPE,
+        ])->sort()->values()->all();
+        $this->assertSame($expected, $teamLetterTypes);
     }
 
     public function test_scope_team_shows_other_tendiks_rows_to_persuratan_helpers(): void
@@ -88,6 +94,42 @@ class TendikTeamScopeTest extends TestCase
         $this->assertNotNull($bTeamRow);
         $this->assertSame($tendikA->id, $bTeamRow['assigned_to']);
         $this->assertSame($tendikA->name, $bTeamRow['assigned_tendik_name']);
+    }
+
+    public function test_riwayat_period_filter_limits_rows_by_submitted_date(): void
+    {
+        $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
+
+        $recent = $this->scholarshipApplication(null, [
+            'assigned_to' => $tendik->id,
+            'status' => ScholarshipApplication::STATUS_COMPLETED,
+            'submitted_at' => now()->subDays(10),
+        ]);
+        $twoMonths = $this->scholarshipApplication(null, [
+            'assigned_to' => $tendik->id,
+            'status' => ScholarshipApplication::STATUS_COMPLETED,
+            'submitted_at' => now()->subMonths(2),
+        ]);
+        $sixMonths = $this->scholarshipApplication(null, [
+            'assigned_to' => $tendik->id,
+            'status' => ScholarshipApplication::STATUS_COMPLETED,
+            'submitted_at' => now()->subMonths(6),
+        ]);
+
+        $ids = fn (string $query): array => collect(
+            $this->actingAs($tendik, 'sanctum')->getJson('/api/tendik/riwayat' . $query)->assertOk()->json('tasks')
+        )->pluck('id')->sort()->values()->all();
+
+        $this->assertSame([$recent->id], $ids('?period=1m'));
+        $this->assertSame(collect([$recent->id, $twoMonths->id])->sort()->values()->all(), $ids('?period=3m'));
+        $all = collect([$recent->id, $twoMonths->id, $sixMonths->id])->sort()->values()->all();
+        $this->assertSame($all, $ids('?period=all'));
+        $this->assertSame($all, $ids(''));
+        $this->assertSame([$recent->id], $ids('?scope=team&period=1m'));
+
+        $this->actingAs($tendik, 'sanctum')
+            ->getJson('/api/tendik/riwayat?period=7d')
+            ->assertStatus(422);
     }
 
     public function test_scope_team_riwayat_shows_team_history_to_persuratan(): void
@@ -164,7 +206,7 @@ class TendikTeamScopeTest extends TestCase
     // Detail authorization
     // -------------------------------------------------------------------
 
-    public function test_persuratan_with_only_beasiswa_can_view_beasiswa_detail_but_not_other_letters(): void
+    public function test_persuratan_with_only_beasiswa_can_view_all_letter_details_but_only_act_on_beasiswa(): void
     {
         $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
 
@@ -179,18 +221,15 @@ class TendikTeamScopeTest extends TestCase
             $response = $this->actingAs($tendik, 'sanctum')->getJson($url);
 
             if (in_array($label, $allowedLabels, true)) {
-                $response->assertOk()->assertJsonPath('application.id', $scholarship->id);
+                $response->assertOk()
+                    ->assertJsonPath('application.id', $scholarship->id)
+                    ->assertJsonPath('application.viewer_can_act', true);
                 continue;
             }
 
-            // Non-Beasiswa detail must be denied for a Tendik whose
-            // assigned_tasks does not include that letter type.
-            $response->assertForbidden();
-            $payload = $response->json();
-            $this->assertIsArray($payload);
-            $this->assertArrayNotHasKey('application', $payload);
-            $this->assertArrayNotHasKey('student', $payload);
-            $this->assertArrayNotHasKey('docx_url', $payload);
+            // Non-Beasiswa detail is visible read-only ("Semua Pengajuan"),
+            // flagged so the UI hides actions the Tendik may not perform.
+            $response->assertOk()->assertJsonPath('application.viewer_can_act', false);
         }
     }
 

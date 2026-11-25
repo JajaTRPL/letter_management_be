@@ -46,7 +46,7 @@ class SuratTugasGeneratedPreviewAccessService
     {
         return match ($audience) {
             self::AUDIENCE_TENDIK => $user->role === 'tendik'
-                && $this->assignmentService->canHandle($user, SuratTugasApplication::LETTER_TYPE),
+                && $this->assignmentService->canView($user, SuratTugasApplication::LETTER_TYPE),
             self::AUDIENCE_AKADEMIK => $user->role === 'akademik'
                 && $this->academicRoutingService->canViewDetail($user, $application),
             self::AUDIENCE_MAHASISWA => $user->role === 'mahasiswa'

@@ -73,14 +73,15 @@ class SuratPengantarMagangAccessControlTest extends TestCase
     // Tendik strict assignment
     // --------------------------------------------------------------
 
-    public function test_tendik_without_magang_assignment_cannot_view_magang_detail(): void
+    public function test_tendik_without_magang_assignment_can_view_magang_detail_read_only(): void
     {
         $tendik = $this->tendikPersuratan([SuratKeteranganAktifApplication::LETTER_TYPE]);
         $application = $this->magangApplication();
 
         $this->actingAs($tendik, 'sanctum')
             ->getJson("/api/tendik/surat-pengantar-magang/{$application->id}")
-            ->assertForbidden();
+            ->assertOk()
+            ->assertJsonPath('application.viewer_can_act', false);
     }
 
     public function test_tendik_without_magang_assignment_cannot_approve_magang(): void

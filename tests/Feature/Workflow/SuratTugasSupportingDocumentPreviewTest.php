@@ -167,15 +167,15 @@ class SuratTugasSupportingDocumentPreviewTest extends TestCase
         );
     }
 
-    public function test_persuratan_tendik_without_surat_tugas_assignment_cannot_preview(): void
+    public function test_persuratan_tendik_without_surat_tugas_assignment_can_preview_read_only(): void
     {
         $application = $this->makeSuratTugasWithDocs();
-        // Assigned to a different letter type → canHandle('surat-tugas') is false.
+        // Assigned to a different letter type: read-only view is allowed.
         $tendik = $this->tendikPersuratan([\App\Models\ScholarshipApplication::LETTER_TYPE]);
 
         $this->actingAs($tendik, 'sanctum')
             ->get($this->previewPath($application, 'proposal'))
-            ->assertForbidden();
+            ->assertOk();
     }
 
     public function test_non_persuratan_tendik_cannot_preview(): void

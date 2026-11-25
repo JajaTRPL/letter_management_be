@@ -15,6 +15,7 @@ use App\Services\LetterDocumentAccessService;
 use App\Services\LetterRetentionSummaryService;
 use App\Services\MahasiswaProfileDataService;
 use App\Services\ScholarshipAutomationService;
+use App\Support\LetterAttachmentDefinitionRegistry;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -258,9 +259,9 @@ class ScholarshipController extends Controller
             'scholarship_histories.*.periode' => 'required_with:scholarship_histories|string',
             'scholarship_histories.*.jumlah' => 'required_with:scholarship_histories|string',
             'scholarship_histories.*.status' => 'required_with:scholarship_histories|in:Aktif,Selesai',
-            'transkrip_nilai' => 'nullable|file|mimes:pdf|max:2048',
-            'slip_gaji_ayah' => 'nullable|file|mimes:pdf|max:2048',
-            'slip_gaji_ibu' => 'nullable|file|mimes:pdf|max:2048',
+            'transkrip_nilai' => 'nullable|file|mimes:pdf|max:' . LetterAttachmentDefinitionRegistry::maxKb(ScholarshipApplication::LETTER_TYPE, 'transkrip_nilai'),
+            'slip_gaji_ayah' => 'nullable|file|mimes:pdf|max:' . LetterAttachmentDefinitionRegistry::maxKb(ScholarshipApplication::LETTER_TYPE, 'slip_gaji_ayah'),
+            'slip_gaji_ibu' => 'nullable|file|mimes:pdf|max:' . LetterAttachmentDefinitionRegistry::maxKb(ScholarshipApplication::LETTER_TYPE, 'slip_gaji_ibu'),
         ], $this->step3ValidationMessages(), $this->step3ValidationAttributes());
 
         if ($validator->fails()) {
@@ -780,6 +781,10 @@ class ScholarshipController extends Controller
     /** @return array<string, string> */
     private function step3ValidationMessages(): array
     {
+        $maxLabel = LetterAttachmentDefinitionRegistry::formatKb(
+            LetterAttachmentDefinitionRegistry::maxKb(ScholarshipApplication::LETTER_TYPE, 'transkrip_nilai'),
+        );
+
         return [
             'required' => ':attribute wajib diisi.',
             'required_if' => ':attribute wajib diisi.',
@@ -793,11 +798,11 @@ class ScholarshipController extends Controller
             'array' => ':attribute tidak valid.',
             'scholarship_histories.max' => 'Riwayat beasiswa maksimal :max data.',
             'file' => ':attribute harus berupa file.',
-            'uploaded' => ':attribute gagal diunggah. Pastikan ukuran file tidak melebihi 2 MB lalu coba lagi.',
+            'uploaded' => ':attribute gagal diunggah. Pastikan ukuran file tidak melebihi ' . $maxLabel . ' lalu coba lagi.',
             'mimes' => ':attribute harus berupa file PDF.',
-            'transkrip_nilai.max' => ':attribute terlalu besar. Ukuran maksimal 2 MB.',
-            'slip_gaji_ayah.max' => ':attribute terlalu besar. Ukuran maksimal 2 MB.',
-            'slip_gaji_ibu.max' => ':attribute terlalu besar. Ukuran maksimal 2 MB.',
+            'transkrip_nilai.max' => ':attribute terlalu besar. Ukuran maksimal ' . $maxLabel . '.',
+            'slip_gaji_ayah.max' => ':attribute terlalu besar. Ukuran maksimal ' . $maxLabel . '.',
+            'slip_gaji_ibu.max' => ':attribute terlalu besar. Ukuran maksimal ' . $maxLabel . '.',
         ];
     }
 

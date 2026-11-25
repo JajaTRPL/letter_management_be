@@ -67,14 +67,27 @@ class LetterAssignmentService
     }
 
     /**
+     * Read-only visibility: every Persuratan Tendik may SEE letters of any
+     * type that are with the Tendik team ("Semua Pengajuan"), including the
+     * detail page and supporting documents. Acting on a letter (approve /
+     * revise / reject) still requires canHandle() — i.e. assigned_tasks.
+     */
+    public function canView(User $user, string $letterType): bool
+    {
+        return $this->canonicalKey($letterType) !== null
+            && $user->role === 'tendik'
+            && $user->tendik_role === 'persuratan';
+    }
+
+    /**
      * Team-scope feed visibility: returns the bare query (no assigned_to
-     * filter) for any Persuratan Tendik whose assigned_tasks include this
-     * letter type. Other Persuratan and non-Persuratan get an empty result
+     * filter) for any Persuratan Tendik, regardless of assigned_tasks
+     * (read-only "Semua Pengajuan"). Non-Persuratan get an empty result
      * without leaking rows.
      */
     public function applyTeamFeedVisibility(Builder $query, User $user, string $letterType): Builder
     {
-        if (!$this->canHandle($user, $letterType)) {
+        if (!$this->canView($user, $letterType)) {
             return $query->whereRaw('1 = 0');
         }
 

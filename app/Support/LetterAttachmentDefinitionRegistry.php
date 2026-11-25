@@ -11,12 +11,62 @@ use App\Models\SuratTugasApplication;
 class LetterAttachmentDefinitionRegistry
 {
     /**
+     * Total upload budget for all supporting documents of one letter type.
+     * Each document's per-file cap is this budget split evenly across the
+     * letter's document slots (e.g. 3 slots → 5 MB each), so a full
+     * submission can never exceed the total.
+     */
+    public const TOTAL_BUDGET_KB = 15 * 1024;
+
+    /**
      * Supporting-document definitions only. Workflow transitions and
      * authorization remain in their dedicated services.
      *
      * @return array<string, array<string, mixed>>
      */
     public static function all(): array
+    {
+        $letters = self::definitions();
+
+        foreach ($letters as &$letter) {
+            $count = count($letter['documents']);
+            if ($count === 0) {
+                continue;
+            }
+            $perFileKb = intdiv(self::TOTAL_BUDGET_KB, $count);
+            foreach ($letter['documents'] as &$document) {
+                $document['max_kb'] = $perFileKb;
+            }
+            unset($document);
+        }
+        unset($letter);
+
+        return $letters;
+    }
+
+    /**
+     * Per-file size cap (KB) for a document, derived from the total budget.
+     */
+    public static function maxKb(string $letterType, string $documentKey): int
+    {
+        return (int) (self::document($letterType, $documentKey)['max_kb'] ?? self::TOTAL_BUDGET_KB);
+    }
+
+    /**
+     * Human-readable size label for a cap, e.g. "5 MB" or "7,5 MB".
+     */
+    public static function formatKb(int $kb): string
+    {
+        $mb = round($kb / 1024, 1);
+        $text = fmod($mb, 1.0) === 0.0 ? (string) (int) $mb : str_replace('.', ',', (string) $mb);
+
+        return $text . ' MB';
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private static function definitions(): array
     {
         return [
             ScholarshipApplication::LETTER_TYPE => [
@@ -128,7 +178,7 @@ class LetterAttachmentDefinitionRegistry
             'label' => $label,
             'required_on_submit' => $requiredOnSubmit,
             'mime_types' => ['application/pdf'],
-            'max_kb' => 2048,
+            'max_kb' => self::TOTAL_BUDGET_KB, // overwritten in all()
             'storage_disk' => 'local',
             'storage_prefix' => 'letter-application-attachments/' . $privatePrefixSegment . '/',
             'preview' => true,

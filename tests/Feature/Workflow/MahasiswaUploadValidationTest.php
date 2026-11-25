@@ -234,12 +234,12 @@ class MahasiswaUploadValidationTest extends TestCase
 
         $this->actingAs($student, 'sanctum')
             ->post('/api/mahasiswa/scholarship/step-3', array_merge($this->step3BasePayload(), [
-                'transkrip_nilai' => UploadedFile::fake()->create('transkrip.pdf', 3000, 'application/pdf'),
+                'transkrip_nilai' => UploadedFile::fake()->create('transkrip.pdf', 6000, 'application/pdf'),
             ]))
             ->assertStatus(422)
             ->assertJsonValidationErrors('transkrip_nilai')
-            ->assertJsonPath('errors.transkrip_nilai.0', 'Transkrip Nilai terlalu besar. Ukuran maksimal 2 MB.')
-            ->assertJsonPath('message', 'Transkrip Nilai terlalu besar. Ukuran maksimal 2 MB.');
+            ->assertJsonPath('errors.transkrip_nilai.0', 'Transkrip Nilai terlalu besar. Ukuran maksimal 5 MB.')
+            ->assertJsonPath('message', 'Transkrip Nilai terlalu besar. Ukuran maksimal 5 MB.');
     }
 
     public function test_beasiswa_step2_accepts_sibling_status_saved_by_profil(): void

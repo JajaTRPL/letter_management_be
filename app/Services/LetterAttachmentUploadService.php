@@ -158,7 +158,7 @@ class LetterAttachmentUploadService
         }
 
         $mimeTypes = $definition['mime_types'] ?? ['application/pdf'];
-        $maxKb = (int) ($definition['max_kb'] ?? 2048);
+        $maxKb = (int) ($definition['max_kb'] ?? LetterAttachmentDefinitionRegistry::TOTAL_BUDGET_KB);
 
         // Defense-in-depth: controllers already validate, but the shared writer
         // re-checks the registry PDF policy so no caller can bypass it. Trust the

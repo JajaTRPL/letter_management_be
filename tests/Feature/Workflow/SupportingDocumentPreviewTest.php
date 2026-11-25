@@ -119,15 +119,15 @@ class SupportingDocumentPreviewTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_persuratan_tendik_without_beasiswa_assignment_cannot_preview(): void
+    public function test_persuratan_tendik_without_beasiswa_assignment_can_preview_read_only(): void
     {
         $application = $this->makeScholarshipWithUploads();
-        // Persuratan but assigned to a different letter type — canHandle returns false for Beasiswa.
+        // Persuratan assigned to a different letter type: read-only view is allowed.
         $tendik = $this->tendikPersuratan([\App\Models\SuratPengantarMagangApplication::LETTER_TYPE]);
 
         $this->actingAs($tendik, 'sanctum')
             ->get($this->previewPath($application, 'transkrip_nilai'))
-            ->assertForbidden();
+            ->assertOk();
     }
 
     public function test_owning_mahasiswa_can_preview_own_supporting_doc(): void

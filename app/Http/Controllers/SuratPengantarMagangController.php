@@ -20,6 +20,7 @@ use App\Services\MahasiswaProfileDataService;
 use App\Services\SuratPengantarMagangPreviewGenerationException;
 use App\Services\SuratPengantarMagangPreviewGenerationService;
 use App\Services\SuratPengantarMagangService;
+use App\Support\LetterAttachmentDefinitionRegistry;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -253,6 +254,12 @@ class SuratPengantarMagangController extends Controller
     public function showForReviewer(SuratPengantarMagangApplication $application)
     {
         $this->authorizeTendikDetailIfApplicable(SuratPengantarMagangApplication::LETTER_TYPE);
+        if (Auth::user()?->role === 'tendik') {
+            $application->setAttribute(
+                'viewer_can_act',
+                $this->assignmentService->canHandle(Auth::user(), SuratPengantarMagangApplication::LETTER_TYPE),
+            );
+        }
         $this->authorizeAcademicDetailIfApplicable($application);
 
         // Load the canonical academic chain so the FE can render Prodi / Fakultas / Departemen
@@ -410,7 +417,7 @@ class SuratPengantarMagangController extends Controller
             return;
         }
 
-        if (!$this->assignmentService->canHandleAny($user, $letterType)) {
+        if (!$this->assignmentService->canView($user, $letterType)) {
             abort(403, 'Tidak berwenang melihat detail pengajuan ini.');
         }
     }
@@ -825,7 +832,7 @@ class SuratPengantarMagangController extends Controller
                 $hasRegistryProposal ? 'nullable' : 'required',
                 'file',
                 'mimes:pdf',
-                'max:2048',
+                'max:' . LetterAttachmentDefinitionRegistry::maxKb(SuratPengantarMagangApplication::LETTER_TYPE, 'proposal'),
             ],
         ], $this->finalContractInputRules($data));
     }

@@ -53,7 +53,7 @@ class SuratTugasAccessControlTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_assigned_tendik_can_view_reviewer_detail_but_unassigned_and_sarpras_cannot(): void
+    public function test_assigned_and_unassigned_persuratan_can_view_reviewer_detail_but_sarpras_cannot(): void
     {
         $assigned = $this->tendikPersuratan([SuratTugasApplication::LETTER_TYPE]);
         $unassigned = $this->tendikPersuratan([\App\Models\ScholarshipApplication::LETTER_TYPE]);
@@ -62,11 +62,13 @@ class SuratTugasAccessControlTest extends TestCase
 
         $this->actingAs($assigned, 'sanctum')
             ->getJson("/api/tendik/surat-tugas/{$application->id}")
-            ->assertOk();
+            ->assertOk()
+            ->assertJsonPath('application.viewer_can_act', true);
 
         $this->actingAs($unassigned, 'sanctum')
             ->getJson("/api/tendik/surat-tugas/{$application->id}")
-            ->assertForbidden();
+            ->assertOk()
+            ->assertJsonPath('application.viewer_can_act', false);
 
         $this->actingAs($sarpras, 'sanctum')
             ->getJson("/api/tendik/surat-tugas/{$application->id}")

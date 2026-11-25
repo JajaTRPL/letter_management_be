@@ -144,6 +144,10 @@ class TendikDashboardController extends Controller
 
         $normalized = $profileDataService->forApplication($application);
         $application->setAttribute('generated_docx_path', null);
+        $application->setAttribute(
+            'viewer_can_act',
+            $this->assignmentService->canHandle(Auth::user(), ScholarshipApplication::LETTER_TYPE),
+        );
 
         return response()->json([
             'application' => $this->withSupportingDocumentMetadata(
@@ -329,6 +333,8 @@ class TendikDashboardController extends Controller
             ScholarshipApplication::STATUS_COMPLETED,
         ];
 
+        $since = $this->resolveRiwayatPeriodStart($request);
+
         $tasksByType = [];
         foreach ($this->letterTypeModelMap() as $letterType => $modelClass) {
             if (!$this->canSeeForScope($user, $letterType, $scope)) {
@@ -336,12 +342,24 @@ class TendikDashboardController extends Controller
                 continue;
             }
 
-            $tasksByType[$letterType] = $this->applyScope(
+            $query = $this->applyScope(
                 $modelClass::whereIn('status', $historicalStatuses),
                 $user,
                 $letterType,
                 $scope
-            )
+            );
+
+            if ($since) {
+                // Period filter follows the "Tanggal Masuk" column shown in the table.
+                $query->where(function (Builder $query) use ($since) {
+                    $query->where('submitted_at', '>=', $since)
+                        ->orWhere(function (Builder $query) use ($since) {
+                            $query->whereNull('submitted_at')->where('created_at', '>=', $since);
+                        });
+                });
+            }
+
+            $tasksByType[$letterType] = $query
                 ->with(self::TENDIK_ROW_RELATIONS)
                 ->orderBy('submitted_at', 'desc')
                 ->limit(100)
@@ -420,6 +438,25 @@ class TendikDashboardController extends Controller
     }
 
     /**
+     * Riwayat period filter: 1m (last month), 3m (last 3 months) or all
+     * (default). 422 if the param is present but invalid.
+     */
+    private function resolveRiwayatPeriodStart(Request $request): ?\Illuminate\Support\Carbon
+    {
+        $period = $request->query('period');
+        if ($period === null || $period === '') {
+            return null;
+        }
+        $request->validate(['period' => 'in:1m,3m,all']);
+
+        return match ($period) {
+            '1m' => now()->subMonthNoOverflow(),
+            '3m' => now()->subMonthsNoOverflow(3),
+            default => null,
+        };
+    }
+
+    /**
      * Resolve the requested scope; 422 if the param is present but invalid.
      */
     private function resolveScope(Request $request): string
@@ -448,11 +485,12 @@ class TendikDashboardController extends Controller
 
     private function canSeeForScope(User $user, string $letterType, string $scope): bool
     {
-        // Both mine and team scopes are gated by assigned_tasks. Team scope
-        // differs from mine only in whether the assigned_to filter is applied
-        // (see applyScope below); a Tendik never sees letter types absent from
-        // their assigned_tasks, regardless of scope.
-        return $this->assignmentService->canHandle($user, $letterType);
+        // "mine" is gated by assigned_tasks. "team" (Semua Pengajuan) shows
+        // every letter with the Tendik team to any Persuratan Tendik,
+        // read-only for letter types outside their assigned_tasks.
+        return $scope === 'team'
+            ? $this->assignmentService->canView($user, $letterType)
+            : $this->assignmentService->canHandle($user, $letterType);
     }
 
     private function applyScope(Builder $query, User $user, string $letterType, string $scope, ?array $unassignedStatuses = null): Builder
@@ -498,7 +536,7 @@ class TendikDashboardController extends Controller
     private function authorizeTendikDetail(string $letterType): void
     {
         $user = Auth::user();
-        if (!$this->assignmentService->canHandleAny($user, $letterType)) {
+        if (!$this->assignmentService->canView($user, $letterType)) {
             abort(403, 'Tidak berwenang melihat detail pengajuan ini.');
         }
     }

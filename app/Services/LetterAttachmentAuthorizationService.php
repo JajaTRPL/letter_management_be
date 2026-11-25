@@ -33,7 +33,7 @@ class LetterAttachmentAuthorizationService
 
         return match ($user->role) {
             'super_admin' => true,
-            'tendik' => $this->assignmentService->canHandle($user, $canonicalType),
+            'tendik' => $this->assignmentService->canView($user, $canonicalType),
             'akademik' => $this->routingService->canHandleProdiStage($user, $application)
                 || $this->routingService->canHandleDepartmentStage($user, $application),
             'mahasiswa' => (int) $application->getAttribute('user_id') === (int) $user->id,

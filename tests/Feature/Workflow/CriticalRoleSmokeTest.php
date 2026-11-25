@@ -115,13 +115,13 @@ class CriticalRoleSmokeTest extends TestCase
             ->assertOk()
             ->json('tasks');
 
-        // Strict assignment: Tendik assigned only to Beasiswa must NOT see
-        // other letter types in either scope. Team scope still drops the
-        // assigned_to filter for letter types the user IS assigned to, but it
-        // never exposes letter types absent from assigned_tasks.
-        $this->assertTaskMissing($teamRows, SuratPengantarMagangApplication::LETTER_TYPE, $magang->id);
-        $this->assertTaskMissing($teamRows, SuratKeteranganAktifApplication::LETTER_TYPE, $aktif->id);
-        $this->assertTaskMissing($teamRows, ProsesLuarNegeriApplication::LETTER_TYPE, $pln->id);
+        // "Semua Pengajuan": team scope shows every letter with the Tendik
+        // team to any Persuratan Tendik, even outside assigned_tasks
+        // (read-only; actions still require the assignment).
+        $teamKeys = collect($teamRows)->map(fn (array $row): string => $row['letter_type'] . '#' . $row['id'])->all();
+        $this->assertContains(SuratPengantarMagangApplication::LETTER_TYPE . '#' . $magang->id, $teamKeys);
+        $this->assertContains(SuratKeteranganAktifApplication::LETTER_TYPE . '#' . $aktif->id, $teamKeys);
+        $this->assertContains(ProsesLuarNegeriApplication::LETTER_TYPE . '#' . $pln->id, $teamKeys);
 
         foreach (['tendikSarpras', 'tendikKepalaLab', 'tendikLaboran'] as $accountKey) {
             $this->actingAs($accounts[$accountKey], 'sanctum')

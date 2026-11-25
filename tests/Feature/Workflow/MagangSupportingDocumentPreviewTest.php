@@ -87,15 +87,15 @@ class MagangSupportingDocumentPreviewTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_persuratan_tendik_without_magang_assignment_cannot_preview(): void
+    public function test_persuratan_tendik_without_magang_assignment_can_preview_read_only(): void
     {
         $application = $this->makeMagangWithProposal();
-        // Persuratan but assigned to a different letter type — canHandle returns false for Magang.
+        // Persuratan assigned to a different letter type: read-only view is allowed.
         $tendik = $this->tendikPersuratan([\App\Models\ScholarshipApplication::LETTER_TYPE]);
 
         $this->actingAs($tendik, 'sanctum')
             ->get($this->previewPath($application, 'proposal'))
-            ->assertForbidden();
+            ->assertOk();
     }
 
     public function test_owning_mahasiswa_can_preview_own_proposal(): void

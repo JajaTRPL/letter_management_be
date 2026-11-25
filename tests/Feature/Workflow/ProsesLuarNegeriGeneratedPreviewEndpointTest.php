@@ -82,9 +82,12 @@ class ProsesLuarNegeriGeneratedPreviewEndpointTest extends TestCase
             LetterDocumentArtifact::PHASE_PRODI_REVIEW,
         );
 
-        $this->actingAs($unassignedTendik, 'sanctum')
-            ->get("/api/tendik/proses-luar-negeri/{$application->id}/generated-preview")
-            ->assertForbidden();
+        // Read-only "Semua Pengajuan" access: any Persuratan Tendik may view.
+        $this->assertPdfResponse(
+            $this->actingAs($unassignedTendik, 'sanctum')
+                ->get("/api/tendik/proses-luar-negeri/{$application->id}/generated-preview"),
+            LetterDocumentArtifact::PHASE_PRODI_REVIEW,
+        );
     }
 
     public function test_akademik_same_scope_can_stream_and_wrong_scope_forbidden(): void

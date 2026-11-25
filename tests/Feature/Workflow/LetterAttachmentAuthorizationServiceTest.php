@@ -34,13 +34,13 @@ class LetterAttachmentAuthorizationServiceTest extends TestCase
         ));
     }
 
-    public function test_non_owner_unassigned_and_non_persuratan_users_are_denied(): void
+    public function test_non_owner_and_non_persuratan_users_are_denied_but_any_persuratan_may_view(): void
     {
         $application = $this->scholarshipApplication();
         [$intruder] = $this->completeMahasiswa();
 
         $this->assertFalse($this->service->canPreview($intruder, $application, ScholarshipApplication::LETTER_TYPE));
-        $this->assertFalse($this->service->canPreview(
+        $this->assertTrue($this->service->canPreview(
             $this->tendikPersuratan([\App\Models\SuratPengantarMagangApplication::LETTER_TYPE]),
             $application,
             ScholarshipApplication::LETTER_TYPE,

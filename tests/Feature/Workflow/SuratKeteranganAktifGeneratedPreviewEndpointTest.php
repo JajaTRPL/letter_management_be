@@ -63,9 +63,12 @@ class SuratKeteranganAktifGeneratedPreviewEndpointTest extends TestCase
             LetterDocumentArtifact::PHASE_PRODI_REVIEW,
         );
 
-        $this->actingAs($unassignedTendik, 'sanctum')
-            ->get("/api/tendik/surat-keterangan-aktif/{$application->id}/generated-preview")
-            ->assertForbidden();
+        // Read-only "Semua Pengajuan" access: any Persuratan Tendik may view.
+        $this->assertPdfResponse(
+            $this->actingAs($unassignedTendik, 'sanctum')
+                ->get("/api/tendik/surat-keterangan-aktif/{$application->id}/generated-preview"),
+            LetterDocumentArtifact::PHASE_PRODI_REVIEW,
+        );
     }
 
     public function test_akademik_uses_detail_scope_not_approve_stage_gate(): void

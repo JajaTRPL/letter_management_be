@@ -21,6 +21,7 @@ use App\Services\MahasiswaProfileDataService;
 use App\Services\SuratTugasPreviewGenerationException;
 use App\Services\SuratTugasPreviewGenerationService;
 use App\Services\SuratTugasService;
+use App\Support\LetterAttachmentDefinitionRegistry;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -243,6 +244,12 @@ class SuratTugasController extends Controller
     public function showForReviewer(SuratTugasApplication $application)
     {
         $this->authorizeTendikDetailIfApplicable(SuratTugasApplication::LETTER_TYPE);
+        if (Auth::user()?->role === 'tendik') {
+            $application->setAttribute(
+                'viewer_can_act',
+                $this->assignmentService->canHandle(Auth::user(), SuratTugasApplication::LETTER_TYPE),
+            );
+        }
         $this->authorizeAcademicDetailIfApplicable($application);
 
         $application->load([
@@ -742,7 +749,7 @@ class SuratTugasController extends Controller
             return;
         }
 
-        if (!$this->assignmentService->canHandleAny($user, $letterType)) {
+        if (!$this->assignmentService->canView($user, $letterType)) {
             abort(403, 'Tidak berwenang melihat detail pengajuan ini.');
         }
     }
@@ -802,8 +809,8 @@ class SuratTugasController extends Controller
             'dosen_pembimbing_dpa' => 'nullable|string|max:255',
             'tgl_mulai' => 'nullable|date',
             'tgl_selesai' => $tglSelesaiRules,
-            'proposal_kegiatan_magang' => ['nullable', 'file', 'mimes:pdf', 'max:2048'],
-            'surat_pengantar_magang' => ['nullable', 'file', 'mimes:pdf', 'max:2048'],
+            'proposal_kegiatan_magang' => ['nullable', 'file', 'mimes:pdf', 'max:' . LetterAttachmentDefinitionRegistry::maxKb(SuratTugasApplication::LETTER_TYPE, 'proposal')],
+            'surat_pengantar_magang' => ['nullable', 'file', 'mimes:pdf', 'max:' . LetterAttachmentDefinitionRegistry::maxKb(SuratTugasApplication::LETTER_TYPE, 'surat_pengantar_magang')],
         ];
     }
 

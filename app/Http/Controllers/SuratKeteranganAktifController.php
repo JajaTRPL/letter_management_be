@@ -220,6 +220,12 @@ class SuratKeteranganAktifController extends Controller
     public function showForReviewer(SuratKeteranganAktifApplication $application)
     {
         $this->authorizeTendikDetailIfApplicable(SuratKeteranganAktifApplication::LETTER_TYPE);
+        if (Auth::user()?->role === 'tendik') {
+            $application->setAttribute(
+                'viewer_can_act',
+                $this->assignmentService->canHandle(Auth::user(), SuratKeteranganAktifApplication::LETTER_TYPE),
+            );
+        }
         $this->authorizeAcademicDetailIfApplicable($application);
 
         // Load the canonical academic chain so the FE can render Prodi / Fakultas / Departemen
@@ -360,7 +366,7 @@ class SuratKeteranganAktifController extends Controller
             return;
         }
 
-        if (!$this->assignmentService->canHandleAny($user, $letterType)) {
+        if (!$this->assignmentService->canView($user, $letterType)) {
             abort(403, 'Tidak berwenang melihat detail pengajuan ini.');
         }
     }

@@ -46,7 +46,7 @@ class ProsesLuarNegeriGeneratedPreviewAccessService
     {
         return match ($audience) {
             self::AUDIENCE_TENDIK => $user->role === 'tendik'
-                && $this->assignmentService->canHandle($user, ProsesLuarNegeriApplication::LETTER_TYPE),
+                && $this->assignmentService->canView($user, ProsesLuarNegeriApplication::LETTER_TYPE),
             self::AUDIENCE_AKADEMIK => $user->role === 'akademik'
                 && $this->academicRoutingService->canViewDetail($user, $application),
             self::AUDIENCE_MAHASISWA => $user->role === 'mahasiswa'

@@ -37,18 +37,20 @@ class TendikStrictAssignmentTest extends TestCase
             ->assertOk();
     }
 
-    public function test_tendik_not_assigned_to_beasiswa_cannot_view_beasiswa_detail(): void
+    public function test_tendik_not_assigned_to_beasiswa_can_view_beasiswa_detail_read_only(): void
     {
         $tendik = $this->tendikPersuratan([SuratPengantarMagangApplication::LETTER_TYPE]);
         $application = $this->scholarshipApplication();
 
         $this->actingAs($tendik, 'sanctum')
             ->getJson("/api/tendik/scholarship/{$application->id}")
-            ->assertForbidden();
+            ->assertOk()
+            ->assertJsonPath('application.viewer_can_act', false);
 
         $this->actingAs($tendik, 'sanctum')
             ->getJson("/api/tendik/surat-permohonan-beasiswa/{$application->id}")
-            ->assertForbidden();
+            ->assertOk()
+            ->assertJsonPath('application.viewer_can_act', false);
     }
 
     public function test_multiple_tendik_assigned_to_beasiswa_can_all_view_beasiswa_detail(): void
@@ -80,14 +82,15 @@ class TendikStrictAssignmentTest extends TestCase
             ->assertOk();
     }
 
-    public function test_tendik_not_assigned_to_magang_cannot_view_magang_detail(): void
+    public function test_tendik_not_assigned_to_magang_can_view_magang_detail_read_only(): void
     {
         $tendik = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
         $application = $this->magangApplication();
 
         $this->actingAs($tendik, 'sanctum')
             ->getJson("/api/tendik/surat-pengantar-magang/{$application->id}")
-            ->assertForbidden();
+            ->assertOk()
+            ->assertJsonPath('application.viewer_can_act', false);
     }
 
     public function test_tendik_assigned_to_all_letter_types_can_view_all_letter_details(): void

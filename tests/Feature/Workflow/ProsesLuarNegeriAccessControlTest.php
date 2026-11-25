@@ -76,14 +76,15 @@ class ProsesLuarNegeriAccessControlTest extends TestCase
     // Tendik strict assignment
     // --------------------------------------------------------------
 
-    public function test_tendik_without_pln_assignment_cannot_view_pln_detail(): void
+    public function test_tendik_without_pln_assignment_can_view_pln_detail_read_only(): void
     {
         $tendik = $this->tendikPersuratan([SuratKeteranganAktifApplication::LETTER_TYPE]);
         $application = $this->prosesLuarNegeriApplication();
 
         $this->actingAs($tendik, 'sanctum')
             ->getJson("/api/tendik/proses-luar-negeri/{$application->id}")
-            ->assertForbidden();
+            ->assertOk()
+            ->assertJsonPath('application.viewer_can_act', false);
     }
 
     public function test_tendik_without_pln_assignment_cannot_approve_pln(): void

@@ -58,13 +58,18 @@ class SuratTugasGeneratedPreviewEndpointTest extends TestCase
         $this->assertSame(1, LetterDocumentArtifact::query()->count());
     }
 
-    public function test_unassigned_tendik_is_forbidden(): void
+    public function test_unassigned_persuratan_may_view_but_sarpras_is_forbidden(): void
     {
         $unassigned = $this->tendikPersuratan([ScholarshipApplication::LETTER_TYPE]);
         $application = $this->suratTugasApplication(null, ['status' => SuratTugasApplication::STATUS_APPROVED_TENDIK]);
         $this->seedReadyArtifact($application, LetterDocumentArtifact::PHASE_PRODI_REVIEW);
 
+        // Read-only "Semua Pengajuan" access for any Persuratan Tendik.
         $this->actingAs($unassigned, 'sanctum')
+            ->get("/api/tendik/surat-tugas/{$application->id}/generated-preview")
+            ->assertOk();
+
+        $this->actingAs($this->tendikSarpras(), 'sanctum')
             ->get("/api/tendik/surat-tugas/{$application->id}/generated-preview")
             ->assertForbidden();
     }
